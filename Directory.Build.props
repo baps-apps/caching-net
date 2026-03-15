@@ -1,0 +1,20 @@
+<Project>
+  <PropertyGroup>
+    <!-- Repository metadata for SourceLink (enables source debugging from GitHub). -->
+    <RepositoryUrl>https://github.com/baps-apps/caching-net.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+
+    <!-- Enterprise build hardening -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- SourceLink GitHub provider so all projects can generate source link (avoids "source control information is not available" warning). -->
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+  </ItemGroup>
+</Project>

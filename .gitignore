@@ -1,0 +1,39 @@
+## OS / Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+.vs/
+
+## Build outputs
+bin/
+obj/
+out/
+TestResults/
+
+## .NET / NuGet
+*.user
+*.suo
+*.cache
+*.log
+packages/
+*.nupkg
+project.lock.json
+artifacts/
+
+## Rider / ReSharper
+_ReSharper*/
+*.DotSettings.user
+
+## Coverage
+coverage*.json
+coverage*.xml
+coverage*.info
+**/coverlet/**/*.json
+
+## Tooling / IDE metadata
+.cursor/
+.terraform/
+
