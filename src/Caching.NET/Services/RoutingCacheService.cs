@@ -12,7 +12,8 @@ namespace Caching.NET.Services;
 /// </summary>
 internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
 {
-    private readonly CacheOptions _options;
+    private readonly IOptionsMonitor<CacheOptions> _optionsMonitor;
+    private readonly CacheOptions _startupOptions;
     private readonly ILogger<RoutingCacheService> _logger;
     private readonly Abstractions.ICacheTelemetry _telemetry;
     private readonly InMemoryCacheService? _inMemory;
@@ -21,20 +22,23 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, System.Threading.SemaphoreSlim> _keyLocks = new(StringComparer.Ordinal);
 
     public RoutingCacheService(
-        IOptions<CacheOptions> options,
+        IOptionsMonitor<CacheOptions> optionsMonitor,
         ILogger<RoutingCacheService> logger,
         Abstractions.ICacheTelemetry telemetry,
         InMemoryCacheService? inMemory = null,
         RedisCacheService? redis = null,
         HybridCacheService? hybrid = null)
     {
-        _options = options?.Value ?? new CacheOptions();
+        _optionsMonitor = optionsMonitor ?? throw new ArgumentNullException(nameof(optionsMonitor));
+        _startupOptions = optionsMonitor.CurrentValue;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _telemetry = telemetry ?? throw new ArgumentNullException(nameof(telemetry));
         _inMemory = inMemory;
         _redis = redis;
         _hybrid = hybrid;
     }
+
+    private bool IsDisabled => !_optionsMonitor.CurrentValue.Enabled;
 
     /// <inheritdoc />
     public Task<T> GetOrCreateAsync<T>(
@@ -62,12 +66,18 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         CancellationToken cancellationToken = default)
         where T : notnull
     {
+        if (IsDisabled)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+            return await factory(cancellationToken).ConfigureAwait(false);
+        }
+
         if (callOptions?.BypassCache == true)
         {
             var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
             try
             {
-                if (ct.CanBeCanceled && _options.GetFactoryTimeout() is { } timeout)
+                if (ct.CanBeCanceled && _startupOptions.GetFactoryTimeout() is { } timeout)
                 {
                     _telemetry.OnFactoryTimeout(key, "Routing", timeout);
                 }
@@ -183,6 +193,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         CancellationToken cancellationToken = default)
         where T : notnull
     {
+        if (IsDisabled)
+            return Task.CompletedTask;
         if (callOptions?.BypassCache == true)
             return Task.CompletedTask;
         var service = ResolveService(callOptions?.OverrideMode);
@@ -192,6 +204,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     /// <inheritdoc />
     public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
+        if (IsDisabled)
+            return Task.CompletedTask;
         var service = ResolveService(overrideMode: null);
         return service.RemoveAsync(key, cancellationToken);
     }
@@ -199,6 +213,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     /// <inheritdoc />
     public Task RemoveAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
     {
+        if (IsDisabled)
+            return Task.CompletedTask;
         var service = ResolveService(overrideMode: null);
         return service.RemoveAsync(keys, cancellationToken);
     }
@@ -206,6 +222,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     /// <inheritdoc />
     public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
+        if (IsDisabled)
+            return Task.CompletedTask;
         var service = ResolveService(overrideMode: null);
         return service.RemoveByTagAsync(tag, cancellationToken);
     }
@@ -213,13 +231,15 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     /// <inheritdoc />
     public Task RemoveByTagAsync(IEnumerable<string> tags, CancellationToken cancellationToken = default)
     {
+        if (IsDisabled)
+            return Task.CompletedTask;
         var service = ResolveService(overrideMode: null);
         return service.RemoveByTagAsync(tags, cancellationToken);
     }
 
     private ICacheService ResolveService(CacheMode? overrideMode)
     {
-        var mode = overrideMode ?? _options.Mode;
+        var mode = overrideMode ?? _startupOptions.Mode;
 
         return mode switch
         {
@@ -233,17 +253,17 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     private ICacheService ResolveDefaultService()
     {
         // Fall back to the application-level mode, or a sensible default when misconfigured.
-        if (_options.Mode == CacheMode.InMemory && _inMemory is not null)
+        if (_startupOptions.Mode == CacheMode.InMemory && _inMemory is not null)
         {
             return _inMemory;
         }
 
-        if (_options.Mode == CacheMode.Redis && _redis is not null)
+        if (_startupOptions.Mode == CacheMode.Redis && _redis is not null)
         {
             return _redis;
         }
 
-        if (_options.Mode == CacheMode.Hybrid && _hybrid is not null)
+        if (_startupOptions.Mode == CacheMode.Hybrid && _hybrid is not null)
         {
             return _hybrid;
         }
@@ -263,7 +283,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
             return _hybrid;
         }
 
-        var mode = _options.Mode;
+        var mode = _startupOptions.Mode;
         throw new InvalidOperationException(
             $"No underlying cache service is available for RoutingCacheService. Configured mode: {mode}. " +
             "Ensure AddCaching was called with valid configuration and that the configured mode's dependencies (e.g., Redis for Redis mode) are registered.");
@@ -271,7 +291,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
 
     private CancellationToken ApplyFactoryTimeout(CancellationToken cancellationToken, out CancellationTokenSource? cts)
     {
-        var timeout = _options.GetFactoryTimeout();
+        var timeout = _startupOptions.GetFactoryTimeout();
         if (timeout is not { } t)
         {
             cts = null;
