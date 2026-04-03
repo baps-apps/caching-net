@@ -41,7 +41,6 @@ $ProjectPath = Join-Path $RepoRoot "src" "Caching.NET" "Caching.NET.csproj"
 $PackageOutput = Join-Path $RepoRoot "nupkgs"
 $Namespace = $env:GITHUB_NAMESPACE ?? "baps-apps"
 $RepoName = "caching-net"
-$SourceName = "github"
 $PackageName = "Caching.NET"
 
 # Track if version was provided as parameter
@@ -81,41 +80,10 @@ if ([string]::IsNullOrEmpty($GitHubPAT)) {
 Write-Host "Publishing Caching.NET v$Version to GitHub Packages" -ForegroundColor Green
 Write-Host ""
 
-# Step 1: Authenticate
-Write-Host "Step 1: Authenticating to GitHub Packages..." -ForegroundColor Yellow
+# Step 1: Verify credentials
+Write-Host "Step 1: Verifying credentials..." -ForegroundColor Yellow
 $sourceUrl = "https://nuget.pkg.github.com/$Namespace/index.json"
-
-$username = $null
-if (Get-Variable -Name IsWindows -ErrorAction SilentlyContinue) {
-    if ($IsWindows) {
-        $username = $env:USERNAME
-    } else {
-        $username = $env:USER
-    }
-} else {
-    if ($env:OS -like "*Windows*" -or $env:USERNAME) {
-        $username = $env:USERNAME
-    } else {
-        $username = $env:USER
-    }
-}
-
-if ([string]::IsNullOrWhiteSpace($username)) {
-    $username = $env:USERNAME ?? $env:USER ?? "github"
-    Write-Warning "Could not determine username, using: $username"
-}
-
-try {
-    dotnet nuget add source $sourceUrl `
-        --name $SourceName `
-        --username $username `
-        --password $GitHubPAT `
-        --store-password-in-clear-text 2>&1 | Out-Null
-} catch {
-    # Source might already exist
-}
-
-Write-Host "Authentication configured" -ForegroundColor Green
+Write-Host "Target feed: $sourceUrl" -ForegroundColor Green
 Write-Host ""
 
 # Step 2: Update version in .csproj if version was provided as parameter
@@ -256,10 +224,10 @@ if ($versionCheck.Exists -eq $true) {
 
 dotnet nuget push $PackageFile `
     --api-key $GitHubPAT `
-    --source $SourceName
+    --source $sourceUrl
 
 if ($LASTEXITCODE -ne 0) {
-    $pushOutput = dotnet nuget push $PackageFile --api-key $GitHubPAT --source $SourceName 2>&1 | Out-String
+    $pushOutput = dotnet nuget push $PackageFile --api-key $GitHubPAT --source $sourceUrl 2>&1 | Out-String
     $pushOutputLower = $pushOutput.ToLower()
     $packageExists = $pushOutputLower -match "already exists" -or $pushOutputLower -match "conflict" -or $pushOutputLower -match "409" -or $pushOutputLower -match "package.*exist"
 
@@ -270,7 +238,7 @@ if ($LASTEXITCODE -ne 0) {
             $deleted = Remove-PackageVersion -PackageName $PackageName -PackageVersion $actualVersion -Token $GitHubPAT -OrgName $Namespace -VersionId $versionCheck.VersionId
             if ($deleted) {
                 Start-Sleep -Seconds 2
-                dotnet nuget push $PackageFile --api-key $GitHubPAT --source $SourceName
+                dotnet nuget push $PackageFile --api-key $GitHubPAT --source $sourceUrl
                 if ($LASTEXITCODE -ne 0) {
                     Write-Host "Error: Package publish failed after deletion" -ForegroundColor Red
                     exit 1

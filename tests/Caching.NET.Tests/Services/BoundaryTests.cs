@@ -32,9 +32,10 @@ public class BoundaryTests
         var config = new Dictionary<string, string?> { ["CacheOptions:Enabled"] = "false" };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
+        services.AddLogging();
         services.AddCaching(configuration);
         using var provider = services.BuildServiceProvider();
-        var cache = provider.GetRequiredService<ICacheService>();
+        var cache = provider.GetRequiredService<Abstractions.ICacheService>();
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
             cache.GetOrCreateAsync("   ", _ => Task.FromResult(1)));

@@ -46,5 +46,40 @@ public class RoutingCacheServiceConcurrencyTests
 
         Assert.Equal(1, counter);
     }
+
+    [Fact]
+    public async Task WhenDisabled_CoalesceConcurrent_SkipsCoalescing()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "false",
+            ["CacheOptions:Mode"] = "InMemory"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<ICacheService>();
+
+        var callOptions = new CacheCallOptions { CoalesceConcurrent = true };
+        var counter = 0;
+
+        var tasks = Enumerable.Range(0, 5)
+            .Select(_ => cache.GetOrCreateAsync(
+                "disabled:coalesce",
+                ct =>
+                {
+                    Interlocked.Increment(ref counter);
+                    return Task.FromResult("value");
+                },
+                callOptions,
+                cancellationToken: CancellationToken.None))
+            .ToArray();
+
+        await Task.WhenAll(tasks);
+
+        Assert.Equal(5, counter);
+    }
 }
 

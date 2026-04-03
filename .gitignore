@@ -20,6 +20,7 @@ TestResults/
 *.log
 packages/
 *.nupkg
+*.snupkg
 project.lock.json
 artifacts/
 
@@ -36,4 +37,5 @@ coverage*.info
 ## Tooling / IDE metadata
 .cursor/
 .terraform/
+.worktrees/
 

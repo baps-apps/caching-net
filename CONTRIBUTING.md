@@ -53,9 +53,9 @@ Caching.NET is a shared .NET caching package providing **InMemory**, **Redis**, 
 
 - **Branch:** Create a feature or bugfix branch from the default branch (e.g. `main`).
 - **Code style:** The solution uses **CodeStyle.NET** and central package management (`Directory.Packages.props`). Keep formatting and analyzer rules satisfied (fix any build or IDE warnings).
-- **API stability:** Prefer extending via **configuration** (`CacheOptions`), **per-call options** (`CacheCallOptions`), and **extension methods** rather than new members on `ICacheService`. See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for versioning and compatibility.
+- **API stability:** Prefer extending via **configuration** (`CacheOptions`), **per-call options** (`CacheCallOptions`), and **extension methods** rather than new members on `ICacheService`. See [docs/INTERNALS.md](docs/INTERNALS.md) for versioning and compatibility.
 - **Tests:** Add or update tests in `tests/Caching.NET.Tests` for new behavior or bug fixes. Use the existing patterns (xUnit, `ServiceCollection`/`IConfiguration` for DI tests).
-- **Docs:** Update [README.md](README.md) and [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) (and [docs/OPERATIONS.md](docs/OPERATIONS.md) if relevant) when changing configuration, behavior, or public API.
+- **Docs:** Update [README.md](README.md) and [docs/INTERNALS.md](docs/INTERNALS.md) (and [docs/OPERATIONS.md](docs/OPERATIONS.md) if relevant) when changing configuration, behavior, or public API.
 
 ## Submitting changes
 
@@ -69,7 +69,7 @@ Caching.NET is a shared .NET caching package providing **InMemory**, **Redis**, 
   - **MAJOR** – breaking API or behavior changes.
   - **MINOR** – backwards-compatible features or options.
   - **PATCH** – bug fixes and internal improvements.
-- Package version is set in [src/Caching.NET/Caching.NET.csproj](src/Caching.NET/Caching.NET.csproj). Release process and tagging are maintained by the maintainers.
+- Package version is set in [src/Caching.NET/Caching.NET.csproj](src/Caching.NET/Caching.NET.csproj). Release process and tagging are maintained by the maintainers. See [docs/INTERNALS.md](docs/INTERNALS.md#versioning-and-compatibility) for full versioning policy.
 
 ## Questions and issues
 

@@ -4,8 +4,8 @@
     <RepositoryUrl>https://github.com/baps-apps/caching-net.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
-    <IncludeSymbols>true</IncludeSymbols>
-    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <DebugType>embedded</DebugType>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
 
     <!-- Enterprise build hardening -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>

@@ -144,5 +144,49 @@ public class RoutingCacheServiceTests
         var next = await cache.GetOrCreateAsync("refresh:1", _ => Task.FromResult("never"));
         Assert.Equal("new", next);
     }
+
+    [Fact]
+    public async Task WhenDisabled_GetOrCreateAsync_AlwaysRunsFactory()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "false",
+            ["CacheOptions:Mode"] = "InMemory"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<ICacheService>();
+
+        var first = await cache.GetOrCreateAsync("disabled:1", _ => Task.FromResult("a"));
+        var second = await cache.GetOrCreateAsync("disabled:1", _ => Task.FromResult("b"));
+
+        Assert.Equal("a", first);
+        Assert.Equal("b", second);
+    }
+
+    [Fact]
+    public async Task WhenDisabled_SetAndRemove_AreNoOps()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "false",
+            ["CacheOptions:Mode"] = "InMemory"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<ICacheService>();
+
+        await cache.SetAsync("disabled:set", "value");
+        await cache.RemoveAsync("disabled:rem");
+        await cache.RemoveAsync(new[] { "disabled:rem1", "disabled:rem2" });
+        await cache.RemoveByTagAsync("tag");
+        await cache.RemoveByTagAsync(new[] { "tag1", "tag2" });
+    }
 }
 
