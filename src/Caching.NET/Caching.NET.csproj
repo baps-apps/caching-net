@@ -4,7 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>Caching.NET</PackageId>
-    <Version>1.0.0</Version>
+    <Version>2.0.0</Version>
     <Authors>BAPS Dev Team</Authors>
     <Description>Shared caching package: InMemory, Redis, and Hybrid (stampede protection) modes with ICacheService abstraction.</Description>
     <PackageTags>cache;caching;memory;redis;hybrid;distributed</PackageTags>
