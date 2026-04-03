@@ -2,7 +2,13 @@
 
 All notable changes to Caching.NET are documented in this file.
 
-The project follows [Semantic Versioning](https://semver.org/). See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for versioning policy.
+The project follows [Semantic Versioning](https://semver.org/). See [docs/INTERNALS.md](docs/INTERNALS.md) for versioning policy.
+
+## [Unreleased]
+
+### Changed
+
+- Renamed `docs/IMPLEMENTATION.md` to `docs/INTERNALS.md` and restructured all documentation to follow the shared package documentation template
 
 ## [1.0.0](https://github.com/baps-apps/caching-net/releases/tag/v1.0.0) - Initial release
 
@@ -31,8 +37,7 @@ The project follows [Semantic Versioning](https://semver.org/). See [docs/IMPLEM
 ### Documentation
 
 - [README.md](README.md) – quick start, configuration, per-call options, telemetry, security.
-- [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) – implementation details, modes, configuration, telemetry.
+- [docs/INTERNALS.md](docs/INTERNALS.md) – implementation details, modes, configuration, telemetry.
 - [docs/OPERATIONS.md](docs/OPERATIONS.md) – production runbooks (when present).
 
 ---
-
