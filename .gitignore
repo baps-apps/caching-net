@@ -36,4 +36,5 @@ coverage*.info
 ## Tooling / IDE metadata
 .cursor/
 .terraform/
+.worktrees/
 
