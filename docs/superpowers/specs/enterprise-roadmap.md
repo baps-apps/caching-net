@@ -7,13 +7,12 @@ This document captures deferred improvements identified during the API ergonomic
 
 ---
 
-## Round 1: API Ergonomics (Current)
+## Round 1: API Ergonomics
 
-**Spec:** `2026-04-02-api-ergonomics-design.md`
-**Status:** In progress
+**Status:** Complete (v2.0.0)
 
 - Fluent `CachingBuilder` API with zero-config defaults
-- Eliminate `NoOpCacheService` — `RoutingCacheService` always registered
+- `RoutingCacheService` always registered, short-circuits when disabled
 - Hot-reloadable `Enabled` flag via `IOptionsMonitor`
 - Config-file + fluent builder coexistence (fluent overrides config)
 - Sample project demonstrating all registration patterns

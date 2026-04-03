@@ -20,7 +20,7 @@ The project follows [Semantic Versioning](https://semver.org/). See [docs/INTERN
   - **Redis** – distributed Redis via `Microsoft.Extensions.Caching.StackExchangeRedis`.
   - **Hybrid** – in-memory + optional Redis with stampede protection via `Microsoft.Extensions.Caching.Hybrid`.
 - **CacheOptions** configuration bound from `CacheOptions` section:
-  - `Enabled` (default: `false`, opt-in) – when false, registers `NoOpCacheService`; invalid option values do not fail startup.
+  - `Enabled` (default: `false`, opt-in) – when false, `RoutingCacheService` short-circuits all operations; invalid option values do not fail startup.
   - `Mode` – InMemory, Redis, or Hybrid.
   - `DefaultExpiration` / `DefaultLocalExpiration` (TimeSpan format).
   - `RedisConnectionString`, `RedisInstanceName`, `MaximumPayloadBytes`, `MaximumKeyLength`, `MemorySizeLimitMb`.
