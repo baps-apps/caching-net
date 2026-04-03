@@ -8,8 +8,10 @@ namespace Caching.NET.Options;
 public class CacheOptions
 {
     /// <summary>
-    /// Whether caching is enabled. When false, a no-op cache service is registered.
-    /// Default: false (opt-in).
+    /// Whether caching is enabled. When false, <c>RoutingCacheService</c> short-circuits all operations:
+    /// <c>GetOrCreateAsync</c> runs the factory directly, and all other methods are no-ops.
+    /// <c>ICacheService</c> is always registered regardless of this flag.
+    /// Default: false (opt-in). The zero-config <c>AddCaching()</c> overload sets this to true.
     /// </summary>
     public bool Enabled { get; set; } = false;
 

@@ -158,42 +158,52 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<ICacheTelemetry, Caching.NET.Telemetry.NoopCacheTelemetry>();
         }
 
-        // 7. Register cache infrastructure based on effective mode
-        switch (effectiveOptions.Mode)
+        // 7. Register cache infrastructure based on effective mode.
+        // When disabled, only register minimal InMemory infrastructure (RoutingCacheService
+        // will short-circuit anyway, but services must be resolvable if Enabled is toggled on at runtime).
+        if (!effectiveOptions.Enabled)
         {
-            case CacheMode.InMemory:
-                AddMemoryCacheWithOptions(services, effectiveOptions);
-                services.TryAddSingleton<InMemoryCacheService>();
-                break;
+            AddMemoryCacheWithOptions(services, effectiveOptions);
+            services.TryAddSingleton<InMemoryCacheService>();
+        }
+        else
+        {
+            switch (effectiveOptions.Mode)
+            {
+                case CacheMode.InMemory:
+                    AddMemoryCacheWithOptions(services, effectiveOptions);
+                    services.TryAddSingleton<InMemoryCacheService>();
+                    break;
 
-            case CacheMode.Redis:
-                if (string.IsNullOrWhiteSpace(effectiveOptions.RedisConnectionString) && builder?.RedisConfigurationAction is null)
-                    throw new InvalidOperationException("CacheOptions.Mode is Redis but RedisConnectionString is not set.");
-                AddMemoryCacheWithOptions(services, effectiveOptions);
-                services.TryAddSingleton<InMemoryCacheService>();
-                ConfigureRedisCache(services, effectiveOptions, builder?.RedisConfigurationAction);
-                EnsureCacheSerializerOptions(services);
-                services.TryAddSingleton<RedisCacheService>();
-                break;
-
-            case CacheMode.Hybrid:
-                AddMemoryCacheWithOptions(services, effectiveOptions);
-                services.TryAddSingleton<InMemoryCacheService>();
-                ConfigureHybridCache(services, effectiveOptions, builder?.RedisConfigurationAction);
-                if (!string.IsNullOrWhiteSpace(effectiveOptions.RedisConnectionString) || builder?.RedisConfigurationAction is not null)
-                {
+                case CacheMode.Redis:
+                    if (string.IsNullOrWhiteSpace(effectiveOptions.RedisConnectionString) && builder?.RedisConfigurationAction is null)
+                        throw new InvalidOperationException("CacheOptions.Mode is Redis but RedisConnectionString is not set.");
+                    AddMemoryCacheWithOptions(services, effectiveOptions);
+                    services.TryAddSingleton<InMemoryCacheService>();
+                    ConfigureRedisCache(services, effectiveOptions, builder?.RedisConfigurationAction);
                     EnsureCacheSerializerOptions(services);
                     services.TryAddSingleton<RedisCacheService>();
-                }
-                services.TryAddSingleton<HybridCacheService>();
-                break;
+                    break;
 
-            default:
-                throw new InvalidOperationException($"Unsupported CacheOptions.Mode: {effectiveOptions.Mode}");
+                case CacheMode.Hybrid:
+                    AddMemoryCacheWithOptions(services, effectiveOptions);
+                    services.TryAddSingleton<InMemoryCacheService>();
+                    ConfigureHybridCache(services, effectiveOptions, builder?.RedisConfigurationAction);
+                    if (!string.IsNullOrWhiteSpace(effectiveOptions.RedisConnectionString) || builder?.RedisConfigurationAction is not null)
+                    {
+                        EnsureCacheSerializerOptions(services);
+                        services.TryAddSingleton<RedisCacheService>();
+                    }
+                    services.TryAddSingleton<HybridCacheService>();
+                    break;
+
+                default:
+                    throw new InvalidOperationException($"Unsupported CacheOptions.Mode: {effectiveOptions.Mode}");
+            }
         }
 
-        // 8. Always register RoutingCacheService as ICacheService
-        services.AddSingleton<ICacheService, RoutingCacheService>();
+        // 8. Always register RoutingCacheService as ICacheService (TryAdd for idempotency)
+        services.TryAddSingleton<ICacheService, RoutingCacheService>();
 
         // 9. Register health checks if requested via builder
         if (builder?.RegisterHealthChecks == true)

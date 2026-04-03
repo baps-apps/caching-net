@@ -29,7 +29,7 @@ dotnet pack src/Caching.NET/Caching.NET.csproj -c Release -o nupkgs  # create Nu
 ### DI Registration & Builder API
 
 `ServiceCollectionExtensions` provides four `AddCaching` overloads:
-- `AddCaching()` — zero-config: InMemory, enabled, 10-minute default expiration
+- `AddCaching()` — zero-config: Hybrid (in-memory only, no Redis), enabled, 10-minute default expiration
 - `AddCaching(IConfiguration)` — reads `CacheOptions` from config section
 - `AddCaching(Action<CachingBuilder>)` — fluent code-first configuration
 - `AddCaching(IConfiguration, Action<CachingBuilder>)` — config base + fluent overrides (fluent wins on conflict)

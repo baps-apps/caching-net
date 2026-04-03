@@ -172,4 +172,22 @@ public class CachingBuilderTests
         var third = await cache.GetOrCreateAsync("hotreload:1", _ => Task.FromResult("fresh"));
         Assert.Equal("fresh", third);
     }
+
+    [Fact]
+    public void AddCaching_DisabledWithRedisMode_DoesNotThrow()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "false",
+            ["CacheOptions:Mode"] = "Redis"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration);
+        using var provider = services.BuildServiceProvider();
+
+        var cache = provider.GetRequiredService<ICacheService>();
+        Assert.NotNull(cache);
+    }
 }
