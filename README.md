@@ -9,9 +9,11 @@ Consumer solutions reference **Caching.NET NuGet package** (from a feed or local
 - [Benefits](#benefits)
 - [Modes](#modes)
 - [Installation](#installation)
-- [Configuration](#configuration)
+- [Registration](#registration)
+- [Configuration Reference](#configuration-reference)
 - [Per-call options](#per-call-options)
 - [Telemetry](#telemetry)
+- [Health Checks](#health-checks)
 - [Operations](#operations)
 - [Security](#security)
 
@@ -22,34 +24,30 @@ This package is mainly a **standardization + maintenance win**: one tested imple
 - **Less duplicate code**: avoids re-creating the same cache glue (serialization, expirations, DI wiring, fallbacks) across multiple apps.
 - **Fewer production bugs**: fixes and behavior changes happen **once** in the shared package instead of being copied (and often diverging) across repos.
 - **Faster onboarding**: teams learn one API and one set of conventions; new services get caching by adding the package + configuration.
-- **Safer operations**: you can disable caching (`Enabled=false`) without changing application code, which helps during incidents and troubleshooting.
+- **Safer operations**: you can disable caching (`Enabled=false`) without changing application code — takes effect immediately without restart (hot-reloadable).
 - **Hybrid stampede protection**: prevents thundering-herd spikes on hot keys (many concurrent misses triggering the same expensive factory).
 
 It also improves runtime performance when caching is effective:
 
-- **Latency reduction on cache hits**: often **10×–100× faster** (memory/Redis lookup vs a DB/API call).
-- **Code saved**: this repo’s caching implementation is ~**980 lines of C#** under `src/Caching.NET` (excluding `bin/` and `obj/`). Reusing the package avoids re-writing and maintaining that caching plumbing in every application.
+- **Latency reduction on cache hits**: often **10x-100x faster** (memory/Redis lookup vs a DB/API call).
+- **Code saved**: this repo's caching implementation is ~**980 lines of C#** under `src/Caching.NET` (excluding `bin/` and `obj/`). Reusing the package avoids re-writing and maintaining that caching plumbing in every application.
 
 ## Modes
 
-
-| Mode         | Description                                                                                                                                                                                                                                                                                                                                         |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **InMemory** | In-process memory cache only. No distributed tier. Tag APIs are **ignored** (no-op); `localExpiration` parameters are accepted but ignored.                                                                                                                                                                                                         |
-| **Redis**    | Distributed Redis only. Requires `RedisConnectionString`. Serialization via System.Text.Json. Tag APIs are **ignored** (no-op); `localExpiration` parameters are accepted but ignored.                                                                                                                                                              |
+| Mode         | Description |
+| ------------ | ----------- |
+| **InMemory** | In-process memory cache only. No distributed tier. Tag APIs are **ignored** (no-op); `localExpiration` parameters are accepted but ignored. |
+| **Redis**    | Distributed Redis only. Requires `RedisConnectionString`. Serialization via System.Text.Json. Tag APIs are **ignored** (no-op); `localExpiration` parameters are accepted but ignored. |
 | **Hybrid**   | In-memory + optional Redis. Uses `Microsoft.Extensions.Caching.Hybrid` for stampede protection and two-tier caching. `expiration` controls the overall (distributed) lifetime; `localExpiration` controls the in-memory tier. **Tag APIs are supported** via HybridCache. Set `RedisConnectionString` to add Redis; omit for in-memory-only Hybrid. |
 
-
 ### Feature support by mode
-
 
 | Feature                       | InMemory        | Redis           | Hybrid    |
 | ----------------------------- | --------------- | --------------- | --------- |
 | `localExpiration` parameter   | Ignored         | Ignored         | Supported |
 | Tag APIs (`RemoveByTagAsync`) | Ignored (no-op) | Ignored (no-op) | Supported |
 
-
-When **Enabled** is false (the default), a no-op implementation (`NoOpCacheService`) is registered: `GetOrCreateAsync` always runs the factory, and `SetAsync` / `Remove`* are no-op. This allows consumers to keep depending on `ICacheService` without feature flags or null checks, and it means simply adding the package + `AddCaching` will not break applications that have not yet configured caching.
+When **Enabled** is false, `RoutingCacheService` short-circuits all operations: `GetOrCreateAsync` runs the factory directly, and all other methods are no-ops. `ICacheService` is always registered regardless of the `Enabled` flag, so consumers can depend on it without feature flags or null checks. The `Enabled` flag is **hot-reloadable** — flipping it in `appsettings.json` takes effect immediately without restart.
 
 See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for detailed behavior of each mode and type.
 
@@ -73,54 +71,133 @@ Create a PAT at: `https://github.com/settings/tokens` (requires `read:packages` 
 dotnet add package Caching.NET --source github
 ```
 
-Consumers reference the **Caching.NET NuGet package**, not a project reference.
+## Registration
 
-## Quick Start
+Caching.NET provides four `AddCaching` overloads through a fluent builder API. Pick the pattern that fits your app.
 
-### 1. Configure `appsettings.json`
+### Zero-config (prototyping / simple apps)
 
-Minimal Hybrid configuration with sensible defaults (explicitly enabling caching):
-
-```json
-{
-  "CacheOptions": {
-    "Enabled": true,
-    "Mode": "Hybrid",
-    "RedisConnectionString": "localhost:6379",
-    "RedisInstanceName": "myapp:",
-    "DefaultExpiration": "00:10:00",
-    "DefaultLocalExpiration": "00:05:00"
-  }
-}
-```
-
-> For InMemory/Redis-only examples and advanced options (e.g., `MaximumPayloadBytes`, `MaximumKeyLength`), see the **Configuration** section below.
-
-### 2. Add to `Program.cs`
+Hybrid mode (in-memory only), enabled, 10-minute default expiration. No appsettings section needed.
 
 ```csharp
-using Caching.NET.Abstractions;
-using Caching.NET.Extensions;
+builder.Services.AddCaching();
+```
 
-var builder = WebApplication.CreateBuilder(args);
+### Config-file driven
 
-// Register Caching.NET using configuration-bound CacheOptions
+Reads from the `CacheOptions` section in `appsettings.json`.
+
+```csharp
 builder.Services.AddCaching(builder.Configuration);
-
-builder.Services.AddControllers();
-
-var app = builder.Build();
-
-app.MapControllers();
-
-app.Run();
 ```
 
-Inject and use `ICacheService` in your application services or controllers:
+### Fluent code-first
+
+Programmatic configuration with IntelliSense. No config file needed.
 
 ```csharp
-using Caching.NET.Abstractions;
+builder.Services.AddCaching(cache => cache
+    .UseInMemory()
+    .WithDefaultExpiration(TimeSpan.FromMinutes(15))
+    .WithMemorySizeLimit(256)
+    .WithMaximumKeyLength(512)
+    .WithFactoryTimeout(TimeSpan.FromSeconds(30))
+    .WithOpenTelemetry()
+    .WithHealthChecks());
+```
 
+### Config-file + fluent overrides (recommended)
+
+Base configuration from `appsettings.json`, with fluent additions. Fluent settings take precedence on conflict.
+
+```csharp
+builder.Services.AddCaching(builder.Configuration, cache => cache
+    .WithOpenTelemetry()
+    .WithHealthChecks());
+```
+
+### All builder methods
+
+| Method | Description |
+|--------|-------------|
+| `UseInMemory()` | Set mode to InMemory |
+| `UseRedis(string connectionString)` | Set mode to Redis with connection string |
+| `UseRedis(Action<ConfigurationOptions>)` | Set mode to Redis with programmatic StackExchange.Redis config |
+| `UseHybrid()` | Set mode to Hybrid (in-memory only, no Redis) |
+| `UseHybrid(string connectionString)` | Set mode to Hybrid with Redis backend |
+| `WithDefaultExpiration(TimeSpan)` | Default TTL for cache entries |
+| `WithDefaultLocalExpiration(TimeSpan)` | Default TTL for the in-memory tier in Hybrid mode |
+| `WithMaximumPayloadBytes(long)` | Skip caching entries larger than this |
+| `WithMaximumKeyLength(int)` | Reject keys longer than this |
+| `WithMemorySizeLimit(int mb)` | Cap IMemoryCache size in MB |
+| `WithFactoryTimeout(TimeSpan)` | Cancel slow factories after this duration |
+| `WithInstanceName(string)` | Redis key prefix for multi-service clusters |
+| `WithStrictCertificateValidation()` | Enforce strict TLS certificate validation for Redis |
+| `WithOpenTelemetry()` | Enable metrics and traces via `System.Diagnostics` |
+| `WithHealthChecks(string name)` | Register ASP.NET Core health check |
+| `Disable()` | Explicitly disable caching (factory passthrough) |
+
+### Complete examples
+
+**Redis with full options:**
+
+```csharp
+builder.Services.AddCaching(cache => cache
+    .UseRedis("localhost:6379,abortConnect=false")
+    .WithInstanceName("myapp:")
+    .WithDefaultExpiration(TimeSpan.FromMinutes(10))
+    .WithMaximumPayloadBytes(5_000_000)
+    .WithMaximumKeyLength(1024)
+    .WithStrictCertificateValidation()
+    .WithOpenTelemetry()
+    .WithHealthChecks());
+```
+
+**Redis with programmatic ConfigurationOptions:**
+
+```csharp
+builder.Services.AddCaching(cache => cache
+    .UseRedis(redis =>
+    {
+        redis.EndPoints.Add("redis-primary", 6379);
+        redis.EndPoints.Add("redis-replica", 6380);
+        redis.Password = Environment.GetEnvironmentVariable("REDIS_PASSWORD");
+        redis.ConnectTimeout = 5000;
+        redis.SyncTimeout = 3000;
+        redis.AbortOnConnectFail = false;
+    })
+    .WithInstanceName("myapp:")
+    .WithOpenTelemetry());
+```
+
+**Hybrid (production — two-tier with Redis):**
+
+```csharp
+builder.Services.AddCaching(cache => cache
+    .UseHybrid("localhost:6379")
+    .WithDefaultExpiration(TimeSpan.FromMinutes(15))
+    .WithDefaultLocalExpiration(TimeSpan.FromMinutes(5))
+    .WithInstanceName("myapp:")
+    .WithMemorySizeLimit(128)
+    .WithMaximumPayloadBytes(10_000_000)
+    .WithFactoryTimeout(TimeSpan.FromSeconds(30))
+    .WithOpenTelemetry()
+    .WithHealthChecks());
+```
+
+**Explicitly disabled (testing / staging):**
+
+```csharp
+builder.Services.AddCaching(cache => cache.Disable());
+```
+
+`ICacheService` still resolves — all calls pass through to factories.
+
+### Quick start
+
+Inject and use `ICacheService` in any service or controller:
+
+```csharp
 public class MyService(ICacheService cache)
 {
     public async Task<MyDto> GetAsync(string id, CancellationToken ct)
@@ -128,63 +205,43 @@ public class MyService(ICacheService cache)
         return await cache.GetOrCreateAsync(
             "item:" + id,
             async _ => await LoadFromDb(id, ct),
-            expiration: TimeSpan.FromMinutes(10),          // overall expiration
-            localExpiration: TimeSpan.FromMinutes(5),      // for Hybrid: in-memory tier expiration (ignored by InMemory/Redis)
+            expiration: TimeSpan.FromMinutes(10),
+            localExpiration: TimeSpan.FromMinutes(5),
             cancellationToken: ct);
     }
 }
 ```
 
-### 3. Run and verify
+### Startup validation
 
-```bash
-dotnet run
+Call `ValidateCacheRegistration()` after building the host to fail fast on DI misconfiguration:
+
+```csharp
+var app = builder.Build();
+app.Services.ValidateCacheRegistration();
 ```
 
-### 4. Redis-focused sample wiring
+## Configuration Reference
 
-The `Caching.NET.Sample` project shows a typical ASP.NET Core app configured for Hybrid (in-memory + Redis):
+All options available in the `CacheOptions` section of `appsettings.json`:
 
-- `samples/Caching.NET.Sample/appsettings.json` contains a `CacheOptions` section with:
-  - `Mode = "Hybrid"`
-  - `RedisConnectionString = "localhost:6379"` (replace with your connection string, ideally from secrets)
-  - `RedisInstanceName = "sampleapp:"`
-- `Program.cs` registers:
-  - `AddCaching(builder.Configuration)`
-  - `AddHealthChecks().AddCachingHealthChecks("caching-net")`
-  - `MapHealthChecks("/health")`
-- `WeatherForecastController` demonstrates `ICacheService.GetOrCreateAsync` with both `expiration` and `localExpiration`, which is especially useful in Hybrid mode (in-memory + Redis).
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Enabled` | `bool` | `false` | Enable/disable caching. Hot-reloadable at runtime. |
+| `Mode` | `string` | `Hybrid` | `InMemory`, `Redis`, or `Hybrid` |
+| `DefaultExpiration` | `string` | — | Default TTL (e.g. `"00:10:00"` for 10 min). Falls back to 10 min if unset. |
+| `DefaultLocalExpiration` | `string` | — | In-memory tier TTL for Hybrid (e.g. `"00:05:00"`). Falls back to 5 min if unset. |
+| `RedisConnectionString` | `string` | — | Required for Redis mode; optional for Hybrid (omit for in-memory-only). |
+| `RedisInstanceName` | `string` | — | Key prefix for multi-service clusters (e.g. `"myapp:"`). |
+| `MaximumPayloadBytes` | `long` | — | Skip caching entries larger than this (min 1024). |
+| `MaximumKeyLength` | `int` | — | Bypass cache for keys longer than this (1–4096). |
+| `MemorySizeLimitMb` | `int` | — | Cap IMemoryCache at this many MB. |
+| `FactoryTimeout` | `string` | — | Cancel slow factories (e.g. `"00:00:30"`). Max 5 min. |
+| `FailOpen` | `bool` | `true` | Fall back to factory on cache failure instead of throwing. |
+| `ThrowOnFailure` | `bool` | `false` | Throw on cache failures (only applies when `FailOpen=false`). |
+| `StrictRedisCertificateValidation` | `bool` | `false` | Reject any TLS certificate errors including hostname mismatches. |
 
-## Configuration
-
-Use the **CacheOptions** section (constant: `Caching.NET.Configuration.CacheConfigurationKeys.CacheOptions`). Caching is **opt-in**: `Enabled` defaults to `false`, so you must explicitly set `"Enabled": true` in configuration to turn the pipeline on.
-
-### Example: InMemory
-
-```json
-{
-  "CacheOptions": {
-    "Enabled": true,
-    "Mode": "InMemory",
-    "DefaultExpiration": "00:10:00"
-  }
-}
-```
-
-### Example: Redis
-
-```json
-{
-  "CacheOptions": {
-    "Enabled": true,
-    "Mode": "Redis",
-    "RedisConnectionString": "localhost:6379",
-    "DefaultExpiration": "00:10:00"
-  }
-}
-```
-
-### Example: Hybrid (in-memory + Redis)
+### Example: Hybrid with Redis
 
 ```json
 {
@@ -203,144 +260,130 @@ Use the **CacheOptions** section (constant: `Caching.NET.Configuration.CacheConf
 
 Omit `RedisConnectionString` for Hybrid to run in-memory-only (still with stampede protection).
 
-Optional: `MaximumPayloadBytes`, `MaximumKeyLength` (for Hybrid).
+### Redis serialization
 
-### Per-call options
+To use custom JSON options for Redis, register `CacheSerializerOptions` before or after `AddCaching`:
 
-Use **`CacheCallOptions`** with the extension overloads for enterprise patterns:
+```csharp
+builder.Services.Configure<Caching.NET.Options.CacheSerializerOptions>(o =>
+{
+    o.JsonSerializerOptions = new System.Text.Json.JsonSerializerOptions
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+    };
+});
+```
+
+## Per-call options
+
+Use `CacheCallOptions` with the extension overloads for per-request control:
 
 | Option | Description |
 |--------|-------------|
 | **OverrideMode** | Use a different cache mode for this call (e.g. `Hybrid` → `InMemory` for a single key). |
-| **BypassCache** | When `true`, the cache is not read or written; the factory is always run and the result returned without caching. Use for debugging or emergency "cache off" at a callsite. |
-| **ForceRefresh** | When `true`, the factory is always run; the result is then written to the cache and returned. Use to refresh stale data without removing the key first. |
-
-Example: override mode and bypass cache
+| **BypassCache** | Skip the cache entirely — factory always runs, result is not cached. |
+| **ForceRefresh** | Factory always runs; result is written back to the cache. Use to refresh stale data. |
 
 ```csharp
 using Caching.NET.Extensions;
 using Caching.NET.Options;
 
-public class MyService(ICacheService cache)
-{
-    public Task<MyDto> GetHotLocalOnlyAsync(string id, CancellationToken ct)
-    {
-        var callOptions = new CacheCallOptions { OverrideMode = CacheMode.InMemory };
-        return cache.GetOrCreateAsync(
-            "hot:" + id,
-            async _ => await LoadFromDb(id, ct),
-            callOptions,
-            expiration: TimeSpan.FromMinutes(5),
-            localExpiration: TimeSpan.FromMinutes(5),
-            cancellationToken: ct);
-    }
+// Force a specific key to use InMemory regardless of global mode
+var callOptions = new CacheCallOptions { OverrideMode = CacheMode.InMemory };
+var result = await cache.GetOrCreateAsync(
+    "hot:" + id,
+    async _ => await LoadFromDb(id, ct),
+    callOptions,
+    expiration: TimeSpan.FromMinutes(5),
+    cancellationToken: ct);
 
-    public Task<MyDto> GetBypassingCacheAsync(string id, CancellationToken ct)
-    {
-        var callOptions = new CacheCallOptions { BypassCache = true };
-        return cache.GetOrCreateAsync(
-            "item:" + id,
-            async _ => await LoadFromDb(id, ct),
-            callOptions,
-            expiration: TimeSpan.FromMinutes(10),
-            cancellationToken: ct);
-    }
-}
-```
-
-### Startup validation (optional)
-
-After building the service provider (e.g. in `Program.cs`), call **`app.Services.ValidateCacheRegistration()`** to ensure `ICacheService` resolves and the configured mode is available. Fails fast on DI misconfiguration; does not probe Redis. See [docs/OPERATIONS.md](docs/OPERATIONS.md).
-
-### Redis serialization
-
-To use custom JSON options for Redis, register **`CacheSerializerOptions`** before or after `AddCaching`:
-
-```csharp
-builder.Services.Configure<Caching.NET.Options.CacheSerializerOptions>(o =>
-{
-    o.JsonSerializerOptions = new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase };
-});
-builder.Services.AddCaching(builder.Configuration);
+// Bypass cache entirely for debugging
+var callOptions = new CacheCallOptions { BypassCache = true };
+var result = await cache.GetOrCreateAsync(
+    "item:" + id,
+    async _ => await LoadFromDb(id, ct),
+    callOptions,
+    cancellationToken: ct);
 ```
 
 ## Telemetry
 
-Caching.NET does not take a hard dependency on any specific telemetry stack, but it provides a small telemetry abstraction and a default implementation:
-
-- `ICacheTelemetry` – abstraction for cache hits, misses, errors, and factory timeouts.
-- `NoopCacheTelemetry` – default no-op implementation registered by `AddCaching`.
-- `OpenTelemetryCacheTelemetry` – optional implementation that uses `Meter` + `ActivitySource` so your existing OpenTelemetry.NET setup can export cache metrics and spans.
-
-To enable OpenTelemetry-style telemetry:
+Caching.NET provides opt-in observability via the `ICacheTelemetry` abstraction. Enable it with one builder call:
 
 ```csharp
-using Caching.NET.Abstractions;
-using Caching.NET.Telemetry;
-
-var builder = WebApplication.CreateBuilder(args);
-
-builder.Services.AddSingleton<ICacheTelemetry, OpenTelemetryCacheTelemetry>();
-builder.Services.AddCaching(builder.Configuration);
+builder.Services.AddCaching(cache => cache
+    .UseHybrid()
+    .WithOpenTelemetry());
 ```
 
-Then configure your OpenTelemetry `MeterProvider` / `TracerProvider` to listen to:
-
-- Meter name: `Caching.NET.Cache`
-- Activity source: `Caching.NET.Cache`
-
-See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for full details on emitted metrics, tags, and spans.
-
-## Golden path integration (recommended pattern)
-
-A typical ASP.NET Core service using Caching.NET, health checks, and optional telemetry:
+Then register the meter and activity source in your OpenTelemetry SDK:
 
 ```csharp
-using Caching.NET.Abstractions;
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics => metrics.AddMeter("Caching.NET.Cache"))
+    .WithTracing(tracing => tracing.AddSource("Caching.NET.Cache"));
+```
+
+Emits four counters (`cache.requests`, `cache.hits`, `cache.misses`, `cache.failures`) and error-only traces. Without `WithOpenTelemetry()`, a zero-cost no-op is used.
+
+For full details — metrics reference, trace tags, custom providers, dashboard queries, and alerting recommendations — see **[docs/TELEMETRY.md](docs/TELEMETRY.md)**.
+
+## Health Checks
+
+Caching.NET includes a built-in health check that verifies the cache pipeline is operational:
+
+```csharp
+builder.Services.AddCaching(cache => cache
+    .UseHybrid("localhost:6379")
+    .WithHealthChecks());
+
+var app = builder.Build();
+app.MapHealthChecks("/health");
+```
+
+The health probe runs a lightweight `GetOrCreateAsync` on a synthetic key. It respects `FailOpen` semantics — when `FailOpen=true` (default) and Redis is down, the probe still reports healthy because requests will succeed via factory fallback.
+
+For full details — probe logic, FailOpen interaction, Kubernetes probes, combining with Redis health checks, and troubleshooting — see **[docs/HEALTH-CHECKS.md](docs/HEALTH-CHECKS.md)**.
+
+## Golden path (recommended production setup)
+
+```csharp
 using Caching.NET.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Bind and register CacheOptions + ICacheService (InMemory, Redis, or Hybrid)
-builder.Services.AddCaching(builder.Configuration);
-
-// Optional: Redis health check (requires AspNetCore HealthChecks Redis package)
-builder.Services.AddHealthChecks()
-    .AddRedis(
-        redisConnectionString: builder.Configuration["CacheOptions:RedisConnectionString"]!,
-        name: "redis");
-
-// Optional: add your own OpenTelemetry decorator around ICacheService (see docs/IMPLEMENTATION.md)
+builder.Services.AddCaching(builder.Configuration, cache => cache
+    .WithOpenTelemetry()
+    .WithHealthChecks());
 
 builder.Services.AddControllers();
 
 var app = builder.Build();
 
-// Fail fast if cache registration is misconfigured
 app.Services.ValidateCacheRegistration();
-
 app.MapHealthChecks("/health");
 app.MapControllers();
 
 app.Run();
 ```
 
-In a controller or service:
+With `appsettings.json`:
 
-```csharp
-public class WeatherService(ICacheService cache)
+```json
 {
-    public Task<WeatherDto[]> GetFiveDayAsync(CancellationToken ct)
-    {
-        return cache.GetOrCreateAsync(
-            "weather:5day",
-            async _ => await LoadFromApiAsync(ct),
-            expiration: TimeSpan.FromMinutes(5),
-            localExpiration: TimeSpan.FromMinutes(2),
-            cancellationToken: ct);
-    }
+  "CacheOptions": {
+    "Enabled": true,
+    "Mode": "Hybrid",
+    "RedisConnectionString": "localhost:6379",
+    "RedisInstanceName": "myapp:",
+    "DefaultExpiration": "00:10:00",
+    "DefaultLocalExpiration": "00:05:00"
+  }
 }
 ```
+
+This gives you config-driven mode/connection with fluent opt-in for telemetry and health checks. Disable caching at runtime by setting `Enabled=false` in appsettings — no restart required.
 
 ## Operations
 
@@ -349,7 +392,8 @@ For production runbooks (switching modes, disabling cache during incidents, inte
 ## Security
 
 - **Do not cache secrets** (tokens, passwords, API keys). Avoid caching PII in shared caches; the library truncates keys in logs to reduce exposure.
-- **Redis key prefixing:** Use **`RedisInstanceName`** (e.g. `myservice:`) so keys are namespaced per application or tenant. See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) and [docs/OPERATIONS.md](docs/OPERATIONS.md).
+- **Redis key prefixing:** Use `WithInstanceName()` or `RedisInstanceName` (e.g. `"myapp:"`) so keys are namespaced per application or tenant.
+- **TLS:** Use `WithStrictCertificateValidation()` in production to enforce strict Redis TLS validation.
 
 ## Versioning and compatibility
 
@@ -357,4 +401,4 @@ For production runbooks (switching modes, disabling cache during incidents, inte
   - **MAJOR:** breaking API/behavior changes (for example, `ICacheService` semantics).
   - **MINOR:** new features and configuration options, backwards compatible.
   - **PATCH:** bug fixes and internal improvements only.
-- The library currently targets **.NET 10** (`net10.0`) for the core package, tests, and sample app. Future versions may multi-target additional TFMs; see [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for details.
+- The library currently targets **.NET 10** (`net10.0`) for the core package, tests, and sample app.
