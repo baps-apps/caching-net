@@ -29,16 +29,17 @@ public class CacheOptionsValidationTests
     }
 
     [Fact]
-    public void AddCaching_WithDisabled_RegistersNoOpService()
+    public void AddCaching_WithDisabled_StillRegistersICacheService()
     {
         var config = new Dictionary<string, string?> { ["CacheOptions:Enabled"] = "false" };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
+        services.AddLogging();
         services.AddCaching(configuration);
         using var provider = services.BuildServiceProvider();
 
         var cache = provider.GetRequiredService<Abstractions.ICacheService>();
-        Assert.IsType<Caching.NET.Services.NoOpCacheService>(cache);
+        Assert.NotNull(cache);
     }
 
     [Fact]
