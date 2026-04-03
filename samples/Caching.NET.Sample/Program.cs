@@ -1,59 +1,71 @@
-using Caching.NET.Abstractions;
 using Caching.NET.Extensions;
-using Caching.NET.Options;
 
 namespace Caching.NET.Sample;
 
 /// <summary>
 /// Entry point for the Caching.NET sample web application.
-/// Demonstrates how to wire up Caching.NET in an ASP.NET Core host using
-/// <c>AddCaching</c>, health checks, and optional OpenTelemetry telemetry.
+/// Demonstrates all supported registration patterns for Caching.NET.
 /// </summary>
 public class Program
 {
     /// <summary>Builds and runs the sample web host.</summary>
-    /// <param name="args">Command-line arguments forwarded to <see cref="WebApplication.CreateBuilder(string[])"/>.</param>
     public static void Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
 
-        // Add services to the container.
-        // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
         builder.Services.AddOpenApi();
 
-        // Register Caching.NET using configuration-bound CacheOptions
-        builder.Services.AddCaching(builder.Configuration);
+        // ────────────────────────────────────────────────────────────
+        // Caching.NET Registration — pick ONE of the examples below.
+        // ────────────────────────────────────────────────────────────
 
-        // Optionally enable OpenTelemetry-style cache telemetry by registering
-        // an ICacheTelemetry implementation before or after AddCaching, e.g.:
+        // Example 1: Zero-config (InMemory, enabled, sensible defaults)
+        //   No appsettings section needed. Great for prototyping or simple apps.
         //
-        // builder.Services.AddSingleton<ICacheTelemetry, Caching.NET.Telemetry.OpenTelemetryCacheTelemetry>();
-        //
-        // and configure your OpenTelemetry Meter/Tracer providers to consume
-        // the "Caching.NET.Cache" meter and activity source.
+        // builder.Services.AddCaching();
 
-        // Health checks: monitor both the Caching.NET pipeline and Redis connectivity.
-        builder.Services.AddHealthChecks()
-            .AddCachingHealthChecks(name: "caching-net");
+        // Example 2: Config-file driven
+        //   Reads CacheOptions from appsettings.json. Existing approach — fully supported.
+        //
+        // builder.Services.AddCaching(builder.Configuration);
+
+        // Example 3: Fluent code-first
+        //   Programmatic configuration with IntelliSense. No config file needed.
+        //
+        // builder.Services.AddCaching(cache => cache
+        //     .UseHybrid("localhost:6379")
+        //     .WithDefaultExpiration(TimeSpan.FromMinutes(15))
+        //     .WithDefaultLocalExpiration(TimeSpan.FromMinutes(5))
+        //     .WithInstanceName("sampleapp:")
+        //     .WithOpenTelemetry()
+        //     .WithHealthChecks());
+
+        // Example 4: Config-file + fluent overrides (recommended for production)
+        //   Base configuration from appsettings.json, with fluent additions.
+        //   Fluent settings override config-file values on conflict.
+        builder.Services.AddCaching(builder.Configuration, cache => cache
+            .WithOpenTelemetry()
+            .WithHealthChecks());
+
+        // Example 5: Explicitly disabled (for testing/staging)
+        //   ICacheService still resolves — all calls pass through to factories.
+        //
+        // builder.Services.AddCaching(cache => cache.Disable());
 
         builder.Services.AddControllers();
 
         var app = builder.Build();
 
-        // Optional: validate cache registration at startup (fails fast on DI misconfiguration)
+        // Validate cache registration at startup (fails fast on DI misconfiguration)
         app.Services.ValidateCacheRegistration();
 
-        // Configure the HTTP request pipeline.
         if (app.Environment.IsDevelopment())
         {
             app.MapOpenApi();
         }
 
         app.UseHttpsRedirection();
-
-        // Expose health endpoint for Kubernetes or other orchestrators.
         app.MapHealthChecks("/health");
-
         app.MapControllers();
 
         app.Run();
