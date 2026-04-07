@@ -10,35 +10,19 @@ namespace Caching.NET.Services;
 /// cache implementations based on the application-level <see cref="CacheOptions.Mode"/>
 /// and optional per-call <see cref="CacheCallOptions"/> overrides.
 /// </summary>
-internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
+internal sealed class RoutingCacheService(
+    IOptionsMonitor<CacheOptions> optionsMonitor,
+    ILogger<RoutingCacheService> logger,
+    ICacheTelemetry telemetry,
+    InMemoryCacheService? inMemory = null,
+    RedisCacheService? redis = null,
+    HybridCacheService? hybrid = null) : ICacheService, IRoutingCacheService
 {
-    private readonly IOptionsMonitor<CacheOptions> _optionsMonitor;
-    private readonly CacheOptions _startupOptions;
-    private readonly ILogger<RoutingCacheService> _logger;
-    private readonly Abstractions.ICacheTelemetry _telemetry;
-    private readonly InMemoryCacheService? _inMemory;
-    private readonly RedisCacheService? _redis;
-    private readonly HybridCacheService? _hybrid;
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, System.Threading.SemaphoreSlim> _keyLocks = new(StringComparer.Ordinal);
+    private readonly CacheOptions _startupOptions = optionsMonitor.CurrentValue;
+    private readonly ILogger<RoutingCacheService> _logger = logger;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _keyLocks = new(StringComparer.Ordinal);
 
-    public RoutingCacheService(
-        IOptionsMonitor<CacheOptions> optionsMonitor,
-        ILogger<RoutingCacheService> logger,
-        Abstractions.ICacheTelemetry telemetry,
-        InMemoryCacheService? inMemory = null,
-        RedisCacheService? redis = null,
-        HybridCacheService? hybrid = null)
-    {
-        _optionsMonitor = optionsMonitor ?? throw new ArgumentNullException(nameof(optionsMonitor));
-        _startupOptions = optionsMonitor.CurrentValue;
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _telemetry = telemetry ?? throw new ArgumentNullException(nameof(telemetry));
-        _inMemory = inMemory;
-        _redis = redis;
-        _hybrid = hybrid;
-    }
-
-    private bool IsDisabled => !_optionsMonitor.CurrentValue.Enabled;
+    private bool IsDisabled => !optionsMonitor.CurrentValue.Enabled;
 
     /// <inheritdoc />
     public Task<T> GetOrCreateAsync<T>(
@@ -79,7 +63,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
             {
                 if (ct.CanBeCanceled && _startupOptions.GetFactoryTimeout() is { } timeout)
                 {
-                    _telemetry.OnFactoryTimeout(key, "Routing", timeout);
+                    telemetry.OnFactoryTimeout(key, "Routing", timeout);
                 }
                 return await factory(ct).ConfigureAwait(false);
             }
@@ -94,7 +78,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         // Optional per-key concurrency coalescing for non-Hybrid modes (and available for Hybrid as well).
         if (callOptions?.CoalesceConcurrent == true)
         {
-            var semaphore = _keyLocks.GetOrAdd(key, _ => new System.Threading.SemaphoreSlim(1, 1));
+            var semaphore = _keyLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
             await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -105,7 +89,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
                     {
                         T value = await factory(ct).ConfigureAwait(false);
                         await service.SetAsync(key, value, expiration, localExpiration, ct).ConfigureAwait(false);
-                        _telemetry.OnCacheSet(key, "Routing");
+                        telemetry.OnCacheSet(key, "Routing");
                         return value;
                     }
                     finally
@@ -147,7 +131,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
             {
                 T value = await factory(ct).ConfigureAwait(false);
                 await service.SetAsync(key, value, expiration, localExpiration, ct).ConfigureAwait(false);
-                _telemetry.OnCacheSet(key, "Routing");
+                telemetry.OnCacheSet(key, "Routing");
                 return value;
             }
             finally
@@ -243,9 +227,9 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
 
         return mode switch
         {
-            CacheMode.InMemory when _inMemory is not null => _inMemory,
-            CacheMode.Redis when _redis is not null => _redis,
-            CacheMode.Hybrid when _hybrid is not null => _hybrid,
+            CacheMode.InMemory when inMemory is not null => inMemory,
+            CacheMode.Redis when redis is not null => redis,
+            CacheMode.Hybrid when hybrid is not null => hybrid,
             _ => ResolveDefaultService()
         };
     }
@@ -253,34 +237,34 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     private ICacheService ResolveDefaultService()
     {
         // Fall back to the application-level mode, or a sensible default when misconfigured.
-        if (_startupOptions.Mode == CacheMode.InMemory && _inMemory is not null)
+        if (_startupOptions.Mode == CacheMode.InMemory && inMemory is not null)
         {
-            return _inMemory;
+            return inMemory;
         }
 
-        if (_startupOptions.Mode == CacheMode.Redis && _redis is not null)
+        if (_startupOptions.Mode == CacheMode.Redis && redis is not null)
         {
-            return _redis;
+            return redis;
         }
 
-        if (_startupOptions.Mode == CacheMode.Hybrid && _hybrid is not null)
+        if (_startupOptions.Mode == CacheMode.Hybrid && hybrid is not null)
         {
-            return _hybrid;
+            return hybrid;
         }
 
-        if (_inMemory is not null)
+        if (inMemory is not null)
         {
-            return _inMemory;
+            return inMemory;
         }
 
-        if (_redis is not null)
+        if (redis is not null)
         {
-            return _redis;
+            return redis;
         }
 
-        if (_hybrid is not null)
+        if (hybrid is not null)
         {
-            return _hybrid;
+            return hybrid;
         }
 
         var mode = _startupOptions.Mode;

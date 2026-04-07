@@ -3,7 +3,6 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.ComponentModel.DataAnnotations;
-using System.Collections.Generic;
 using StackExchange.Redis;
 using Caching.NET.Abstractions;
 using Caching.NET.Configuration;
@@ -76,7 +75,7 @@ public static class ServiceCollectionExtensions
             throw new ArgumentNullException(nameof(builder));
         }
 
-        return builder.AddCheck<Caching.NET.Health.CachingHealthCheck>(
+        return builder.AddCheck<Health.CachingHealthCheck>(
             name: name,
             failureStatus: failureStatus);
     }
@@ -151,11 +150,11 @@ public static class ServiceCollectionExtensions
         // 6. Register telemetry
         if (builder?.RegisterOpenTelemetry == true)
         {
-            services.TryAddSingleton<ICacheTelemetry, Caching.NET.Telemetry.OpenTelemetryCacheTelemetry>();
+            services.TryAddSingleton<ICacheTelemetry, Telemetry.OpenTelemetryCacheTelemetry>();
         }
         else
         {
-            services.TryAddSingleton<ICacheTelemetry, Caching.NET.Telemetry.NoopCacheTelemetry>();
+            services.TryAddSingleton<ICacheTelemetry, Telemetry.NoopCacheTelemetry>();
         }
 
         // 7. Register cache infrastructure based on effective mode.

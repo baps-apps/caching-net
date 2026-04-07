@@ -60,7 +60,7 @@ public class ProductCatalogController : ControllerBase
 
         return cache.GetOrCreateAsync(
             key: "catalog:featured",
-            factory: _ => Task.FromResult<IEnumerable<Product>>(AllProducts.Take(2)),
+            factory: _ => Task.FromResult(AllProducts.Take(2)),
             callOptions: callOptions,
             expiration: TimeSpan.FromMinutes(2),
             localExpiration: null,

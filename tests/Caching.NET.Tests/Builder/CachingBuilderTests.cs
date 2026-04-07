@@ -102,7 +102,7 @@ public class CachingBuilderTests
         using var provider = services.BuildServiceProvider();
 
         var telemetry = provider.GetRequiredService<ICacheTelemetry>();
-        Assert.IsType<Caching.NET.Telemetry.OpenTelemetryCacheTelemetry>(telemetry);
+        Assert.IsType<Telemetry.OpenTelemetryCacheTelemetry>(telemetry);
     }
 
     [Fact]

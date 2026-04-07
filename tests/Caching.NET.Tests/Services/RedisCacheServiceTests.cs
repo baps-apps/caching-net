@@ -17,9 +17,9 @@ public class RedisCacheServiceTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IDistributedCache, FakeDistributedCache>();
-        services.AddSingleton<ICacheTelemetry, Caching.NET.Telemetry.NoopCacheTelemetry>();
-        services.AddSingleton<IOptions<CacheOptions>>(Microsoft.Extensions.Options.Options.Create(new CacheOptions()));
-        services.Configure<Caching.NET.Options.CacheSerializerOptions>(_ => { });
+        services.AddSingleton<ICacheTelemetry, Telemetry.NoopCacheTelemetry>();
+        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new CacheOptions()));
+        services.Configure<CacheSerializerOptions>(_ => { });
         services.AddSingleton<RedisCacheService>();
 
         await using var provider = services.BuildServiceProvider();
@@ -42,9 +42,9 @@ public class RedisCacheServiceTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(mockCache.Object);
-        services.AddSingleton<ICacheTelemetry, Caching.NET.Telemetry.NoopCacheTelemetry>();
-        services.AddSingleton<IOptions<CacheOptions>>(Microsoft.Extensions.Options.Options.Create(new CacheOptions { FailOpen = true }));
-        services.Configure<Caching.NET.Options.CacheSerializerOptions>(_ => { });
+        services.AddSingleton<ICacheTelemetry, Telemetry.NoopCacheTelemetry>();
+        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new CacheOptions { FailOpen = true }));
+        services.Configure<CacheSerializerOptions>(_ => { });
         services.AddSingleton<RedisCacheService>();
 
         await using var provider = services.BuildServiceProvider();
@@ -64,9 +64,9 @@ public class RedisCacheServiceTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(mockCache.Object);
-        services.AddSingleton<ICacheTelemetry, Caching.NET.Telemetry.NoopCacheTelemetry>();
-        services.AddSingleton<IOptions<CacheOptions>>(Microsoft.Extensions.Options.Options.Create(new CacheOptions { FailOpen = false, ThrowOnFailure = true }));
-        services.Configure<Caching.NET.Options.CacheSerializerOptions>(_ => { });
+        services.AddSingleton<ICacheTelemetry, Telemetry.NoopCacheTelemetry>();
+        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new CacheOptions { FailOpen = false, ThrowOnFailure = true }));
+        services.Configure<CacheSerializerOptions>(_ => { });
         services.AddSingleton<RedisCacheService>();
 
         await using var provider = services.BuildServiceProvider();
@@ -84,9 +84,9 @@ public class RedisCacheServiceTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IDistributedCache>(fake);
-        services.AddSingleton<ICacheTelemetry, Caching.NET.Telemetry.NoopCacheTelemetry>();
-        services.AddSingleton<IOptions<CacheOptions>>(Microsoft.Extensions.Options.Options.Create(options));
-        services.Configure<Caching.NET.Options.CacheSerializerOptions>(_ => { });
+        services.AddSingleton<ICacheTelemetry, Telemetry.NoopCacheTelemetry>();
+        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(options));
+        services.Configure<CacheSerializerOptions>(_ => { });
         services.AddSingleton<RedisCacheService>();
 
         await using var provider = services.BuildServiceProvider();
@@ -105,16 +105,16 @@ public class RedisCacheServiceTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IDistributedCache, FakeDistributedCache>();
-        services.AddSingleton<ICacheTelemetry, Caching.NET.Telemetry.NoopCacheTelemetry>();
-        services.AddSingleton<IOptions<CacheOptions>>(Microsoft.Extensions.Options.Options.Create(new CacheOptions()));
-        services.Configure<Caching.NET.Options.CacheSerializerOptions>(_ => { });
+        services.AddSingleton<ICacheTelemetry, Telemetry.NoopCacheTelemetry>();
+        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new CacheOptions()));
+        services.Configure<CacheSerializerOptions>(_ => { });
         services.AddSingleton<RedisCacheService>();
 
         await using var provider = services.BuildServiceProvider();
         var cache = provider.GetRequiredService<RedisCacheService>();
 
         await cache.SetAsync("k", "data");
-        var v = await cache.GetOrCreateAsync("k", _ => Task.FromResult<string>("miss"));
+        var v = await cache.GetOrCreateAsync("k", _ => Task.FromResult("miss"));
         Assert.Equal("data", v);
         await cache.RemoveAsync("k");
         var after = await cache.GetOrCreateAsync("k", _ => Task.FromResult("miss"));
@@ -127,9 +127,9 @@ public class RedisCacheServiceTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IDistributedCache, FakeDistributedCache>();
-        services.AddSingleton<ICacheTelemetry, Caching.NET.Telemetry.NoopCacheTelemetry>();
-        services.AddSingleton<IOptions<CacheOptions>>(Microsoft.Extensions.Options.Options.Create(new CacheOptions()));
-        services.Configure<Caching.NET.Options.CacheSerializerOptions>(_ => { });
+        services.AddSingleton<ICacheTelemetry, Telemetry.NoopCacheTelemetry>();
+        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new CacheOptions()));
+        services.Configure<CacheSerializerOptions>(_ => { });
         services.AddSingleton<RedisCacheService>();
 
         await using var provider = services.BuildServiceProvider();

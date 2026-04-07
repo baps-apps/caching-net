@@ -35,7 +35,7 @@ public class BoundaryTests
         services.AddLogging();
         services.AddCaching(configuration);
         using var provider = services.BuildServiceProvider();
-        var cache = provider.GetRequiredService<Abstractions.ICacheService>();
+        var cache = provider.GetRequiredService<ICacheService>();
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
             cache.GetOrCreateAsync("   ", _ => Task.FromResult(1)));

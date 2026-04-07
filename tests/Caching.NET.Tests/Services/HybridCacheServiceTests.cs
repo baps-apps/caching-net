@@ -44,7 +44,7 @@ public class HybridCacheServiceTests
         var cache = provider.GetRequiredService<Abstractions.ICacheService>();
 
         await cache.SetAsync("hk", "data");
-        var v = await cache.GetOrCreateAsync("hk", _ => Task.FromResult<string>("miss"));
+        var v = await cache.GetOrCreateAsync("hk", _ => Task.FromResult("miss"));
         Assert.Equal("data", v);
         await cache.RemoveAsync("hk");
         var after = await cache.GetOrCreateAsync("hk", _ => Task.FromResult("miss"));

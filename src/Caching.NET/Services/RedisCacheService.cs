@@ -9,40 +9,27 @@ namespace Caching.NET.Services;
 
 /// <summary>
 /// <see cref="Abstractions.ICacheService"/> implementation backed by <see cref="IDistributedCache"/> (typically Redis).
-/// Values are serialized with <see cref="System.Text.Json.JsonSerializer"/>. Tag methods are no-op because Redis does not natively support tags.
+/// Values are serialized with <see cref="JsonSerializer"/>. Tag methods are no-op because Redis does not natively support tags.
 /// The <c>localExpiration</c> parameter on methods is accepted to match the shared abstraction but is ignored.
 /// When <see cref="CacheOptions.FailOpen"/> is true (default), cache failures fall back to the factory; when false, exceptions are propagated.
 /// </summary>
-public sealed class RedisCacheService : Abstractions.ICacheService
+/// <param name="cache">The <see cref="IDistributedCache"/> instance to use (typically backed by StackExchange.Redis).</param>
+/// <param name="options">Bound <see cref="CacheOptions"/> that control expiration defaults and fail-open behavior.</param>
+/// <param name="telemetry">Telemetry sink for recording cache hits, misses, and errors.</param>
+/// <param name="logger">Logger for recording operational warnings and errors.</param>
+/// <param name="serializerOptions">
+/// Optional custom JSON serializer options. When <c>null</c> or not registered, a default case-insensitive serializer is used.
+/// </param>
+public sealed class RedisCacheService(
+    IDistributedCache cache,
+    IOptions<CacheOptions> options,
+    Abstractions.ICacheTelemetry telemetry,
+    ILogger<RedisCacheService> logger,
+    IOptions<CacheSerializerOptions>? serializerOptions = null) : Abstractions.ICacheService
 {
-    private readonly IDistributedCache _cache;
-    private readonly CacheOptions _options;
-    private readonly Abstractions.ICacheTelemetry _telemetry;
-    private readonly ILogger<RedisCacheService> _logger;
-    private readonly JsonSerializerOptions _jsonOptions;
+    private readonly JsonSerializerOptions _jsonOptions = serializerOptions?.Value?.JsonSerializerOptions ?? DefaultJsonOptions;
     private static readonly TimeSpan DefaultExpiration = TimeSpan.FromMinutes(10);
     private static readonly JsonSerializerOptions DefaultJsonOptions = new() { PropertyNameCaseInsensitive = true };
-
-    /// <param name="cache">The <see cref="IDistributedCache"/> instance to use (typically backed by StackExchange.Redis).</param>
-    /// <param name="options">Bound <see cref="CacheOptions"/> that control expiration defaults and fail-open behavior.</param>
-    /// <param name="telemetry">Telemetry sink for recording cache hits, misses, and errors.</param>
-    /// <param name="logger">Logger for recording operational warnings and errors.</param>
-    /// <param name="serializerOptions">
-    /// Optional custom JSON serializer options. When <c>null</c> or not registered, a default case-insensitive serializer is used.
-    /// </param>
-    public RedisCacheService(
-        IDistributedCache cache,
-        IOptions<CacheOptions> options,
-        Abstractions.ICacheTelemetry telemetry,
-        ILogger<RedisCacheService> logger,
-        IOptions<CacheSerializerOptions>? serializerOptions = null)
-    {
-        _cache = cache ?? throw new ArgumentNullException(nameof(cache));
-        _options = options?.Value ?? new CacheOptions();
-        _telemetry = telemetry ?? throw new ArgumentNullException(nameof(telemetry));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _jsonOptions = serializerOptions?.Value?.JsonSerializerOptions ?? DefaultJsonOptions;
-    }
 
     /// <inheritdoc />
     public async Task<T> GetOrCreateAsync<T>(
@@ -56,42 +43,42 @@ public sealed class RedisCacheService : Abstractions.ICacheService
 
         if (ExceedsKeyLimit(key, nameof(GetOrCreateAsync)))
         {
-            _telemetry.OnCacheMiss(key, "Redis");
+            telemetry.OnCacheMiss(key, "Redis");
             return await factory(cancellationToken).ConfigureAwait(false);
         }
 
         try
         {
-            byte[]? bytes = await _cache.GetAsync(key, cancellationToken).ConfigureAwait(false);
+            byte[]? bytes = await cache.GetAsync(key, cancellationToken).ConfigureAwait(false);
             if (bytes is { Length: > 0 })
             {
                 var value = JsonSerializer.Deserialize<T>(bytes, _jsonOptions);
                 if (value != null)
                 {
-                    _telemetry.OnCacheHit(key, "Redis");
+                    telemetry.OnCacheHit(key, "Redis");
                     return value;
                 }
             }
         }
         catch (Exception ex)
         {
-            if (_options.ThrowOnFailure && !_options.FailOpen)
+            if (options.Value.ThrowOnFailure && !options.Value.FailOpen)
                 throw;
-            _logger.LogWarning(CacheLogEvents.RedisGetFailed, ex, "Redis get failed for key {Key}; executing factory (fail-open).", TruncateKey(key));
-            _telemetry.OnCacheError("get_or_create", key, "Redis", ex);
+            logger.LogWarning(CacheLogEvents.RedisGetFailed, ex, "Redis get failed for key {Key}; executing factory (fail-open).", TruncateKey(key));
+            telemetry.OnCacheError("get_or_create", key, "Redis", ex);
             return await factory(cancellationToken).ConfigureAwait(false);
         }
 
         T result = await factory(cancellationToken).ConfigureAwait(false);
-        _telemetry.OnCacheMiss(key, "Redis");
+        telemetry.OnCacheMiss(key, "Redis");
         try
         {
             await SetAsync(key, result, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (_options.FailOpen)
+        catch (Exception ex) when (options.Value.FailOpen)
         {
-            _logger.LogError(ex, "Redis set failed after factory for key {Key}; returning value without caching.", TruncateKey(key));
-            _telemetry.OnCacheError("set", key, "Redis", ex);
+            logger.LogError(ex, "Redis set failed after factory for key {Key}; returning value without caching.", TruncateKey(key));
+            telemetry.OnCacheError("set", key, "Redis", ex);
         }
         return result;
     }
@@ -105,7 +92,7 @@ public sealed class RedisCacheService : Abstractions.ICacheService
             return;
         }
 
-        var expirationSpan = expiration ?? _options.GetDefaultExpiration() ?? DefaultExpiration;
+        var expirationSpan = expiration ?? options.Value.GetDefaultExpiration() ?? DefaultExpiration;
         byte[] bytes;
         try
         {
@@ -113,31 +100,31 @@ public sealed class RedisCacheService : Abstractions.ICacheService
         }
         catch (Exception ex)
         {
-            _logger.LogError(CacheLogEvents.RedisSerializationFailed, ex, "Serialization failed for key {Key}.", TruncateKey(key));
-            if (_options.ThrowOnFailure && !_options.FailOpen)
+            logger.LogError(CacheLogEvents.RedisSerializationFailed, ex, "Serialization failed for key {Key}.", TruncateKey(key));
+            if (options.Value.ThrowOnFailure && !options.Value.FailOpen)
                 throw;
-            _telemetry.OnCacheError("serialize", key, "Redis", ex);
+            telemetry.OnCacheError("serialize", key, "Redis", ex);
             return;
         }
 
-        if (_options.MaximumPayloadBytes.HasValue && bytes.Length > _options.MaximumPayloadBytes.Value)
+        if (options.Value.MaximumPayloadBytes.HasValue && bytes.Length > options.Value.MaximumPayloadBytes.Value)
         {
-            _logger.LogWarning(CacheLogEvents.RedisPayloadTooLarge, "Payload for key {Key} exceeds MaximumPayloadBytes ({Size} bytes); not caching.", TruncateKey(key), bytes.Length);
+            logger.LogWarning(CacheLogEvents.RedisPayloadTooLarge, "Payload for key {Key} exceeds MaximumPayloadBytes ({Size} bytes); not caching.", TruncateKey(key), bytes.Length);
             return;
         }
 
         try
         {
-            var options = new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan };
-            await _cache.SetAsync(key, bytes, options, cancellationToken).ConfigureAwait(false);
-            _telemetry.OnCacheSet(key, "Redis");
+            var entryOptions = new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan };
+            await cache.SetAsync(key, bytes, entryOptions, cancellationToken).ConfigureAwait(false);
+            telemetry.OnCacheSet(key, "Redis");
         }
         catch (Exception ex)
         {
-            if (_options.ThrowOnFailure && !_options.FailOpen)
+            if (options.Value.ThrowOnFailure && !options.Value.FailOpen)
                 throw;
-            _logger.LogError(CacheLogEvents.RedisSetFailed, ex, "Redis set failed for key {Key}.", TruncateKey(key));
-            _telemetry.OnCacheError("set", key, "Redis", ex);
+            logger.LogError(CacheLogEvents.RedisSetFailed, ex, "Redis set failed for key {Key}.", TruncateKey(key));
+            telemetry.OnCacheError("set", key, "Redis", ex);
         }
     }
 
@@ -147,15 +134,15 @@ public sealed class RedisCacheService : Abstractions.ICacheService
         if (string.IsNullOrWhiteSpace(key)) return;
         try
         {
-            await _cache.RemoveAsync(key, cancellationToken).ConfigureAwait(false);
-            _telemetry.OnCacheRemove(key, "Redis");
+            await cache.RemoveAsync(key, cancellationToken).ConfigureAwait(false);
+            telemetry.OnCacheRemove(key, "Redis");
         }
         catch (Exception ex)
         {
-            if (_options.ThrowOnFailure && !_options.FailOpen)
+            if (options.Value.ThrowOnFailure && !options.Value.FailOpen)
                 throw;
-            _logger.LogError(CacheLogEvents.RedisRemoveFailed, ex, "Redis remove failed for key {Key}.", TruncateKey(key));
-            _telemetry.OnCacheError("remove", key, "Redis", ex);
+            logger.LogError(CacheLogEvents.RedisRemoveFailed, ex, "Redis remove failed for key {Key}.", TruncateKey(key));
+            telemetry.OnCacheError("remove", key, "Redis", ex);
         }
     }
 
@@ -170,20 +157,20 @@ public sealed class RedisCacheService : Abstractions.ICacheService
     /// <inheritdoc />
     public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug(CacheLogEvents.TagNotSupported, "RemoveByTagAsync is not supported in Redis mode; no-op for tag {Tag}. Use Hybrid mode for tag support.", tag);
-        _telemetry.OnCacheRemoveByTag(tag, "Redis");
+        logger.LogDebug(CacheLogEvents.TagNotSupported, "RemoveByTagAsync is not supported in Redis mode; no-op for tag {Tag}. Use Hybrid mode for tag support.", tag);
+        telemetry.OnCacheRemoveByTag(tag, "Redis");
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
     public Task RemoveByTagAsync(IEnumerable<string> tags, CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug(CacheLogEvents.TagNotSupported, "RemoveByTagAsync is not supported in Redis mode; no-op. Use Hybrid mode for tag support.");
+        logger.LogDebug(CacheLogEvents.TagNotSupported, "RemoveByTagAsync is not supported in Redis mode; no-op. Use Hybrid mode for tag support.");
         foreach (var tag in tags)
         {
             if (!string.IsNullOrWhiteSpace(tag))
             {
-                _telemetry.OnCacheRemoveByTag(tag, "Redis");
+                telemetry.OnCacheRemoveByTag(tag, "Redis");
             }
         }
         return Task.CompletedTask;
@@ -191,9 +178,9 @@ public sealed class RedisCacheService : Abstractions.ICacheService
 
     private bool ExceedsKeyLimit(string key, string operation)
     {
-        if (!_options.MaximumKeyLength.HasValue) return false;
-        if (key.Length <= _options.MaximumKeyLength.Value) return false;
-        _logger.LogWarning(CacheLogEvents.RedisKeyTooLong, "Key length ({Length}) exceeds MaximumKeyLength ({Max}); skipping cache for {Operation}.", key.Length, _options.MaximumKeyLength.Value, operation);
+        if (!options.Value.MaximumKeyLength.HasValue) return false;
+        if (key.Length <= options.Value.MaximumKeyLength.Value) return false;
+        logger.LogWarning(CacheLogEvents.RedisKeyTooLong, "Key length ({Length}) exceeds MaximumKeyLength ({Max}); skipping cache for {Operation}.", key.Length, options.Value.MaximumKeyLength.Value, operation);
         return true;
     }
 

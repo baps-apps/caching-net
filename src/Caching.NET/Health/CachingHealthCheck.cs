@@ -11,31 +11,21 @@ namespace Caching.NET.Health;
 /// This is intentionally lightweight and avoids heavy probing; it is designed to be composed
 /// with infrastructure-specific checks (for example, dedicated Redis health checks).
 /// </summary>
-public sealed class CachingHealthCheck : IHealthCheck
+/// <param name="cacheService">The resolved <see cref="ICacheService"/> to probe during health checks.</param>
+/// <param name="options">Bound <see cref="CacheOptions"/> used to determine whether caching is enabled.</param>
+/// <param name="logger">Logger for recording health-check probe failures.</param>
+public sealed class CachingHealthCheck(
+    ICacheService cacheService,
+    IOptions<CacheOptions> options,
+    ILogger<CachingHealthCheck> logger) : IHealthCheck
 {
-    private readonly ICacheService _cacheService;
-    private readonly CacheOptions _options;
-    private readonly ILogger<CachingHealthCheck> _logger;
-
-    /// <param name="cacheService">The resolved <see cref="ICacheService"/> to probe during health checks.</param>
-    /// <param name="options">Bound <see cref="CacheOptions"/> used to determine whether caching is enabled.</param>
-    /// <param name="logger">Logger for recording health-check probe failures.</param>
-    public CachingHealthCheck(
-        ICacheService cacheService,
-        IOptions<CacheOptions> options,
-        ILogger<CachingHealthCheck> logger)
-    {
-        _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
-        _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-    }
 
     /// <inheritdoc />
     public async Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context,
         CancellationToken cancellationToken = default)
     {
-        if (!_options.Enabled)
+        if (!options.Value.Enabled)
         {
             // When caching is disabled by configuration, treat this component as healthy; the cache
             // is intentionally out of the request path.
@@ -51,7 +41,7 @@ public sealed class CachingHealthCheck : IHealthCheck
 
         try
         {
-            await _cacheService.GetOrCreateAsync(
+            await cacheService.GetOrCreateAsync(
                 probeKey,
                 static _ => Task.FromResult(true),
                 expiration: TimeSpan.FromMinutes(5),
@@ -62,7 +52,7 @@ public sealed class CachingHealthCheck : IHealthCheck
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Caching.NET health probe failed for key {ProbeKey}.", probeKey);
+            logger.LogError(ex, "Caching.NET health probe failed for key {ProbeKey}.", probeKey);
             return new HealthCheckResult(
                 status: context.Registration.FailureStatus,
                 description: "Caching.NET health probe failed.",

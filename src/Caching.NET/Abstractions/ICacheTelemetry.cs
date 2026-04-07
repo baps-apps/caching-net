@@ -54,7 +54,7 @@ public interface ICacheTelemetry
 
     /// <summary>
     /// Called when the factory delegate supplied to <c>GetOrCreateAsync</c> exceeds the configured
-    /// <see cref="Caching.NET.Options.CacheOptions.FactoryTimeout"/> and is cancelled.
+    /// <see cref="Options.CacheOptions.FactoryTimeout"/> and is cancelled.
     /// </summary>
     /// <param name="key">The cache key whose factory timed out.</param>
     /// <param name="mode">The cache mode that attempted to call the factory.</param>
