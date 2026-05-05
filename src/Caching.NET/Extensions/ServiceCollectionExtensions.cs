@@ -147,15 +147,8 @@ public static class ServiceCollectionExtensions
             effectiveOptions.Enabled = true;
         }
 
-        // 6. Register telemetry
-        if (builder?.RegisterOpenTelemetry == true)
-        {
-            services.TryAddSingleton<ICacheTelemetry, Telemetry.OpenTelemetryCacheTelemetry>();
-        }
-        else
-        {
-            services.TryAddSingleton<ICacheTelemetry, Telemetry.NoopCacheTelemetry>();
-        }
+        // 6. Telemetry: v2 uses static CacheInstruments (Meter/ActivitySource).
+        //    No DI registration needed; consumers wire OTel pipeline to subscribe.
 
         // 7. Register cache infrastructure based on effective mode.
         // When disabled, only register minimal InMemory infrastructure (RoutingCacheService

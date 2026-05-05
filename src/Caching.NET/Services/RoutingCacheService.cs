@@ -1,5 +1,6 @@
 using Caching.NET.Abstractions;
 using Caching.NET.Options;
+using Caching.NET.Telemetry;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -13,11 +14,11 @@ namespace Caching.NET.Services;
 internal sealed class RoutingCacheService(
     IOptionsMonitor<CacheOptions> optionsMonitor,
     ILogger<RoutingCacheService> logger,
-    ICacheTelemetry telemetry,
     InMemoryCacheService? inMemory = null,
     RedisCacheService? redis = null,
     HybridCacheService? hybrid = null) : ICacheService, IRoutingCacheService
 {
+    private const string Mode = "Routing";
     private readonly CacheOptions _startupOptions = optionsMonitor.CurrentValue;
     private readonly ILogger<RoutingCacheService> _logger = logger;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _keyLocks = new(StringComparer.Ordinal);
@@ -63,7 +64,7 @@ internal sealed class RoutingCacheService(
             {
                 if (ct.CanBeCanceled && _startupOptions.GetFactoryTimeout() is { } timeout)
                 {
-                    telemetry.OnFactoryTimeout(key, "Routing", timeout);
+                    CacheInstruments.RecordError(Mode, "factory", "Timeout");
                 }
                 return await factory(ct).ConfigureAwait(false);
             }
@@ -89,7 +90,7 @@ internal sealed class RoutingCacheService(
                     {
                         T value = await factory(ct).ConfigureAwait(false);
                         await service.SetAsync(key, value, expiration, localExpiration, ct).ConfigureAwait(false);
-                        telemetry.OnCacheSet(key, "Routing");
+                        CacheInstruments.RecordSet(Mode);
                         return value;
                     }
                     finally
@@ -131,7 +132,7 @@ internal sealed class RoutingCacheService(
             {
                 T value = await factory(ct).ConfigureAwait(false);
                 await service.SetAsync(key, value, expiration, localExpiration, ct).ConfigureAwait(false);
-                telemetry.OnCacheSet(key, "Routing");
+                CacheInstruments.RecordSet(Mode);
                 return value;
             }
             finally

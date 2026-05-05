@@ -116,7 +116,12 @@ public sealed class CachingBuilder
         return this;
     }
 
-    /// <summary>Registers <see cref="Telemetry.OpenTelemetryCacheTelemetry"/> as the telemetry provider.</summary>
+    /// <summary>
+    /// In v2, telemetry is always emitted via the static <see cref="Telemetry.CacheInstruments"/>
+    /// (Meter and ActivitySource named "Caching.NET"). Consumers wire OpenTelemetry directly:
+    /// <c>builder.Services.AddOpenTelemetry().WithMetrics(b =&gt; b.AddMeter(CacheInstruments.MeterName))</c>.
+    /// This method is preserved for v1 source compat and is now a no-op.
+    /// </summary>
     public CachingBuilder WithOpenTelemetry()
     {
         RegisterOpenTelemetry = true;

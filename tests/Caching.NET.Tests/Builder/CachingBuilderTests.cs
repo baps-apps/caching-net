@@ -92,17 +92,17 @@ public class CachingBuilderTests
     }
 
     [Fact]
-    public void AddCaching_FluentWithOpenTelemetry_RegistersOtelTelemetry()
+    public void AddCaching_FluentWithOpenTelemetry_DoesNotThrow()
     {
+        // v2: WithOpenTelemetry is a documentation no-op; telemetry is always emitted via static
+        // CacheInstruments. This test asserts the builder method continues to compile and run.
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddCaching(cache => cache
             .UseInMemory()
             .WithOpenTelemetry());
         using var provider = services.BuildServiceProvider();
-
-        var telemetry = provider.GetRequiredService<ICacheTelemetry>();
-        Assert.IsType<Telemetry.OpenTelemetryCacheTelemetry>(telemetry);
+        Assert.NotNull(provider.GetRequiredService<ICacheService>());
     }
 
     [Fact]

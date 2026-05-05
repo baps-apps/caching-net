@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Caching.NET.Options;
 using Caching.NET.Internal;
+using Caching.NET.Telemetry;
 
 namespace Caching.NET.Services;
 
@@ -17,14 +18,13 @@ namespace Caching.NET.Services;
 /// When <c>null</c>, <see cref="GetOrCreateAsync{T}"/> always falls back to executing the factory directly.
 /// </param>
 /// <param name="options">Bound <see cref="CacheOptions"/> that control expiration defaults and enabled state.</param>
-/// <param name="telemetry">Telemetry sink for recording cache hits, misses, and errors.</param>
 /// <param name="logger">Logger for recording operational warnings and errors.</param>
 public sealed class HybridCacheService(
     HybridCache? cache,
     IOptions<CacheOptions> options,
-    Abstractions.ICacheTelemetry telemetry,
     ILogger<HybridCacheService> logger) : Abstractions.ICacheService
 {
+    private const string Mode = "Hybrid";
     private static readonly TimeSpan DefaultExpiration = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan DefaultLocalExpiration = TimeSpan.FromMinutes(5);
 
@@ -41,28 +41,40 @@ public sealed class HybridCacheService(
         if (!options.Value.Enabled || cache == null)
         {
             logger.LogDebug(CacheLogEvents.HybridCacheDisabled, "Cache disabled or unavailable - executing factory for key: {Key}", TruncateKey(key));
-            telemetry.OnCacheMiss(key, "Hybrid");
+            CacheInstruments.RecordMiss(Mode, "get_or_create", "Disabled");
             return await factory(cancellationToken).ConfigureAwait(false);
         }
 
         try
         {
             var entryOptions = BuildEntryOptions(expiration, localExpiration);
-            async ValueTask<T> wrapper(CancellationToken ct) => await factory(ct).ConfigureAwait(false);
+            var factoryRan = false;
+            async ValueTask<T> wrapper(CancellationToken ct)
+            {
+                factoryRan = true;
+                return await factory(ct).ConfigureAwait(false);
+            }
             var value = await cache.GetOrCreateAsync(key, wrapper, entryOptions, tags: null, cancellationToken).ConfigureAwait(false);
-            // HybridCache already coalesces concurrent requests; treat successful GetOrCreate as a hit when
-            // the value was previously cached and a miss when computed. We cannot easily distinguish here,
-            // so we record a generic request and leave hit/miss attribution to upstream metrics if needed.
-            telemetry.OnCacheHit(key, "Hybrid");
+            if (factoryRan)
+                CacheInstruments.RecordMiss(Mode, "get_or_create", "NotFound");
+            else
+                CacheInstruments.RecordHit(Mode, "get_or_create");
             return value;
         }
         catch (Exception ex)
         {
             logger.LogError(CacheLogEvents.HybridGetFailed, ex, "Error getting or creating cache entry for key: {Key}; executing factory (fail-open).", TruncateKey(key));
-            telemetry.OnCacheError("get_or_create", key, "Hybrid", ex);
+            CacheInstruments.RecordError(Mode, "get_or_create", ClassifyError(ex));
             return await factory(cancellationToken).ConfigureAwait(false);
         }
     }
+
+    private static string ClassifyError(Exception ex) => ex switch
+    {
+        TimeoutException => "Timeout",
+        OperationCanceledException => "Cancelled",
+        _ => "Unknown",
+    };
 
     /// <inheritdoc />
     public async Task SetAsync<T>(string key, T value, TimeSpan? expiration = null, TimeSpan? localExpiration = null, CancellationToken cancellationToken = default) where T : notnull
@@ -73,11 +85,12 @@ public sealed class HybridCacheService(
         {
             var entryOptions = BuildEntryOptions(expiration, localExpiration);
             await cache.SetAsync(key, value, entryOptions, tags: null, cancellationToken).ConfigureAwait(false);
+            CacheInstruments.RecordSet(Mode);
         }
         catch (Exception ex)
         {
             logger.LogError(CacheLogEvents.HybridSetFailed, ex, "Error setting cache entry for key: {Key}.", TruncateKey(key));
-            telemetry.OnCacheError("set", key, "Hybrid", ex);
+            CacheInstruments.RecordError(Mode, "set", ClassifyError(ex));
         }
     }
 
@@ -89,12 +102,12 @@ public sealed class HybridCacheService(
         try
         {
             await cache.RemoveAsync(key, cancellationToken).ConfigureAwait(false);
-            telemetry.OnCacheRemove(key, "Hybrid");
+            CacheInstruments.RecordRemove(Mode);
         }
         catch (Exception ex)
         {
             logger.LogError(CacheLogEvents.HybridRemoveFailed, ex, "Error removing cache entry for key: {Key}.", TruncateKey(key));
-            telemetry.OnCacheError("remove", key, "Hybrid", ex);
+            CacheInstruments.RecordError(Mode, "remove", ClassifyError(ex));
         }
     }
 
@@ -114,12 +127,12 @@ public sealed class HybridCacheService(
         try
         {
             await cache.RemoveByTagAsync(tag, cancellationToken).ConfigureAwait(false);
-            telemetry.OnCacheRemoveByTag(tag, "Hybrid");
+            CacheInstruments.RecordRemove(Mode, "remove_by_tag");
         }
         catch (Exception ex)
         {
             logger.LogError(CacheLogEvents.HybridTagRemoveFailed, ex, "Error removing cache entries for tag: {Tag}", tag);
-            telemetry.OnCacheError("remove_by_tag", tag, "Hybrid", ex);
+            CacheInstruments.RecordError(Mode, "remove_by_tag", ClassifyError(ex));
         }
     }
 

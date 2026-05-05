@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Caching.NET.Options;
 using Caching.NET.Internal;
+using Caching.NET.Telemetry;
 
 namespace Caching.NET.Services;
 
@@ -15,7 +16,6 @@ namespace Caching.NET.Services;
 /// </summary>
 /// <param name="cache">The <see cref="IDistributedCache"/> instance to use (typically backed by StackExchange.Redis).</param>
 /// <param name="options">Bound <see cref="CacheOptions"/> that control expiration defaults and fail-open behavior.</param>
-/// <param name="telemetry">Telemetry sink for recording cache hits, misses, and errors.</param>
 /// <param name="logger">Logger for recording operational warnings and errors.</param>
 /// <param name="serializerOptions">
 /// Optional custom JSON serializer options. When <c>null</c> or not registered, a default case-insensitive serializer is used.
@@ -23,13 +23,20 @@ namespace Caching.NET.Services;
 public sealed class RedisCacheService(
     IDistributedCache cache,
     IOptions<CacheOptions> options,
-    Abstractions.ICacheTelemetry telemetry,
     ILogger<RedisCacheService> logger,
     IOptions<CacheSerializerOptions>? serializerOptions = null) : Abstractions.ICacheService
 {
+    private const string Mode = "Redis";
     private readonly JsonSerializerOptions _jsonOptions = serializerOptions?.Value?.JsonSerializerOptions ?? DefaultJsonOptions;
     private static readonly TimeSpan DefaultExpiration = TimeSpan.FromMinutes(10);
     private static readonly JsonSerializerOptions DefaultJsonOptions = new() { PropertyNameCaseInsensitive = true };
+
+    private static string ClassifyError(Exception ex) => ex switch
+    {
+        TimeoutException => "Timeout",
+        OperationCanceledException => "Cancelled",
+        _ => "Unknown",
+    };
 
     /// <inheritdoc />
     public async Task<T> GetOrCreateAsync<T>(
@@ -43,7 +50,7 @@ public sealed class RedisCacheService(
 
         if (ExceedsKeyLimit(key, nameof(GetOrCreateAsync)))
         {
-            telemetry.OnCacheMiss(key, "Redis");
+            CacheInstruments.RecordMiss(Mode, "get_or_create");
             return await factory(cancellationToken).ConfigureAwait(false);
         }
 
@@ -55,7 +62,7 @@ public sealed class RedisCacheService(
                 var value = JsonSerializer.Deserialize<T>(bytes, _jsonOptions);
                 if (value != null)
                 {
-                    telemetry.OnCacheHit(key, "Redis");
+                    CacheInstruments.RecordHit(Mode, "get_or_create");
                     return value;
                 }
             }
@@ -65,12 +72,12 @@ public sealed class RedisCacheService(
             if (options.Value.ThrowOnFailure && !options.Value.FailOpen)
                 throw;
             logger.LogWarning(CacheLogEvents.RedisGetFailed, ex, "Redis get failed for key {Key}; executing factory (fail-open).", TruncateKey(key));
-            telemetry.OnCacheError("get_or_create", key, "Redis", ex);
+            CacheInstruments.RecordError(Mode, "get_or_create", ClassifyError(ex));
             return await factory(cancellationToken).ConfigureAwait(false);
         }
 
         T result = await factory(cancellationToken).ConfigureAwait(false);
-        telemetry.OnCacheMiss(key, "Redis");
+        CacheInstruments.RecordMiss(Mode, "get_or_create");
         try
         {
             await SetAsync(key, result, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
@@ -78,7 +85,7 @@ public sealed class RedisCacheService(
         catch (Exception ex) when (options.Value.FailOpen)
         {
             logger.LogError(ex, "Redis set failed after factory for key {Key}; returning value without caching.", TruncateKey(key));
-            telemetry.OnCacheError("set", key, "Redis", ex);
+            CacheInstruments.RecordError(Mode, "set", ClassifyError(ex));
         }
         return result;
     }
@@ -103,7 +110,7 @@ public sealed class RedisCacheService(
             logger.LogError(CacheLogEvents.RedisSerializationFailed, ex, "Serialization failed for key {Key}.", TruncateKey(key));
             if (options.Value.ThrowOnFailure && !options.Value.FailOpen)
                 throw;
-            telemetry.OnCacheError("serialize", key, "Redis", ex);
+            CacheInstruments.RecordError(Mode, "serialize", "Serialization");
             return;
         }
 
@@ -117,14 +124,14 @@ public sealed class RedisCacheService(
         {
             var entryOptions = new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan };
             await cache.SetAsync(key, bytes, entryOptions, cancellationToken).ConfigureAwait(false);
-            telemetry.OnCacheSet(key, "Redis");
+            CacheInstruments.RecordSet(Mode);
         }
         catch (Exception ex)
         {
             if (options.Value.ThrowOnFailure && !options.Value.FailOpen)
                 throw;
             logger.LogError(CacheLogEvents.RedisSetFailed, ex, "Redis set failed for key {Key}.", TruncateKey(key));
-            telemetry.OnCacheError("set", key, "Redis", ex);
+            CacheInstruments.RecordError(Mode, "set", ClassifyError(ex));
         }
     }
 
@@ -135,14 +142,14 @@ public sealed class RedisCacheService(
         try
         {
             await cache.RemoveAsync(key, cancellationToken).ConfigureAwait(false);
-            telemetry.OnCacheRemove(key, "Redis");
+            CacheInstruments.RecordRemove(Mode);
         }
         catch (Exception ex)
         {
             if (options.Value.ThrowOnFailure && !options.Value.FailOpen)
                 throw;
             logger.LogError(CacheLogEvents.RedisRemoveFailed, ex, "Redis remove failed for key {Key}.", TruncateKey(key));
-            telemetry.OnCacheError("remove", key, "Redis", ex);
+            CacheInstruments.RecordError(Mode, "remove", ClassifyError(ex));
         }
     }
 
@@ -158,7 +165,7 @@ public sealed class RedisCacheService(
     public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
         logger.LogDebug(CacheLogEvents.TagNotSupported, "RemoveByTagAsync is not supported in Redis mode; no-op for tag {Tag}. Use Hybrid mode for tag support.", tag);
-        telemetry.OnCacheRemoveByTag(tag, "Redis");
+        CacheInstruments.RecordRemove(Mode, "remove_by_tag");
         return Task.CompletedTask;
     }
 
@@ -170,7 +177,7 @@ public sealed class RedisCacheService(
         {
             if (!string.IsNullOrWhiteSpace(tag))
             {
-                telemetry.OnCacheRemoveByTag(tag, "Redis");
+                CacheInstruments.RecordRemove(Mode, "remove_by_tag");
             }
         }
         return Task.CompletedTask;
