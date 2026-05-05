@@ -10,7 +10,7 @@ namespace Caching.NET.Services;
 /// <see cref="Abstractions.ICacheService"/> implementation backed by <see cref="IMemoryCache"/>.
 /// Tag methods are no-ops because <see cref="IMemoryCache"/> does not support tags.
 /// </summary>
-public sealed class InMemoryCacheService(
+internal sealed class InMemoryCacheService(
     IMemoryCache cache,
     IOptions<CacheOptions> options,
     ILogger<InMemoryCacheService> logger) : Abstractions.ICacheService

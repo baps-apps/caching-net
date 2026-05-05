@@ -19,7 +19,7 @@ namespace Caching.NET.Services;
 /// and an outer per-op timeout via linked <see cref="CancellationTokenSource"/>.
 /// Values are serialized via the registered <see cref="ICacheSerializer"/>.
 /// </summary>
-public sealed class RedisCacheService : Abstractions.ICacheService
+internal sealed class RedisCacheService : Abstractions.ICacheService
 {
     private const string Mode = "Redis";
     private static readonly TimeSpan DefaultExpiration = TimeSpan.FromMinutes(10);

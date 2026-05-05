@@ -24,7 +24,7 @@ public static class CacheServiceCallExtensions
     /// Responsible for loading or computing the value (e.g. from a database or external service).
     /// </param>
     /// <param name="callOptions">
-    /// Optional per-call options (e.g. <see cref="CacheCallOptions.OverrideMode"/>, <see cref="CacheCallOptions.ForceRefresh"/>,
+    /// Optional per-call options (e.g. <see cref="CacheCallOptions.Mode"/>, <see cref="CacheCallOptions.ForceRefresh"/>,
     /// <see cref="CacheCallOptions.BypassCache"/>, <see cref="CacheCallOptions.CoalesceConcurrent"/>).
     /// Pass <c>null</c> to use the application-level defaults.
     /// </param>
@@ -74,7 +74,7 @@ public static class CacheServiceCallExtensions
     /// <param name="key">A non-empty cache key that uniquely identifies the value.</param>
     /// <param name="value">The value to store in the cache.</param>
     /// <param name="callOptions">
-    /// Optional per-call options (e.g. <see cref="CacheCallOptions.OverrideMode"/>, <see cref="CacheCallOptions.BypassCache"/>).
+    /// Optional per-call options (e.g. <see cref="CacheCallOptions.Mode"/>, <see cref="CacheCallOptions.BypassCache"/>).
     /// Pass <c>null</c> to use the application-level defaults.
     /// </param>
     /// <param name="expiration">Optional absolute expiration. Falls back to the configured default when <c>null</c>.</param>

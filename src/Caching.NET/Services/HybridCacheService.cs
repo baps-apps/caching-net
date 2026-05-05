@@ -19,7 +19,7 @@ namespace Caching.NET.Services;
 /// </param>
 /// <param name="options">Bound <see cref="CacheOptions"/> that control expiration defaults and enabled state.</param>
 /// <param name="logger">Logger for recording operational warnings and errors.</param>
-public sealed class HybridCacheService(
+internal sealed class HybridCacheService(
     HybridCache? cache,
     IOptions<CacheOptions> options,
     ILogger<HybridCacheService> logger) : Abstractions.ICacheService

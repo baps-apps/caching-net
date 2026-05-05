@@ -57,7 +57,7 @@ public class RoutingCacheServiceTests
 
         var options = new CacheCallOptions
         {
-            OverrideMode = CacheMode.InMemory
+            Mode = CacheMode.InMemory
         };
 
         var first = await cache.GetOrCreateAsync(

@@ -75,7 +75,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
 
         var prefixed = PrependPrefix(key);
 
-        if (callOptions?.BypassCache == true)
+        if ((callOptions?.BypassCache ?? false))
         {
             var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
             try
@@ -88,15 +88,15 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
             }
         }
 
-        var service = ResolveService(callOptions?.OverrideMode);
+        var service = ResolveService(callOptions?.Mode);
 
-        if (callOptions?.CoalesceConcurrent == true)
+        if ((callOptions?.CoalesceConcurrent ?? true))
         {
             var semaphore = _lockManager.GetLock(prefixed);
             await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (callOptions?.ForceRefresh == true)
+                if ((callOptions?.ForceRefresh ?? false))
                 {
                     var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
                     try
@@ -128,7 +128,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
             }
         }
 
-        if (callOptions?.ForceRefresh == true)
+        if ((callOptions?.ForceRefresh ?? false))
         {
             var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
             try
@@ -177,8 +177,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         if (IsDisabled) return Task.CompletedTask;
-        if (callOptions?.BypassCache == true) return Task.CompletedTask;
-        var service = ResolveService(callOptions?.OverrideMode);
+        if ((callOptions?.BypassCache ?? false)) return Task.CompletedTask;
+        var service = ResolveService(callOptions?.Mode);
         return service.SetAsync(PrependPrefix(key), value, expiration, localExpiration, cancellationToken);
     }
 
@@ -186,14 +186,14 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
         if (IsDisabled) return Task.CompletedTask;
-        return ResolveService(overrideMode: null).RemoveAsync(PrependPrefix(key), cancellationToken);
+        return ResolveService(modeOverride: null).RemoveAsync(PrependPrefix(key), cancellationToken);
     }
 
     /// <inheritdoc />
     public async Task RemoveAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
     {
         if (IsDisabled || keys is null) return;
-        var service = ResolveService(overrideMode: null);
+        var service = ResolveService(modeOverride: null);
         var prefixed = new List<string>();
         foreach (var k in keys) prefixed.Add(PrependPrefix(k));
         await service.RemoveAsync(prefixed, cancellationToken).ConfigureAwait(false);
@@ -203,19 +203,19 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
         if (IsDisabled) return Task.CompletedTask;
-        return ResolveService(overrideMode: null).RemoveByTagAsync(tag, cancellationToken);
+        return ResolveService(modeOverride: null).RemoveByTagAsync(tag, cancellationToken);
     }
 
     /// <inheritdoc />
     public Task RemoveByTagAsync(IEnumerable<string> tags, CancellationToken cancellationToken = default)
     {
         if (IsDisabled) return Task.CompletedTask;
-        return ResolveService(overrideMode: null).RemoveByTagAsync(tags, cancellationToken);
+        return ResolveService(modeOverride: null).RemoveByTagAsync(tags, cancellationToken);
     }
 
-    private ICacheService ResolveService(CacheMode? overrideMode)
+    private ICacheService ResolveService(CacheMode? modeOverride)
     {
-        var mode = overrideMode ?? _startupOptions.Mode;
+        var mode = modeOverride ?? _startupOptions.Mode;
 
         return mode switch
         {

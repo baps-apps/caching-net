@@ -44,7 +44,7 @@ public class ProductCatalogController : ControllerBase
     /// <summary>
     /// Returns the featured product subset, always served from the in-process memory cache
     /// regardless of the application-level cache mode.
-    /// Demonstrates <see cref="CacheCallOptions.OverrideMode"/> to pin a hot path to <see cref="CacheMode.InMemory"/>.
+    /// Demonstrates <see cref="CacheCallOptions.Mode"/> to pin a hot path to <see cref="CacheMode.InMemory"/>.
     /// </summary>
     /// <param name="cache">Cache service injected per-request via <c>[FromServices]</c>.</param>
     /// <param name="cancellationToken">Request cancellation token.</param>
@@ -55,7 +55,7 @@ public class ProductCatalogController : ControllerBase
     {
         var callOptions = new CacheCallOptions
         {
-            OverrideMode = CacheMode.InMemory
+            Mode = CacheMode.InMemory
         };
 
         return cache.GetOrCreateAsync(

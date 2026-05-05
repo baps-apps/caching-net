@@ -9,7 +9,7 @@ namespace Caching.NET.Internal;
 ///   allows <see cref="System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch"/> but rejects other errors.
 /// When strict == true, rejects any SSL policy errors (including hostname mismatches).
 /// </summary>
-public static class RedisCertificateValidation
+internal static class RedisCertificateValidation
 {
     /// <summary>
     /// Default callback for StackExchange.Redis <see cref="StackExchange.Redis.ConfigurationOptions.CertificateValidation"/>.
