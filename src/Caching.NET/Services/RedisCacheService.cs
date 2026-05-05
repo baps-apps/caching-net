@@ -107,7 +107,7 @@ public sealed class RedisCacheService(
             return;
         }
 
-        if (options.Value.MaximumPayloadBytes.HasValue && bytes.Length > options.Value.MaximumPayloadBytes.Value)
+        if (options.Value.MaximumPayloadBytes > 0 && bytes.Length > options.Value.MaximumPayloadBytes)
         {
             logger.LogWarning(CacheLogEvents.RedisPayloadTooLarge, "Payload for key {Key} exceeds MaximumPayloadBytes ({Size} bytes); not caching.", TruncateKey(key), bytes.Length);
             return;
@@ -178,9 +178,10 @@ public sealed class RedisCacheService(
 
     private bool ExceedsKeyLimit(string key, string operation)
     {
-        if (!options.Value.MaximumKeyLength.HasValue) return false;
-        if (key.Length <= options.Value.MaximumKeyLength.Value) return false;
-        logger.LogWarning(CacheLogEvents.RedisKeyTooLong, "Key length ({Length}) exceeds MaximumKeyLength ({Max}); skipping cache for {Operation}.", key.Length, options.Value.MaximumKeyLength.Value, operation);
+        var max = options.Value.MaximumKeyLength;
+        if (max <= 0) return false;
+        if (key.Length <= max) return false;
+        logger.LogWarning(CacheLogEvents.RedisKeyTooLong, "Key length ({Length}) exceeds MaximumKeyLength ({Max}); skipping cache for {Operation}.", key.Length, max, operation);
         return true;
     }
 

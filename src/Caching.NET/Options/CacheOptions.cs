@@ -1,145 +1,125 @@
-using System.ComponentModel.DataAnnotations;
-
 namespace Caching.NET.Options;
 
 /// <summary>
 /// Configuration options for caching (InMemory, Redis, or Hybrid).
+/// v2 schema. KeyPrefix is mandatory. RedisInstanceName has been removed.
 /// </summary>
-public class CacheOptions
+public sealed class CacheOptions
 {
     /// <summary>
-    /// Whether caching is enabled. When false, <c>RoutingCacheService</c> short-circuits all operations:
-    /// <c>GetOrCreateAsync</c> runs the factory directly, and all other methods are no-ops.
-    /// <c>ICacheService</c> is always registered regardless of this flag.
-    /// Default: false (opt-in). The zero-config <c>AddCaching()</c> overload sets this to true.
+    /// Required key prefix prepended to every cache key by the routing layer. Must be non-empty
+    /// and match <c>^[a-zA-Z0-9][a-zA-Z0-9._:-]*$</c> (no whitespace, '*' or '?'). Replaces v1's
+    /// <c>RedisInstanceName</c>: applies uniformly across InMemory/Redis/Hybrid (not just Redis).
     /// </summary>
-    public bool Enabled { get; set; } = false;
+    public string KeyPrefix { get; set; } = string.Empty;
 
     /// <summary>
-    /// Cache mode: InMemory, Redis, or Hybrid.
-    /// Default: Hybrid.
+    /// Cache mode: InMemory, Redis, or Hybrid. Default: Hybrid.
     /// </summary>
     public CacheMode Mode { get; set; } = CacheMode.Hybrid;
 
     /// <summary>
-    /// Default expiration time for cache entries as a string (e.g., "00:10:00" for 10 minutes).
-    /// When not specified, the concrete cache implementations fall back to their own sensible defaults
-    /// (currently 10 minutes) for entries where no explicit expiration is provided.
+    /// Connection string for Redis. Required when Mode is Redis or Hybrid (omit for in-memory-only Hybrid is no longer supported in v2).
     /// </summary>
-    [RegularExpression(@"^(\d+\.)?[0-9]{1,2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?$", ErrorMessage = "DefaultExpiration must be in TimeSpan format (e.g., 00:10:00 for 10 minutes).")]
-    public string? DefaultExpiration { get; set; }
-
-    /// <summary>
-    /// Default local (in-memory) cache expiration as a string (e.g., "00:05:00" for 5 minutes). Used for Hybrid mode.
-    /// When not specified, Hybrid falls back to the overall expiration or an internal default
-    /// (currently 5 minutes) for the in-memory tier when no explicit local expiration is provided.
-    /// </summary>
-    [RegularExpression(@"^(\d+\.)?[0-9]{1,2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?$", ErrorMessage = "DefaultLocalExpiration must be in TimeSpan format (e.g., 00:05:00 for 5 minutes).")]
-    public string? DefaultLocalExpiration { get; set; }
-
-    /// <summary>
-    /// Maximum size of a cache entry in bytes. Entries larger than this may be skipped by the cache layer when a limit is set.
-    /// When null, no explicit payload-size limit is applied by Caching.NET itself; the underlying cache implementation
-    /// (Hybrid or Redis) may still enforce its own limits. For production workloads, it is strongly recommended to set
-    /// a conservative value (for example, 1–10 MB) based on your data shapes and network/memory constraints.
-    /// </summary>
-    [Range(1024, long.MaxValue, ErrorMessage = "MaximumPayloadBytes must be at least 1 KB when specified.")]
-    public long? MaximumPayloadBytes { get; set; }
-
-    /// <summary>
-    /// Maximum length of a cache key in characters. When set, keys longer than this may bypass the cache for safety
-    /// (for example, in Redis mode the operation falls back to the factory and logs a warning).
-    /// When null, Caching.NET does not impose its own key-length limit; it is recommended to configure a limit
-    /// (for example, 512–1024 characters) in production to avoid pathological key patterns.
-    /// </summary>
-    [Range(1, 4096, ErrorMessage = "MaximumKeyLength must be between 1 and 4096 when specified.")]
-    public int? MaximumKeyLength { get; set; }
-
-    /// <summary>
-    /// Connection string for Redis. Required when Mode is Redis; optional for Hybrid (omit for in-memory-only Hybrid).
-    /// </summary>
-    [MinLength(1, ErrorMessage = "RedisConnectionString cannot be empty when specified.")]
     public string? RedisConnectionString { get; set; }
 
     /// <summary>
-    /// Redis instance name for key prefixing (e.g., "MyApp:"). Optional.
-    /// For multi-tenant or multi-service clusters, use a unique prefix per service (e.g., "myservice:").
+    /// When true (v2 default), Redis TLS certificate validation is strict: any SSL policy errors
+    /// cause the connection to be rejected. When false, allow RemoteCertificateNameMismatch only.
+    /// Default flipped from false (v1) to true (v2) for production safety.
     /// </summary>
-    [MaxLength(256, ErrorMessage = "RedisInstanceName cannot exceed 256 characters.")]
-    public string? RedisInstanceName { get; set; }
+    public bool StrictRedisCertificateValidation { get; set; } = true;
 
     /// <summary>
-    /// When true (default), cache failures (e.g., Redis unavailable) cause the operation to fall back to the source (factory)
-    /// instead of throwing. When false, exceptions from the cache layer are propagated.
+    /// Whether caching is enabled. Hot-reloadable. Default: true.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// When true (default), cache failures fall back to the source (factory) instead of throwing.
     /// </summary>
     public bool FailOpen { get; set; } = true;
 
     /// <summary>
-    /// When true, cache write/read failures throw instead of being logged and ignored. Only applies when <see cref="FailOpen"/> is false.
-    /// Default: false.
+    /// When true, cache write/read failures throw instead of being logged and ignored.
+    /// Only applies when <see cref="FailOpen"/> is false.
     /// </summary>
     public bool ThrowOnFailure { get; set; }
 
     /// <summary>
-    /// Optional timeout for the factory passed to GetOrCreateAsync. When set, the factory is cancelled after this duration.
-    /// Use to avoid runaway factory calls in enterprise deployments. Format: "hh:mm:ss" or "d.hh:mm:ss".
+    /// Default expiration for cache entries. Default 10 minutes.
     /// </summary>
-    [RegularExpression(@"^(\d+\.)?[0-9]{1,2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?$", ErrorMessage = "FactoryTimeout must be in TimeSpan format (e.g., 00:00:30 for 30 seconds).")]
-    public string? FactoryTimeout { get; set; }
+    public TimeSpan DefaultExpiration { get; set; } = TimeSpan.FromMinutes(10);
 
     /// <summary>
-    /// Gets the factory timeout as a TimeSpan, or null if not set.
+    /// TTL jitter as a fraction of the expiration window (0.0 disables jitter; 0.10 = ±10%).
     /// </summary>
-    public TimeSpan? GetFactoryTimeout()
-    {
-        var timeout = ParseExpiration(FactoryTimeout, nameof(FactoryTimeout));
-        if (timeout is null)
-        {
-            return null;
-        }
-
-        if (timeout <= TimeSpan.Zero || timeout > TimeSpan.FromMinutes(5))
-        {
-            throw new InvalidOperationException(
-                $"Invalid {nameof(FactoryTimeout)} value '{FactoryTimeout}'. Expected a positive TimeSpan up to 00:05:00. " +
-                "Recommended range is between 00:00:01 and 00:05:00 depending on your downstream latency.");
-        }
-
-        return timeout;
-    }
+    public double TtlJitterPercentage { get; set; } = 0.10;
 
     /// <summary>
-    /// Optional size limit for the in-memory cache in megabytes. When set, passed to IMemoryCache so eviction is size-based.
-    /// Recommended for production when using InMemory or Hybrid to cap memory usage.
+    /// Maximum length of a cache key in characters. Required (default 512).
     /// </summary>
-    [Range(1, int.MaxValue, ErrorMessage = "MemorySizeLimitMb must be at least 1 when specified.")]
-    public int? MemorySizeLimitMb { get; set; }
+    public int MaximumKeyLength { get; set; } = 512;
 
     /// <summary>
-    /// When true, Redis TLS certificate validation is strict: any SSL policy errors (including
-    /// hostname mismatches) cause the connection to be rejected. When false (default), Caching.NET
-    /// allows <see cref="System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch"/> but
-    /// rejects all other SSL policy errors, matching common non-production Redis setups.
+    /// Maximum size of a cache entry in bytes. Default 1 MiB.
     /// </summary>
-    public bool StrictRedisCertificateValidation { get; set; }
+    public long MaximumPayloadBytes { get; set; } = 1_048_576;
 
     /// <summary>
-    /// Gets the default expiration as a TimeSpan, or null if not set.
+    /// Number of striped lock slots for stampede protection. Rounded up to power of 2. Default 1024.
     /// </summary>
-    public TimeSpan? GetDefaultExpiration() => ParseExpiration(DefaultExpiration, nameof(DefaultExpiration));
+    public int StripeLockCount { get; set; } = 1024;
 
     /// <summary>
-    /// Gets the default local expiration as a TimeSpan, or null if not set.
+    /// Maximum concurrent in-flight stale-while-revalidate refreshes. Default 256.
     /// </summary>
-    public TimeSpan? GetDefaultLocalExpiration() => ParseExpiration(DefaultLocalExpiration, nameof(DefaultLocalExpiration));
+    public int StaleRefreshConcurrency { get; set; } = 256;
 
-    private static TimeSpan? ParseExpiration(string? value, string propertyName)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-        if (!TimeSpan.TryParse(value, out var result))
-            throw new InvalidOperationException(
-                $"Invalid {propertyName} format: '{value}'. Expected format: 'hh:mm:ss' or 'd.hh:mm:ss' (e.g., '00:10:00' for 10 minutes).");
-        return result;
-    }
+    /// <summary>
+    /// Per-call timeout for the factory delegate passed to GetOrCreateAsync. Default 30s.
+    /// </summary>
+    public TimeSpan FactoryTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Per-op timeout for individual Redis operations (read/write/delete). Default 2s.
+    /// </summary>
+    public TimeSpan RedisOperationTimeout { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Optional size limit for the in-memory cache in megabytes. When set, IMemoryCache uses size-based eviction
+    /// and consumers must declare entry Size. Default null (no limit) until Task 11 wires Size hints into entries.
+    /// </summary>
+    public long? MemorySizeLimitMb { get; set; }
+
+    /// <summary>
+    /// Optional in-memory tier expiration for Hybrid mode. When null, Hybrid uses internal default.
+    /// </summary>
+    public TimeSpan? HybridLocalCacheExpiration { get; set; }
+
+    /// <summary>
+    /// When true, raw cache keys appear in log messages. Default false (only hash). Dev-only toggle.
+    /// </summary>
+    public bool IncludeRawKeyInLogs { get; set; }
+
+    /// <summary>
+    /// When true, key hash (xxHash64 hex) is added as a tag on Activity. Default false.
+    /// </summary>
+    public bool IncludeKeyHashInTraces { get; set; }
+
+    /// <summary>
+    /// Returns <see cref="FactoryTimeout"/>. Provided for service-layer callers that previously
+    /// consumed a nullable string-parsed TimeSpan; in v2 the timeout is always set.
+    /// </summary>
+    public TimeSpan? GetFactoryTimeout() => FactoryTimeout;
+
+    /// <summary>
+    /// Returns <see cref="DefaultExpiration"/>.
+    /// </summary>
+    public TimeSpan? GetDefaultExpiration() => DefaultExpiration;
+
+    /// <summary>
+    /// Returns <see cref="HybridLocalCacheExpiration"/>.
+    /// </summary>
+    public TimeSpan? GetDefaultLocalExpiration() => HybridLocalCacheExpiration;
 }

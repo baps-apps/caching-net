@@ -268,8 +268,7 @@ public static class ServiceCollectionExtensions
                 redis.ConfigurationOptions = ConfigurationOptions.Parse(options.RedisConnectionString!, ignoreUnknown: true);
             }
 
-            if (!string.IsNullOrWhiteSpace(options.RedisInstanceName))
-                redis.InstanceName = options.RedisInstanceName;
+            // RedisInstanceName removed in v2; KeyPrefix is applied at the routing layer instead.
             var strict = options.StrictRedisCertificateValidation;
             redis.ConfigurationOptions.CertificateValidation += (sender, certificate, chain, errors) =>
                 RedisCertificateValidation.ValidateServerCertificate(sender, certificate, chain, errors, strict);
@@ -287,10 +286,10 @@ public static class ServiceCollectionExtensions
                 Expiration = defaultExpiration ?? TimeSpan.FromMinutes(DefaultExpirationMinutes),
                 LocalCacheExpiration = defaultLocalExpiration ?? defaultExpiration ?? TimeSpan.FromMinutes(DefaultLocalExpirationMinutes)
             };
-            if (options.MaximumPayloadBytes.HasValue)
-                hybrid.MaximumPayloadBytes = options.MaximumPayloadBytes.Value;
-            if (options.MaximumKeyLength.HasValue)
-                hybrid.MaximumKeyLength = options.MaximumKeyLength.Value;
+            if (options.MaximumPayloadBytes > 0)
+                hybrid.MaximumPayloadBytes = options.MaximumPayloadBytes;
+            if (options.MaximumKeyLength > 0)
+                hybrid.MaximumKeyLength = options.MaximumKeyLength;
         });
 
         if (!string.IsNullOrWhiteSpace(options.RedisConnectionString) || redisConfigAction is not null)
@@ -308,8 +307,7 @@ public static class ServiceCollectionExtensions
                     redis.ConfigurationOptions = ConfigurationOptions.Parse(options.RedisConnectionString!, ignoreUnknown: true);
                 }
 
-                if (!string.IsNullOrWhiteSpace(options.RedisInstanceName))
-                    redis.InstanceName = options.RedisInstanceName;
+                // RedisInstanceName removed in v2; KeyPrefix is applied at the routing layer instead.
                 var strict = options.StrictRedisCertificateValidation;
                 redis.ConfigurationOptions.CertificateValidation += (sender, certificate, chain, errors) =>
                     RedisCertificateValidation.ValidateServerCertificate(sender, certificate, chain, errors, strict);

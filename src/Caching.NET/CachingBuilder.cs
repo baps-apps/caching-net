@@ -158,11 +158,11 @@ public sealed class CachingBuilder
         if (RedisConnectionString is not null)
             options.RedisConnectionString = RedisConnectionString;
         if (InstanceName is not null)
-            options.RedisInstanceName = InstanceName;
+            options.KeyPrefix = InstanceName;
         if (DefaultExpiration.HasValue)
-            options.DefaultExpiration = DefaultExpiration.Value.ToString();
+            options.DefaultExpiration = DefaultExpiration.Value;
         if (DefaultLocalExpiration.HasValue)
-            options.DefaultLocalExpiration = DefaultLocalExpiration.Value.ToString();
+            options.HybridLocalCacheExpiration = DefaultLocalExpiration.Value;
         if (MaximumPayloadBytes.HasValue)
             options.MaximumPayloadBytes = MaximumPayloadBytes.Value;
         if (MaximumKeyLength.HasValue)
@@ -170,7 +170,7 @@ public sealed class CachingBuilder
         if (MemorySizeLimitMb.HasValue)
             options.MemorySizeLimitMb = MemorySizeLimitMb.Value;
         if (FactoryTimeout.HasValue)
-            options.FactoryTimeout = FactoryTimeout.Value.ToString();
+            options.FactoryTimeout = FactoryTimeout.Value;
         if (StrictCertificateValidation)
             options.StrictRedisCertificateValidation = true;
     }

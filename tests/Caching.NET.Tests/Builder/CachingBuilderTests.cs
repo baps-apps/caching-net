@@ -128,7 +128,7 @@ public class CachingBuilderTests
         Assert.Equal(512, options.MaximumKeyLength);
         Assert.Equal(256, options.MemorySizeLimitMb);
         Assert.Equal(TimeSpan.FromSeconds(30), options.GetFactoryTimeout());
-        Assert.Equal("test:", options.RedisInstanceName);
+        Assert.Equal("test:", options.KeyPrefix);
     }
 
     [Fact]
