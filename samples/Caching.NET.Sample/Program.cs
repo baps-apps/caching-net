@@ -47,7 +47,7 @@ public class Program
         //
         // builder.Services.AddCaching(cache => cache
         //     .UseRedis("localhost:6379,abortConnect=false")
-        //     .WithInstanceName("sampleapp:")                  // key prefix for multi-service clusters
+        //     .WithKeyPrefix("sampleapp:")                  // key prefix for multi-service clusters
         //     .WithDefaultExpiration(TimeSpan.FromMinutes(10))
         //     .WithMaximumPayloadBytes(5_000_000)              // skip caching entries > 5 MB
         //     .WithMaximumKeyLength(1024)
@@ -68,7 +68,7 @@ public class Program
         //         redis.SyncTimeout = 3000;
         //         redis.AbortOnConnectFail = false;
         //     })
-        //     .WithInstanceName("sampleapp:")
+        //     .WithKeyPrefix("sampleapp:")
         //     .WithOpenTelemetry());
 
         // ── Example 6: Hybrid (in-memory + Redis) ──────────────────
@@ -78,7 +78,7 @@ public class Program
         //     .UseHybrid("localhost:6379")
         //     .WithDefaultExpiration(TimeSpan.FromMinutes(15))       // distributed tier TTL
         //     .WithDefaultLocalExpiration(TimeSpan.FromMinutes(5))   // in-memory tier TTL
-        //     .WithInstanceName("sampleapp:")
+        //     .WithKeyPrefix("sampleapp:")
         //     .WithMemorySizeLimit(128)
         //     .WithMaximumPayloadBytes(10_000_000)
         //     .WithFactoryTimeout(TimeSpan.FromSeconds(30))
