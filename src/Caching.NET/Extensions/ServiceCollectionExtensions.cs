@@ -2,6 +2,7 @@ using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 using System.ComponentModel.DataAnnotations;
 using StackExchange.Redis;
 using Caching.NET.Abstractions;
@@ -194,7 +195,11 @@ public static class ServiceCollectionExtensions
             }
         }
 
-        // 8. Always register RoutingCacheService as ICacheService (TryAdd for idempotency)
+        // 8. Register the striped lock manager for stampede protection.
+        services.TryAddSingleton<Internal.StripedLockManager>(sp =>
+            new Internal.StripedLockManager(sp.GetRequiredService<IOptions<CacheOptions>>().Value.StripeLockCount));
+
+        // 9. Always register RoutingCacheService as ICacheService (TryAdd for idempotency)
         services.TryAddSingleton<ICacheService, RoutingCacheService>();
 
         // 9. Register health checks if requested via builder
