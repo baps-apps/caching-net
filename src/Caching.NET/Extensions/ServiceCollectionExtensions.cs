@@ -199,7 +199,24 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<Internal.StripedLockManager>(sp =>
             new Internal.StripedLockManager(sp.GetRequiredService<IOptions<CacheOptions>>().Value.StripeLockCount));
 
-        // 9. Always register RoutingCacheService as ICacheService (TryAdd for idempotency)
+        // 9. Register the default ICacheSerializer (consumers may swap via WithSerializer<T>).
+        services.TryAddSingleton<Serialization.ICacheSerializer>(_ => new Serialization.JsonCacheSerializer());
+
+        // 10. Register the default Polly resilience pipeline registry (timeout + circuit breaker + retry).
+        services.TryAddSingleton<Polly.Registry.ResiliencePipelineRegistry<string>>(sp =>
+        {
+            var opts = sp.GetService<IOptions<Resilience.ResiliencePipelineRegistryOptions>>()?.Value
+                       ?? new Resilience.ResiliencePipelineRegistryOptions();
+            return Resilience.CacheResiliencePipelineBuilder.BuildDefaultRegistry(
+                timeout: opts.Timeout,
+                failureRatio: opts.FailureRatio,
+                minimumThroughput: opts.MinimumThroughput,
+                samplingDuration: opts.SamplingDuration,
+                breakDuration: opts.BreakDuration,
+                retryCount: opts.RetryCount);
+        });
+
+        // 11. Always register RoutingCacheService as ICacheService (TryAdd for idempotency)
         services.TryAddSingleton<ICacheService, RoutingCacheService>();
 
         // 9. Register health checks if requested via builder

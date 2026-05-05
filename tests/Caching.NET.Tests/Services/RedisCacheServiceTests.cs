@@ -1,26 +1,34 @@
+using Caching.NET.Options;
+using Caching.NET.Resilience;
+using Caching.NET.Serialization;
+using Caching.NET.Services;
+using Caching.NET.Tests.Fakes;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Moq;
-using Caching.NET.Abstractions;
-using Caching.NET.Options;
-using Caching.NET.Services;
-using Caching.NET.Tests.Fakes;
 
 namespace Caching.NET.Tests.Services;
 
 public class RedisCacheServiceTests
 {
-    [Fact]
-    public async Task GetOrCreateAsync_StoresAndReturnsValue_WithFakeCache()
+    private static IServiceCollection BaseServices(IDistributedCache distributedCache, CacheOptions? options = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddSingleton<IDistributedCache, FakeDistributedCache>();
-        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new CacheOptions()));
-        services.Configure<CacheSerializerOptions>(_ => { });
+        services.AddSingleton(distributedCache);
+        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(options ?? new CacheOptions { KeyPrefix = "t" }));
+        services.AddSingleton<ICacheSerializer>(new JsonCacheSerializer());
+        services.AddSingleton(CacheResiliencePipelineBuilder.BuildDefaultRegistry(
+            timeout: TimeSpan.FromSeconds(5), retryCount: 0));
         services.AddSingleton<RedisCacheService>();
+        return services;
+    }
 
+    [Fact]
+    public async Task GetOrCreateAsync_StoresAndReturnsValue_WithFakeCache()
+    {
+        var services = BaseServices(new FakeDistributedCache());
         await using var provider = services.BuildServiceProvider();
         var cache = provider.GetRequiredService<RedisCacheService>();
 
@@ -38,13 +46,7 @@ public class RedisCacheServiceTests
         mockCache.Setup(c => c.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Redis down"));
 
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddSingleton(mockCache.Object);
-        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new CacheOptions { FailOpen = true }));
-        services.Configure<CacheSerializerOptions>(_ => { });
-        services.AddSingleton<RedisCacheService>();
-
+        var services = BaseServices(mockCache.Object, new CacheOptions { KeyPrefix = "t", FailOpen = true });
         await using var provider = services.BuildServiceProvider();
         var cache = provider.GetRequiredService<RedisCacheService>();
 
@@ -59,13 +61,7 @@ public class RedisCacheServiceTests
         mockCache.Setup(c => c.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Redis down"));
 
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddSingleton(mockCache.Object);
-        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new CacheOptions { FailOpen = false, ThrowOnFailure = true }));
-        services.Configure<CacheSerializerOptions>(_ => { });
-        services.AddSingleton<RedisCacheService>();
-
+        var services = BaseServices(mockCache.Object, new CacheOptions { KeyPrefix = "t", FailOpen = false, ThrowOnFailure = true });
         await using var provider = services.BuildServiceProvider();
         var cache = provider.GetRequiredService<RedisCacheService>();
 
@@ -77,34 +73,23 @@ public class RedisCacheServiceTests
     public async Task GetOrCreateAsync_WhenKeyExceedsMaximumKeyLength_SkipsCacheAndRunsFactory()
     {
         var fake = new FakeDistributedCache();
-        var options = new CacheOptions { MaximumKeyLength = 5 };
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddSingleton<IDistributedCache>(fake);
-        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(options));
-        services.Configure<CacheSerializerOptions>(_ => { });
-        services.AddSingleton<RedisCacheService>();
-
+        var services = BaseServices(fake, new CacheOptions { KeyPrefix = "t", MaximumKeyLength = 64 });
         await using var provider = services.BuildServiceProvider();
         var cache = provider.GetRequiredService<RedisCacheService>();
 
-        var value = await cache.GetOrCreateAsync("longkey", _ => Task.FromResult("v"));
+        // 65-char key exceeds the limit
+        var bigKey = new string('a', 65);
+        var value = await cache.GetOrCreateAsync(bigKey, _ => Task.FromResult("v"));
         Assert.Equal("v", value);
 
-        var again = await cache.GetOrCreateAsync("longkey", _ => Task.FromResult("v2"));
+        var again = await cache.GetOrCreateAsync(bigKey, _ => Task.FromResult("v2"));
         Assert.Equal("v2", again);
     }
 
     [Fact]
     public async Task SetAsync_RemoveAsync_Work_WithFakeCache()
     {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddSingleton<IDistributedCache, FakeDistributedCache>();
-        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new CacheOptions()));
-        services.Configure<CacheSerializerOptions>(_ => { });
-        services.AddSingleton<RedisCacheService>();
-
+        var services = BaseServices(new FakeDistributedCache());
         await using var provider = services.BuildServiceProvider();
         var cache = provider.GetRequiredService<RedisCacheService>();
 
@@ -119,13 +104,7 @@ public class RedisCacheServiceTests
     [Fact]
     public async Task RemoveByTagAsync_IsNoOp()
     {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddSingleton<IDistributedCache, FakeDistributedCache>();
-        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new CacheOptions()));
-        services.Configure<CacheSerializerOptions>(_ => { });
-        services.AddSingleton<RedisCacheService>();
-
+        var services = BaseServices(new FakeDistributedCache());
         await using var provider = services.BuildServiceProvider();
         var cache = provider.GetRequiredService<RedisCacheService>();
 
