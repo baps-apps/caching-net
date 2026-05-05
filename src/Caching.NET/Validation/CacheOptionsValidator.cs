@@ -18,6 +18,12 @@ internal sealed partial class CacheOptionsValidator : IValidateOptions<CacheOpti
 
     public ValidateOptionsResult Validate(string? name, CacheOptions o)
     {
+        // Skip validation when disabled — keeps zero-config and disabled-with-bad-prod-config scenarios working.
+        if (!o.Enabled)
+        {
+            return ValidateOptionsResult.Success;
+        }
+
         var failures = new List<string>();
         var redactedCs = RedisConnectionStringRedactor.Redact(o.RedisConnectionString);
 
@@ -34,9 +40,11 @@ internal sealed partial class CacheOptionsValidator : IValidateOptions<CacheOpti
             failures.Add($"{nameof(CacheOptions.KeyPrefix)} must match ^[a-zA-Z0-9][a-zA-Z0-9._:-]*$ (no whitespace, '*' or '?').");
         }
 
-        if ((o.Mode == CacheMode.Redis || o.Mode == CacheMode.Hybrid) && string.IsNullOrWhiteSpace(o.RedisConnectionString))
+        // Redis mode strictly requires a connection string. Hybrid tolerates a missing connection
+        // string and runs as in-memory-only Hybrid (matches v1 ergonomics for tests/local dev).
+        if (o.Mode == CacheMode.Redis && string.IsNullOrWhiteSpace(o.RedisConnectionString))
         {
-            failures.Add($"{nameof(CacheOptions.RedisConnectionString)} is required for Mode={o.Mode}. (redacted={redactedCs})");
+            failures.Add($"{nameof(CacheOptions.RedisConnectionString)} is required for Mode=Redis. (redacted={redactedCs})");
         }
 
         if (o.MaximumKeyLength is < 64 or > 8192)

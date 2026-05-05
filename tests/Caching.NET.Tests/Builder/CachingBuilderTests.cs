@@ -22,7 +22,7 @@ public class CachingBuilderTests
 
         var options = provider.GetRequiredService<IOptions<CacheOptions>>().Value;
         Assert.True(options.Enabled);
-        Assert.Equal(CacheMode.Hybrid, options.Mode);
+        Assert.Equal(CacheMode.InMemory, options.Mode);
     }
 
     [Fact]

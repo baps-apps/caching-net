@@ -1,4 +1,8 @@
 using Caching.NET.Options;
+using Caching.NET.Resilience;
+using Caching.NET.Serialization;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using StackExchange.Redis;
 
 namespace Caching.NET;
@@ -9,6 +13,14 @@ namespace Caching.NET;
 /// </summary>
 public sealed class CachingBuilder
 {
+    private readonly IServiceCollection? _services;
+
+    /// <summary>Construct without service-collection access (legacy path).</summary>
+    public CachingBuilder() { }
+
+    /// <summary>Construct with service-collection access (used by v2 AddCaching overloads).</summary>
+    internal CachingBuilder(IServiceCollection services) { _services = services; }
+
     internal CacheMode? Mode { get; private set; }
     internal bool? Enabled { get; private set; }
     internal string? RedisConnectionString { get; private set; }
@@ -20,6 +32,8 @@ public sealed class CachingBuilder
     internal int? MaximumKeyLength { get; private set; }
     internal int? MemorySizeLimitMb { get; private set; }
     internal TimeSpan? FactoryTimeout { get; private set; }
+    internal int? StripeLockCount { get; private set; }
+    internal TimeSpan? RedisOperationTimeout { get; private set; }
     internal bool StrictCertificateValidation { get; private set; }
     internal bool RegisterOpenTelemetry { get; private set; }
     internal bool RegisterHealthChecks { get; private set; }
@@ -108,11 +122,77 @@ public sealed class CachingBuilder
         return this;
     }
 
-    /// <summary>Sets the Redis instance name used for key prefixing.</summary>
-    public CachingBuilder WithInstanceName(string name)
+    /// <summary>
+    /// v1 alias for <see cref="WithKeyPrefix(string)"/>. In v2, this maps to <see cref="CacheOptions.KeyPrefix"/>
+    /// which is applied at the routing layer across all modes (not just Redis).
+    /// </summary>
+    public CachingBuilder WithInstanceName(string name) => WithKeyPrefix(name);
+
+    /// <summary>
+    /// Sets the mandatory key prefix prepended to every cache key by the routing layer.
+    /// Replaces v1's RedisInstanceName; applies uniformly across InMemory, Redis, and Hybrid backends.
+    /// </summary>
+    public CachingBuilder WithKeyPrefix(string keyPrefix)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        InstanceName = name;
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyPrefix);
+        InstanceName = keyPrefix;
+        return this;
+    }
+
+    /// <summary>Override the number of striped lock slots (rounded up to power of 2; default 1024).</summary>
+    public CachingBuilder WithStripedLocks(int stripeCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(stripeCount);
+        StripeLockCount = stripeCount;
+        return this;
+    }
+
+    /// <summary>Override the per-op Redis timeout (default 2s).</summary>
+    public CachingBuilder WithRedisOperationTimeout(TimeSpan timeout)
+    {
+        RedisOperationTimeout = timeout;
+        return this;
+    }
+
+    /// <summary>
+    /// Replaces the registered <see cref="ICacheSerializer"/> with the supplied implementation type
+    /// (must have a parameterless constructor or be resolvable from DI).
+    /// </summary>
+    public CachingBuilder WithSerializer<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(
+        System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicConstructors)] TSerializer>()
+        where TSerializer : class, ICacheSerializer
+    {
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithSerializer<T>() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.RemoveAll<ICacheSerializer>();
+        _services.AddSingleton<ICacheSerializer, TSerializer>();
+        return this;
+    }
+
+    /// <summary>Replaces the registered <see cref="ICacheSerializer"/> with the supplied instance.</summary>
+    public CachingBuilder WithSerializer(ICacheSerializer serializer)
+    {
+        ArgumentNullException.ThrowIfNull(serializer);
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithSerializer(...) requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.RemoveAll<ICacheSerializer>();
+        _services.AddSingleton(serializer);
+        return this;
+    }
+
+    /// <summary>Configure the Polly resilience pipeline knobs (timeout, breaker, retry).</summary>
+    public CachingBuilder WithResilience(Action<ResiliencePipelineRegistryOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithResilience(...) requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.Configure(configure);
         return this;
     }
 
@@ -176,6 +256,10 @@ public sealed class CachingBuilder
             options.MemorySizeLimitMb = MemorySizeLimitMb.Value;
         if (FactoryTimeout.HasValue)
             options.FactoryTimeout = FactoryTimeout.Value;
+        if (StripeLockCount.HasValue)
+            options.StripeLockCount = StripeLockCount.Value;
+        if (RedisOperationTimeout.HasValue)
+            options.RedisOperationTimeout = RedisOperationTimeout.Value;
         if (StrictCertificateValidation)
             options.StrictRedisCertificateValidation = true;
     }

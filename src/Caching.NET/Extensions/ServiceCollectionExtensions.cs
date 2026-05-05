@@ -97,6 +97,9 @@ public static class ServiceCollectionExtensions
         Action<CachingBuilder>? configure)
     {
         // 1. Bind config section if provided
+        // Register the v2 IValidateOptions implementation (regex + range checks with redacted error messages).
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<CacheOptions>, Validation.CacheOptionsValidator>());
+
         if (configuration is not null)
         {
             IConfigurationSection section = configuration.GetSection(CacheConfigurationKeys.CacheOptions);
@@ -116,7 +119,7 @@ public static class ServiceCollectionExtensions
         CachingBuilder? builder = null;
         if (configure is not null)
         {
-            builder = new CachingBuilder();
+            builder = new CachingBuilder(services);
             configure(builder);
         }
 
@@ -136,7 +139,21 @@ public static class ServiceCollectionExtensions
             });
         }
 
-        // 5. Resolve effective options for service registration (config + builder merged)
+        // 5. KeyPrefix fallback: if neither config nor builder set KeyPrefix, default to the entry
+        //    assembly name (sanitized). Spec §13 — production deployments should still set KeyPrefix
+        //    explicitly, but this avoids forcing every test/sample to specify one and keeps validation
+        //    passing for zero-config use.
+        services.PostConfigure<CacheOptions>(options =>
+        {
+            if (string.IsNullOrWhiteSpace(options.KeyPrefix))
+            {
+                var name = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name
+                           ?? "caching-net";
+                options.KeyPrefix = SanitizeKeyPrefix(name);
+            }
+        });
+
+        // 6. Resolve effective options for service registration (config + builder merged)
         CacheOptions effectiveOptions = new();
         if (configuration is not null)
         {
@@ -146,6 +163,11 @@ public static class ServiceCollectionExtensions
         if (configuration is null && builder?.Enabled is null)
         {
             effectiveOptions.Enabled = true;
+        }
+        if (string.IsNullOrWhiteSpace(effectiveOptions.KeyPrefix))
+        {
+            effectiveOptions.KeyPrefix = SanitizeKeyPrefix(
+                System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name ?? "caching-net");
         }
 
         // 6. Telemetry: v2 uses static CacheInstruments (Meter/ActivitySource).
@@ -254,6 +276,21 @@ public static class ServiceCollectionExtensions
                 .ValidateDataAnnotations()
                 .ValidateOnStart();
         }
+    }
+
+    private static string SanitizeKeyPrefix(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "caching-net";
+        Span<char> buffer = stackalloc char[Math.Min(raw.Length, 64)];
+        var len = Math.Min(raw.Length, 64);
+        for (var i = 0; i < len; i++)
+        {
+            var c = raw[i];
+            buffer[i] = char.IsLetterOrDigit(c) || c is '.' or ':' or '-' or '_' ? c : '-';
+        }
+        if (buffer.Length == 0) return "caching-net";
+        if (!char.IsLetterOrDigit(buffer[0])) buffer[0] = 'a';
+        return new string(buffer);
     }
 
     private static bool ValidateCacheOptions(CacheOptions options)

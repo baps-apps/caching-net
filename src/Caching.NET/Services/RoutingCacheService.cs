@@ -175,6 +175,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         CancellationToken cancellationToken = default)
         where T : notnull
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         if (IsDisabled) return Task.CompletedTask;
         if (callOptions?.BypassCache == true) return Task.CompletedTask;
         var service = ResolveService(callOptions?.OverrideMode);

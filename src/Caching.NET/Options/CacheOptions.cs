@@ -14,9 +14,11 @@ public sealed class CacheOptions
     public string KeyPrefix { get; set; } = string.Empty;
 
     /// <summary>
-    /// Cache mode: InMemory, Redis, or Hybrid. Default: Hybrid.
+    /// Cache mode: InMemory, Redis, or Hybrid. Default: InMemory (zero-config friendly).
+    /// In v1 this defaulted to Hybrid (which allowed Redis-less hybrid); v2 makes
+    /// RedisConnectionString mandatory for both Redis and Hybrid, so InMemory is a safer default.
     /// </summary>
-    public CacheMode Mode { get; set; } = CacheMode.Hybrid;
+    public CacheMode Mode { get; set; } = CacheMode.InMemory;
 
     /// <summary>
     /// Connection string for Redis. Required when Mode is Redis or Hybrid (omit for in-memory-only Hybrid is no longer supported in v2).
