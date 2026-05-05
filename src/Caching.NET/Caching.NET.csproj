@@ -1,19 +1,34 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
     <PackageId>Caching.NET</PackageId>
-    <Version>1.0.0</Version>
+    <Version>2.0.0-alpha.1</Version>
     <Authors>BAPS Dev Team</Authors>
-    <Description>Shared caching package: InMemory, Redis, and Hybrid (stampede protection) modes with ICacheService abstraction.</Description>
-    <PackageTags>cache;caching;memory;redis;hybrid;distributed</PackageTags>
+    <Description>Production-grade caching: InMemory, Redis, and Hybrid modes with stampede protection, Polly resilience, OpenTelemetry, pluggable serialization.</Description>
+    <PackageTags>cache;caching;memory;redis;hybrid;distributed;polly;opentelemetry</PackageTags>
     <PackageProjectUrl>https://github.com/baps-apps/caching-net/</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
     <RepositoryUrl>https://github.com/baps-apps/caching-net.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <DeterministicSourcePaths>true</DeterministicSourcePaths>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <!-- Task 1 explicit allowance: RS0016/RS0017 will be removed in Task 15 once PublicAPI is populated.
+         IL2026/IL3050 (trim/AOT) and RS0026 (overloads) are flagged on v1 code that gets rewritten in
+         Tasks 5/6/13 (custom validator, source-gen serializer, rewired DI). Suppressions removed in Task 15. -->
+    <NoWarn>$(NoWarn);RS0016;RS0017;RS0026;IL2026;IL3050</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="CodeStyle.NET" />
@@ -27,5 +42,16 @@
     <PackageReference Include="Microsoft.Extensions.Options" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
     <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
+    <PackageReference Include="Polly" />
+    <PackageReference Include="Polly.Extensions" />
+    <PackageReference Include="System.Diagnostics.DiagnosticSource" />
+    <PackageReference Include="MessagePack" />
+    <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <AdditionalFiles Include="PublicAPI.Shipped.txt" />
+    <AdditionalFiles Include="PublicAPI.Unshipped.txt" />
   </ItemGroup>
 </Project>

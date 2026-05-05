@@ -10,7 +10,7 @@
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Caching.NET" />
+    <ProjectReference Include="..\..\src\Caching.NET\Caching.NET.csproj" />
     <PackageReference Include="CodeStyle.NET" />
   </ItemGroup>
 </Project>
