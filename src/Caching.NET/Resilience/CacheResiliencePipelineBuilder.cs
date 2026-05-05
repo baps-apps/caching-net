@@ -34,11 +34,11 @@ public static class CacheResiliencePipelineBuilder
                     })
                     .AddCircuitBreaker(new CircuitBreakerStrategyOptions
                     {
-                        FailureRatio      = failureRatio,
+                        FailureRatio = failureRatio,
                         MinimumThroughput = minimumThroughput,
-                        SamplingDuration  = samplingDuration ?? TimeSpan.FromSeconds(30),
-                        BreakDuration     = breakDuration ?? TimeSpan.FromSeconds(15),
-                        ShouldHandle      = static args => ValueTask.FromResult(IsTransient(args.Outcome.Exception))
+                        SamplingDuration = samplingDuration ?? TimeSpan.FromSeconds(30),
+                        BreakDuration = breakDuration ?? TimeSpan.FromSeconds(15),
+                        ShouldHandle = static args => ValueTask.FromResult(IsTransient(args.Outcome.Exception))
                     });
 
                 if (retryCount > 0)
@@ -46,9 +46,9 @@ public static class CacheResiliencePipelineBuilder
                     builder.AddRetry(new RetryStrategyOptions
                     {
                         MaxRetryAttempts = retryCount,
-                        BackoffType      = DelayBackoffType.Exponential,
-                        UseJitter        = true,
-                        ShouldHandle     = static args => ValueTask.FromResult(IsTransient(args.Outcome.Exception))
+                        BackoffType = DelayBackoffType.Exponential,
+                        UseJitter = true,
+                        ShouldHandle = static args => ValueTask.FromResult(IsTransient(args.Outcome.Exception))
                     });
                 }
             });
@@ -59,9 +59,9 @@ public static class CacheResiliencePipelineBuilder
     private static bool IsTransient(Exception? ex) => ex switch
     {
         RedisConnectionException => true,
-        RedisTimeoutException    => true,
+        RedisTimeoutException => true,
         TimeoutRejectedException => true,
-        TimeoutException         => true,
-        _                        => false
+        TimeoutException => true,
+        _ => false
     };
 }

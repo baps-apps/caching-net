@@ -25,9 +25,10 @@
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <EnablePackageValidation>true</EnablePackageValidation>
-    <!-- Task 1 explicit allowance: RS0016/RS0017 will be removed in Task 15 once PublicAPI is populated.
-         IL2026/IL3050 (trim/AOT) and RS0026 (overloads) are flagged on v1 code that gets rewritten in
-         Tasks 5/6/13 (custom validator, source-gen serializer, rewired DI). Suppressions removed in Task 15. -->
+    <!-- IL2026/IL3050 (trim/AOT) suppressed because the v2 ICacheSerializer interface allows reflection-based
+         JSON impls; consumers must opt into source-gen for full AOT/trim compatibility (P2 work).
+         RS0026 suppressed for legacy multi-overload methods retained for v1 source compat.
+         RS0016/RS0017 suppressed pending PublicAPI.Shipped.txt population at the v2.0.0 release boundary. -->
     <NoWarn>$(NoWarn);RS0016;RS0017;RS0026;IL2026;IL3050</NoWarn>
   </PropertyGroup>
   <ItemGroup>

@@ -7,17 +7,18 @@ public sealed class CacheInstrumentsTests
     [Fact]
     public void RecordHit_EmitsCounterWithModeAndOperationTags()
     {
+        // Use a unique mode tag to avoid cross-test bleed from other tests that also emit
+        // cache.hits via the shared static Meter.
+        var uniqueMode = $"TestMode-{Guid.NewGuid():N}";
         using var listener = MeterListenerHelpers.ForCounterWithTags("cache.hits", out var observed);
 
-        CacheInstruments.RecordHit("Redis", "get_or_create");
-
-        listener.RecordObservableInstruments();
+        CacheInstruments.RecordHit(uniqueMode, "get_or_create");
         listener.Dispose();
 
-        var (value, tags) = Assert.Single(observed);
-        Assert.Equal(1, value);
-        Assert.Equal("Redis", tags["cache.mode"]);
-        Assert.Equal("get_or_create", tags["cache.operation"]);
+        var match = observed.FirstOrDefault(o => (string?)o.tags.GetValueOrDefault("cache.mode") == uniqueMode);
+        Assert.NotEqual(default, match);
+        Assert.Equal(1, match.value);
+        Assert.Equal("get_or_create", match.tags["cache.operation"]);
     }
 
     [Fact]
