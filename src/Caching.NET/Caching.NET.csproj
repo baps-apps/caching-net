@@ -54,4 +54,7 @@
     <AdditionalFiles Include="PublicAPI.Shipped.txt" />
     <AdditionalFiles Include="PublicAPI.Unshipped.txt" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Caching.NET.Tests" />
+  </ItemGroup>
 </Project>
