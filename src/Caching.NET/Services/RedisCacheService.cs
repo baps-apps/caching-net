@@ -89,11 +89,36 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                 cts.Token).ConfigureAwait(false);
             if (bytes is { Length: > 0 })
             {
-                var value = _serializer.Deserialize<T>(bytes);
-                if (value != null)
+                var expectedFormat = ResolveFormatId(_serializer.FormatId);
+                var expectedSchema = StableTypeHash.Compute<T>();
+                var status = PayloadEnvelope.TryRead(bytes, expectedFormat, expectedSchema, out var payload);
+                switch (status)
                 {
-                    CacheInstruments.RecordHit(Mode, "get_or_create");
-                    return value;
+                    case PayloadEnvelopeReadResult.Ok:
+                        var value = _serializer.Deserialize<T>(payload);
+                        if (value != null)
+                        {
+                            CacheInstruments.RecordHit(Mode, "get_or_create");
+                            CacheInstruments.RecordPayloadBytes(Mode, "get_or_create", payload.Length);
+                            return value;
+                        }
+                        CacheInstruments.RecordMiss(Mode, "get_or_create", "SerializationFailed");
+                        break;
+                    case PayloadEnvelopeReadResult.EnvelopeInvalid:
+                        _logger.LogWarning(CacheLogEvents.RedisEnvelopeInvalid, "Envelope invalid for key {Key}; treating as miss.", TruncateKey(key));
+                        CacheInstruments.RecordMiss(Mode, "get_or_create", "EnvelopeInvalid");
+                        CacheInstruments.RecordSchemaDrift(Mode, "envelope_invalid");
+                        break;
+                    case PayloadEnvelopeReadResult.FormatDrift:
+                        _logger.LogWarning(CacheLogEvents.RedisFormatDrift, "Format drift for key {Key}; treating as miss.", TruncateKey(key));
+                        CacheInstruments.RecordMiss(Mode, "get_or_create", "EnvelopeInvalid");
+                        CacheInstruments.RecordSchemaDrift(Mode, "format_drift");
+                        break;
+                    case PayloadEnvelopeReadResult.SchemaDrift:
+                        _logger.LogWarning(CacheLogEvents.RedisSchemaDrift, "Schema drift for key {Key}; treating as miss.", TruncateKey(key));
+                        CacheInstruments.RecordMiss(Mode, "get_or_create", "EnvelopeInvalid");
+                        CacheInstruments.RecordSchemaDrift(Mode, "schema_drift");
+                        break;
                 }
             }
         }

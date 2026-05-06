@@ -1,3 +1,4 @@
+using Caching.NET.Internal;
 using Caching.NET.Options;
 using Caching.NET.Resilience;
 using Caching.NET.Serialization;
@@ -136,6 +137,59 @@ public class RedisCacheServiceTests
         Assert.True(captured!.Length >= PayloadEnvelope.HeaderSize);
         Assert.True(captured.AsSpan(0, 4).SequenceEqual("CN20"u8));
         Assert.Equal(PayloadEnvelope.FormatIdJson, captured[4]);
+    }
+
+    private static RedisCacheService BuildService(IDistributedCache distributedCache, CacheOptions? options = null)
+    {
+        var provider = BaseServices(distributedCache, options).BuildServiceProvider();
+        return provider.GetRequiredService<RedisCacheService>();
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_returns_factory_value_when_envelope_magic_is_invalid()
+    {
+        var distributed = new Mock<IDistributedCache>();
+        distributed
+            .Setup(d => d.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new byte[] { 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+
+        var service = BuildService(distributed.Object);
+        var result = await service.GetOrCreateAsync("k", _ => Task.FromResult(new TestDto { Id = 42 }));
+
+        Assert.Equal(42, result.Id);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_treats_schema_drift_as_miss_and_runs_factory()
+    {
+        var oldHash = 0x1234_5678_9ABC_DEF0UL; // intentionally not the real TestDto hash
+        var stalePayload = "{\"Id\":99}"u8.ToArray();
+        byte[] staleWire = PayloadEnvelope.Write(stalePayload, PayloadEnvelope.FormatIdJson, oldHash);
+        var distributed = new Mock<IDistributedCache>();
+        distributed
+            .Setup(d => d.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(staleWire);
+
+        var service = BuildService(distributed.Object);
+        var result = await service.GetOrCreateAsync("k", _ => Task.FromResult(new TestDto { Id = 7 }));
+
+        Assert.Equal(7, result.Id);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_returns_cached_value_when_envelope_matches()
+    {
+        var realHash = StableTypeHash.Compute<TestDto>();
+        byte[] wire = PayloadEnvelope.Write("{\"Id\":99}"u8, PayloadEnvelope.FormatIdJson, realHash);
+        var distributed = new Mock<IDistributedCache>();
+        distributed
+            .Setup(d => d.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(wire);
+
+        var service = BuildService(distributed.Object);
+        var result = await service.GetOrCreateAsync("k", _ => Task.FromResult(new TestDto { Id = 0 }));
+
+        Assert.Equal(99, result.Id);
     }
 
     private sealed class TestDto { public int Id { get; init; } }
