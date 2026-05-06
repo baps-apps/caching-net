@@ -30,6 +30,7 @@
          RS0026 suppressed for legacy multi-overload methods retained for v1 source compat.
          RS0016/RS0017 are NOT suppressed: PublicAPI.Unshipped.txt is populated and tracked. -->
     <NoWarn>$(NoWarn);RS0026;IL2026;IL3050</NoWarn>
+    <GenerateSBOM>true</GenerateSBOM>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="CodeStyle.NET" />
@@ -49,6 +50,9 @@
     <PackageReference Include="MessagePack" />
     <PackageReference Include="System.IO.Hashing" />
     <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Sbom.Targets">
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
   </ItemGroup>
