@@ -100,6 +100,12 @@ public sealed class CacheOptions
     public TimeSpan? HybridLocalCacheExpiration { get; set; }
 
     /// <summary>
+    /// Set by <c>CachingBuilder.RequireTagSupport()</c>; when true the validator
+    /// rejects startup if <see cref="Mode"/> is not <see cref="CacheMode.Hybrid"/>.
+    /// </summary>
+    public bool RequireTagSupport { get; set; }
+
+    /// <summary>
     /// When true, raw cache keys appear in log messages. Default false (only hash). Dev-only toggle.
     /// </summary>
     public bool IncludeRawKeyInLogs { get; set; }

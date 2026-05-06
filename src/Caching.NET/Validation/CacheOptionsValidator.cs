@@ -67,6 +67,11 @@ internal sealed partial class CacheOptionsValidator : IValidateOptions<CacheOpti
             failures.Add($"{nameof(CacheOptions.TtlJitterPercentage)} must be in [0, 0.5].");
         }
 
+        if (o.RequireTagSupport && o.Mode != CacheMode.Hybrid)
+        {
+            failures.Add($"RequireTagSupport() was called but Mode={o.Mode}; tag support is only available in Hybrid mode.");
+        }
+
         if (o.FactoryTimeout < TimeSpan.FromMilliseconds(100) || o.FactoryTimeout > TimeSpan.FromMinutes(30))
         {
             failures.Add($"{nameof(CacheOptions.FactoryTimeout)} must be between 100ms and 30 minutes.");

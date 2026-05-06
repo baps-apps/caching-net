@@ -29,12 +29,16 @@ Caching.NET.CachingBuilder.WithMaximumKeyLength(int length) -> Caching.NET.Cachi
 Caching.NET.CachingBuilder.WithMaximumPayloadBytes(long bytes) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithMemorySizeLimit(int megabytes) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithOpenTelemetry() -> Caching.NET.CachingBuilder!
+Caching.NET.CachingBuilder.WithMessagePackSerializer() -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithRedisOperationTimeout(System.TimeSpan timeout) -> Caching.NET.CachingBuilder!
+Caching.NET.CachingBuilder.RequireTagSupport() -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithResilience(System.Action<Caching.NET.Resilience.ResiliencePipelineRegistryOptions!>! configure) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithSerializer(Caching.NET.Serialization.ICacheSerializer! serializer) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithSerializer<TSerializer>() -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithStrictCertificateValidation() -> Caching.NET.CachingBuilder!
+Caching.NET.CachingBuilder.WithStaleRefreshConcurrency(int maxConcurrent) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithStripedLocks(int stripeCount) -> Caching.NET.CachingBuilder!
+Caching.NET.CachingBuilder.WithTtlJitter(double percentage) -> Caching.NET.CachingBuilder!
 Caching.NET.Configuration.CacheConfigurationKeys
 Caching.NET.Extensions.CacheServiceCallExtensions
 Caching.NET.Extensions.ServiceCollectionExtensions
@@ -105,6 +109,8 @@ Caching.NET.Options.CacheOptions.RedisConnectionString.get -> string?
 Caching.NET.Options.CacheOptions.RedisConnectionString.set -> void
 Caching.NET.Options.CacheOptions.RedisOperationTimeout.get -> System.TimeSpan
 Caching.NET.Options.CacheOptions.RedisOperationTimeout.set -> void
+Caching.NET.Options.CacheOptions.RequireTagSupport.get -> bool
+Caching.NET.Options.CacheOptions.RequireTagSupport.set -> void
 Caching.NET.Options.CacheOptions.StaleRefreshConcurrency.get -> int
 Caching.NET.Options.CacheOptions.StaleRefreshConcurrency.set -> void
 Caching.NET.Options.CacheOptions.StrictRedisCertificateValidation.get -> bool
