@@ -515,10 +515,22 @@ Test projects under `tests/`:
 
    **CI perf gate:** baseline stored in `bench-baseline.json`. CI fails if mean p99 latency or `Allocated` regresses > 10 % vs baseline.
 
-### CI Pipeline (GitHub Actions)
+### Local Build & Test Tooling
 
-- Job matrix: `[ubuntu-latest, windows-latest] × [net8.0, net9.0, net10.0]`.
-- Stages: restore → build (warnings-as-errors) → unit → integration (Testcontainers) → chaos → property → bench (gate) → pack (only on tag).
+No remote CI service is used. All build, test, AOT smoke, bench, perf-gate, and pack work runs through cross-platform PowerShell Core (`pwsh`) scripts under `scripts/`. Single entrypoint `scripts/dev.ps1` exposes subcommands:
+
+- `build` — restore + build (warnings-as-errors).
+- `test` — unit tests across `[net8.0, net9.0, net10.0]`.
+- `test:integration` — Testcontainers Redis suite (requires Docker).
+- `test:chaos` — Polly fault-injection suite.
+- `test:property` — FsCheck property suite.
+- `aot` — `Caching.NET.AotSmoke` publish + run.
+- `bench` — BenchmarkDotNet run, JSON output to `bench/Caching.NET.Bench/BenchmarkDotNet.Artifacts`.
+- `bench:gate` — compare current bench output against `bench-baseline.json`; fail on > 10 % regression.
+- `pack` — produce signed nupkg + snupkg into `nupkgs/`.
+- `all` — runs the full local equivalent of the former CI matrix in dependency order.
+
+Runs on Windows / Linux / macOS via `pwsh`. Developers and reviewers execute the same scripts; no green-checkmark badge is sourced from a remote runner.
 
 ---
 
@@ -600,9 +612,9 @@ All OTel instruments · miss-reason · eviction listener · payload histogram ·
 `GetMany` / `SetMany` / `RemoveMany` (with Redis pipelining) · `GetAsync` / `RefreshAsync` / `ExistsAsync` · sliding expiration · tag overloads · `MessagePackCacheSerializer` · `CacheKeyBuilder` · stale-while-revalidate · TTL jitter.
 
 **P3 — Hardening & Ops**
-AOT/trim verified · Testcontainers integration suite · Polly chaos suite · BenchmarkDotNet + perf gate · K8s/ElastiCache runbook · sharding guide · deterministic build + source-link + SBOM · cred rotation hooks · cert validation audit logging.
+AOT/trim verified · Testcontainers integration suite · Polly chaos suite · BenchmarkDotNet + perf gate · K8s/ElastiCache runbook · sharding guide · deterministic build + source-link + SBOM · cred rotation hooks · cert validation audit logging · local cross-platform build/test scripts (`scripts/dev.ps1`).
 
-Single tag: `v2.0.0` after all four phases land on `main` and pass full CI (matrix + chaos + perf gate).
+Single tag: `v2.0.0` after all four phases land on `main` and `scripts/dev.ps1 all` is green on every supported host (matrix + chaos + perf gate).
 
 ---
 
@@ -615,7 +627,7 @@ Single tag: `v2.0.0` after all four phases land on `main` and pass full CI (matr
 | Striped-lock false collisions cause unexpected serialization at extreme contention | Default 1024 stripes raises lift; user can `WithStripedLocks(8192)`; benchmark documents trade-off |
 | Removing `ICacheTelemetry` breaks consumers with custom telemetry sinks | Migration doc shows OTel-only path; OTel is industry standard |
 | Multi-tenant `KeyPrefix` mandatory may surprise single-tenant consumers | Default to service name (e.g. `Assembly.GetEntryAssembly().GetName().Name`) suggested in docs; still required to be set explicitly |
-| Multi-TFM CI cost | Ubuntu × 3 TFMs only; Windows on tag builds; total CI < 15 min |
+| Multi-TFM matrix run-time on a single dev host | `scripts/dev.ps1 all` runs all three TFMs in series; full pass < 15 min on a modern laptop. Engineers can scope down via `scripts/dev.ps1 test -Tfm net10.0` while iterating |
 | Schema-drift counter spam during gradual deploys | Counter is per-event, not per-key; rate-limited by miss rate; log de-dup via first-occurrence cache |
 
 ---
@@ -636,10 +648,10 @@ These may land in v2.x minor releases after community feedback.
 ## 15. Acceptance Criteria for v2.0.0 Tag
 
 1. All four phases (P0–P3) merged on `main`.
-2. CI matrix green on `[ubuntu, windows] × [net8.0, net9.0, net10.0]`.
-3. Testcontainers integration suite green.
-4. Polly chaos suite green.
-5. BenchmarkDotNet perf gate green vs `bench-baseline.json`.
+2. `scripts/dev.ps1 all` green locally on at least one Windows host and one Linux/macOS host across `[net8.0, net9.0, net10.0]` (no remote CI runner).
+3. Testcontainers integration suite green via `scripts/dev.ps1 test:integration`.
+4. Polly chaos suite green via `scripts/dev.ps1 test:chaos`.
+5. BenchmarkDotNet perf gate green via `scripts/dev.ps1 bench:gate` vs `bench-baseline.json`.
 6. `PublicAPI.Shipped.txt` matches generated public surface; no Unshipped diffs.
 7. `MIGRATION-V1-TO-V2.md` complete; reviewed by maintainer.
 8. SBOM generated; source-link verified; package signed.

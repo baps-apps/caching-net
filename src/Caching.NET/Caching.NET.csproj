@@ -60,17 +60,11 @@
     <InternalsVisibleTo Include="Caching.NET.Tests" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Caching.NET.Analyzers\Caching.NET.Analyzers.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false"
-                      PrivateAssets="all" />
+    <ProjectReference Include="..\Caching.NET.Analyzers\Caching.NET.Analyzers.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" PrivateAssets="all" />
   </ItemGroup>
   <Target Name="PackAnalyzer" BeforeTargets="_GetPackageFiles">
     <ItemGroup>
-      <None Include="$(MSBuildThisFileDirectory)..\Caching.NET.Analyzers\bin\$(Configuration)\netstandard2.0\Caching.NET.Analyzers.dll"
-            Pack="true"
-            PackagePath="analyzers/dotnet/cs/"
-            Visible="false" />
+      <None Include="$(MSBuildThisFileDirectory)..\Caching.NET.Analyzers\bin\$(Configuration)\netstandard2.0\Caching.NET.Analyzers.dll" Pack="true" PackagePath="analyzers/dotnet/cs/" Visible="false" />
     </ItemGroup>
   </Target>
 </Project>
