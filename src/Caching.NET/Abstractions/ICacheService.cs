@@ -90,4 +90,29 @@ public interface ICacheService
     /// <param name="tags">The collection of tags identifying groups of cache entries.</param>
     /// <param name="cancellationToken">Token used to cancel the underlying cache operations.</param>
     Task RemoveByTagAsync(IEnumerable<string> tags, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads a value from the cache without invoking a factory. Returns <c>default(T)</c>
+    /// when the key is absent. Implementations must not throw on miss.
+    /// </summary>
+    Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull;
+
+    /// <summary>
+    /// Returns <c>true</c> when the cache contains an entry for <paramref name="key"/>.
+    /// Implementations should use the cheapest existence check available
+    /// (e.g. Redis EXISTS; IMemoryCache TryGetValue).
+    /// </summary>
+    Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Always invokes <paramref name="factory"/> and writes the result into the cache,
+    /// overwriting any existing entry. Use to refresh stale data without removing the
+    /// key first.
+    /// </summary>
+    Task RefreshAsync<T>(
+        string key,
+        Func<CancellationToken, Task<T>> factory,
+        TimeSpan? expiration = null,
+        TimeSpan? localExpiration = null,
+        CancellationToken cancellationToken = default) where T : notnull;
 }

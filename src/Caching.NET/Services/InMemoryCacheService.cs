@@ -91,4 +91,40 @@ internal sealed class InMemoryCacheService(
         logger.TagNotSupported("(multiple tags)");
         return Task.CompletedTask;
     }
+
+    /// <inheritdoc />
+    public Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        if (cache.TryGetValue(key, out T? cached))
+        {
+            CacheInstruments.RecordHit(Mode, "get");
+            return Task.FromResult<T?>(cached);
+        }
+        CacheInstruments.RecordMiss(Mode, "get", "NotFound");
+        return Task.FromResult<T?>(default);
+    }
+
+    /// <inheritdoc />
+    public Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        var present = cache.TryGetValue(key, out _);
+        if (present) CacheInstruments.RecordHit(Mode, "exists");
+        else CacheInstruments.RecordMiss(Mode, "exists", "NotFound");
+        return Task.FromResult(present);
+    }
+
+    /// <inheritdoc />
+    public async Task RefreshAsync<T>(
+        string key,
+        Func<CancellationToken, Task<T>> factory,
+        TimeSpan? expiration = null,
+        TimeSpan? localExpiration = null,
+        CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        var value = await factory(cancellationToken).ConfigureAwait(false);
+        await SetAsync(key, value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+    }
 }

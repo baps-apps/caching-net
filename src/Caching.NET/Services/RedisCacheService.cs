@@ -235,6 +235,91 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         return Task.CompletedTask;
     }
 
+    /// <inheritdoc />
+    public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        if (ExceedsKeyLimit(key, nameof(GetAsync)))
+        {
+            CacheInstruments.RecordMiss(Mode, "get", "KeyTooLong");
+            return default;
+        }
+        try
+        {
+            using var cts = CreateOpCts(cancellationToken);
+            byte[]? bytes = await _readPipeline.ExecuteAsync(
+                async ct => await _cache.GetAsync(key, ct).ConfigureAwait(false),
+                cts.Token).ConfigureAwait(false);
+            if (bytes is null or { Length: 0 })
+            {
+                CacheInstruments.RecordMiss(Mode, "get", "NotFound");
+                return default;
+            }
+            var expectedFormat = ResolveFormatId(_serializer.FormatId);
+            var expectedSchema = StableTypeHash.Compute<T>();
+            var status = PayloadEnvelope.TryRead(bytes, expectedFormat, expectedSchema, out var payload);
+            if (status == PayloadEnvelopeReadResult.Ok)
+            {
+                var value = _serializer.Deserialize<T>(payload);
+                if (value != null)
+                {
+                    CacheInstruments.RecordHit(Mode, "get");
+                    CacheInstruments.RecordPayloadBytes(Mode, "get", payload.Length);
+                    return value;
+                }
+                CacheInstruments.RecordMiss(Mode, "get", "SerializationFailed");
+                return default;
+            }
+            CacheInstruments.RecordMiss(Mode, "get", "EnvelopeInvalid");
+            return default;
+        }
+        catch (Exception ex)
+        {
+            if (_options.Value.ThrowOnFailure && !_options.Value.FailOpen) throw;
+            _logger.RedisGetFailed(FormatKey(key), ex);
+            CacheInstruments.RecordError(Mode, "get", ClassifyError(ex));
+            return default;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        if (ExceedsKeyLimit(key, nameof(ExistsAsync))) return false;
+        try
+        {
+            using var cts = CreateOpCts(cancellationToken);
+            var bytes = await _readPipeline.ExecuteAsync(
+                async ct => await _cache.GetAsync(key, ct).ConfigureAwait(false),
+                cts.Token).ConfigureAwait(false);
+            var present = bytes is { Length: > 0 };
+            if (present) CacheInstruments.RecordHit(Mode, "exists");
+            else CacheInstruments.RecordMiss(Mode, "exists", "NotFound");
+            return present;
+        }
+        catch (Exception ex)
+        {
+            if (_options.Value.ThrowOnFailure && !_options.Value.FailOpen) throw;
+            _logger.RedisGetFailed(FormatKey(key), ex);
+            CacheInstruments.RecordError(Mode, "exists", ClassifyError(ex));
+            return false;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task RefreshAsync<T>(
+        string key,
+        Func<CancellationToken, Task<T>> factory,
+        TimeSpan? expiration = null,
+        TimeSpan? localExpiration = null,
+        CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        var value = await factory(cancellationToken).ConfigureAwait(false);
+        await SetAsync(key, value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+    }
+
     private bool ExceedsKeyLimit(string key, string operation)
     {
         var max = _options.Value.MaximumKeyLength;

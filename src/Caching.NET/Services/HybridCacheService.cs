@@ -144,6 +144,69 @@ internal sealed class HybridCacheService(
             await RemoveByTagAsync(tag, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <inheritdoc />
+    public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        if (!options.Value.Enabled || cache == null)
+        {
+            CacheInstruments.RecordMiss(Mode, "get", "Disabled");
+            return default;
+        }
+        try
+        {
+            T value = await cache.GetOrCreateAsync<T>(
+                key,
+                static _ => ValueTask.FromResult(default(T)!),
+                options: null,
+                tags: null,
+                cancellationToken).ConfigureAwait(false);
+            if (value is null)
+            {
+                CacheInstruments.RecordMiss(Mode, "get", "NotFound");
+                return default;
+            }
+            CacheInstruments.RecordHit(Mode, "get");
+            return value;
+        }
+        catch (Exception ex)
+        {
+            CacheInstruments.RecordError(Mode, "get", ClassifyError(ex));
+            return default;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
+    {
+        var v = await GetAsync<object>(key, cancellationToken).ConfigureAwait(false);
+        return v != null;
+    }
+
+    /// <inheritdoc />
+    public async Task RefreshAsync<T>(
+        string key,
+        Func<CancellationToken, Task<T>> factory,
+        TimeSpan? expiration = null,
+        TimeSpan? localExpiration = null,
+        CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        if (!options.Value.Enabled || cache == null) return;
+        try
+        {
+            var entry = BuildEntryOptions(expiration, localExpiration);
+            T value = await factory(cancellationToken).ConfigureAwait(false);
+            await cache.SetAsync(key, value, entry, tags: null, cancellationToken).ConfigureAwait(false);
+            CacheInstruments.RecordSet(Mode);
+        }
+        catch (Exception ex)
+        {
+            logger.HybridSetFailed(FormatKey(key), ex);
+            CacheInstruments.RecordError(Mode, "refresh", ClassifyError(ex));
+        }
+    }
+
     private string FormatKey(string key)
     {
         if (string.IsNullOrEmpty(key)) return "(empty)";

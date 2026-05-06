@@ -215,6 +215,40 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         return ResolveService(modeOverride: null).RemoveByTagAsync(tags, cancellationToken);
     }
 
+    /// <inheritdoc />
+    public Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        if (IsDisabled)
+        {
+            CacheInstruments.RecordMiss(Mode, "get", "Disabled");
+            return Task.FromResult<T?>(default);
+        }
+        return ResolveService(modeOverride: null).GetAsync<T>(PrependPrefix(key), cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        if (IsDisabled) return Task.FromResult(false);
+        return ResolveService(modeOverride: null).ExistsAsync(PrependPrefix(key), cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task RefreshAsync<T>(
+        string key,
+        Func<CancellationToken, Task<T>> factory,
+        TimeSpan? expiration = null,
+        TimeSpan? localExpiration = null,
+        CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        if (IsDisabled) return Task.CompletedTask;
+        return ResolveService(modeOverride: null)
+            .RefreshAsync(PrependPrefix(key), factory, expiration, localExpiration, cancellationToken);
+    }
+
     private ICacheService ResolveService(CacheMode? modeOverride)
     {
         var mode = modeOverride ?? _startupOptions.Mode;
