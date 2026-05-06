@@ -4,77 +4,81 @@ namespace Caching.NET.Internal;
 
 /// <summary>
 /// Source-generated zero-allocation logger messages for hot-path cache operations.
-/// EventId ranges match the stable IDs originally defined in CacheLogEvents:
-///   1000–1099: Redis operations
-///   1100–1199: Hybrid operations
-///   1106–1108: Envelope/schema drift (Redis reads)
-///   1200–1299: Tag/policy not-supported
+/// EventId ranges: 1000–1099 info/debug, 1100–1199 warn, 1200–1299 error.
 /// </summary>
 internal static partial class CacheLogMessages
 {
-    // ── Redis ────────────────────────────────────────────────────────────────
+    // ── Info/Debug (1000–1099) ────────────────────────────────────────────────
 
-    [LoggerMessage(EventId = 1000, Level = LogLevel.Warning,
-        Message = "Redis get failed for key {KeyHash}; executing factory (fail-open).")]
-    public static partial void RedisGetFailed(this ILogger logger, string keyHash, Exception ex);
+    [LoggerMessage(EventId = 1000, Level = LogLevel.Debug,
+        Message = "Cache disabled or unavailable — executing factory for key {Key}.")]
+    public static partial void HybridCacheDisabled(this ILogger logger, string key);
 
-    [LoggerMessage(EventId = 1001, Level = LogLevel.Error,
-        Message = "Redis set failed for key {KeyHash}.")]
-    public static partial void RedisSetFailed(this ILogger logger, string keyHash, Exception ex);
+    [LoggerMessage(EventId = 1001, Level = LogLevel.Debug,
+        Message = "RemoveByTagAsync is not supported in this mode; no-op for tag {Tag}. Use Hybrid mode for tag support.")]
+    public static partial void TagNotSupported(this ILogger logger, string tag);
 
-    [LoggerMessage(EventId = 1002, Level = LogLevel.Error,
-        Message = "Redis remove failed for key {KeyHash}.")]
-    public static partial void RedisRemoveFailed(this ILogger logger, string keyHash, Exception ex);
+    // ── Warning (1100–1199) ───────────────────────────────────────────────────
 
-    [LoggerMessage(EventId = 1003, Level = LogLevel.Error,
-        Message = "Serialization failed for key {KeyHash}.")]
-    public static partial void RedisSerializationFailed(this ILogger logger, string keyHash, Exception ex);
+    [LoggerMessage(EventId = 1100, Level = LogLevel.Warning,
+        Message = "Redis get failed for key {Key}; executing factory (fail-open).")]
+    public static partial void RedisGetFailed(this ILogger logger, string key, Exception ex);
 
-    [LoggerMessage(EventId = 1004, Level = LogLevel.Warning,
+    [LoggerMessage(EventId = 1101, Level = LogLevel.Warning,
+        Message = "Redis set failed for key {Key}.")]
+    public static partial void RedisSetFailed(this ILogger logger, string key, Exception ex);
+
+    [LoggerMessage(EventId = 1102, Level = LogLevel.Warning,
+        Message = "Redis remove failed for key {Key}.")]
+    public static partial void RedisRemoveFailed(this ILogger logger, string key, Exception ex);
+
+    [LoggerMessage(EventId = 1103, Level = LogLevel.Warning,
         Message = "Key length ({Length}) exceeds MaximumKeyLength ({Max}); skipping cache for {Operation}.")]
     public static partial void RedisKeyTooLong(this ILogger logger, int length, int max, string operation);
 
-    [LoggerMessage(EventId = 1005, Level = LogLevel.Warning,
-        Message = "Payload for key {KeyHash} exceeds MaximumPayloadBytes ({Size} bytes); not caching.")]
-    public static partial void RedisPayloadTooLarge(this ILogger logger, string keyHash, int size);
+    [LoggerMessage(EventId = 1104, Level = LogLevel.Warning,
+        Message = "Payload for key {Key} exceeds MaximumPayloadBytes ({Size} bytes); not caching.")]
+    public static partial void RedisPayloadTooLarge(this ILogger logger, string key, int size);
+
+    [LoggerMessage(EventId = 1105, Level = LogLevel.Warning,
+        Message = "Hybrid get failed for key {Key}; executing factory (fail-open).")]
+    public static partial void HybridGetFailed(this ILogger logger, string key, Exception ex);
 
     [LoggerMessage(EventId = 1106, Level = LogLevel.Warning,
-        Message = "Envelope invalid for key {KeyHash}; treating as miss.")]
-    public static partial void RedisEnvelopeInvalid(this ILogger logger, string keyHash);
+        Message = "Envelope invalid for key {Key}; treating as miss.")]
+    public static partial void RedisEnvelopeInvalid(this ILogger logger, string key);
 
     [LoggerMessage(EventId = 1107, Level = LogLevel.Warning,
-        Message = "Format drift for key {KeyHash}; treating as miss.")]
-    public static partial void RedisFormatDrift(this ILogger logger, string keyHash);
+        Message = "Format drift for key {Key}; treating as miss.")]
+    public static partial void RedisFormatDrift(this ILogger logger, string key);
 
     [LoggerMessage(EventId = 1108, Level = LogLevel.Warning,
-        Message = "Schema drift for key {KeyHash}; treating as miss.")]
-    public static partial void RedisSchemaDrift(this ILogger logger, string keyHash);
+        Message = "Schema drift for key {Key}; treating as miss.")]
+    public static partial void RedisSchemaDrift(this ILogger logger, string key);
 
-    // ── Hybrid ───────────────────────────────────────────────────────────────
+    [LoggerMessage(EventId = 1109, Level = LogLevel.Warning,
+        Message = "Caching option {OptionName} changed at runtime but is startup-only. Restart required.")]
+    public static partial void StartupOnlyOptionChanged(this ILogger logger, string optionName);
 
-    [LoggerMessage(EventId = 1100, Level = LogLevel.Error,
-        Message = "Hybrid get failed for key {KeyHash}; executing factory (fail-open).")]
-    public static partial void HybridGetFailed(this ILogger logger, string keyHash, Exception ex);
+    [LoggerMessage(EventId = 1110, Level = LogLevel.Warning,
+        Message = "Redis set failed after factory for key {Key}; returning value without caching.")]
+    public static partial void RedisSetFailedAfterFactory(this ILogger logger, string key, Exception ex);
 
-    [LoggerMessage(EventId = 1101, Level = LogLevel.Error,
-        Message = "Hybrid set failed for key {KeyHash}.")]
-    public static partial void HybridSetFailed(this ILogger logger, string keyHash, Exception ex);
+    // ── Error (1200–1299) ─────────────────────────────────────────────────────
 
-    [LoggerMessage(EventId = 1102, Level = LogLevel.Error,
-        Message = "Hybrid remove failed for key {KeyHash}.")]
-    public static partial void HybridRemoveFailed(this ILogger logger, string keyHash, Exception ex);
+    [LoggerMessage(EventId = 1200, Level = LogLevel.Error,
+        Message = "Serialization failed for key {Key}.")]
+    public static partial void RedisSerializationFailed(this ILogger logger, string key, Exception ex);
 
-    [LoggerMessage(EventId = 1103, Level = LogLevel.Error,
+    [LoggerMessage(EventId = 1201, Level = LogLevel.Error,
+        Message = "Hybrid set failed for key {Key}.")]
+    public static partial void HybridSetFailed(this ILogger logger, string key, Exception ex);
+
+    [LoggerMessage(EventId = 1202, Level = LogLevel.Error,
+        Message = "Hybrid remove failed for key {Key}.")]
+    public static partial void HybridRemoveFailed(this ILogger logger, string key, Exception ex);
+
+    [LoggerMessage(EventId = 1203, Level = LogLevel.Error,
         Message = "Hybrid tag-remove failed for tag {Tag}.")]
     public static partial void HybridTagRemoveFailed(this ILogger logger, string tag, Exception ex);
-
-    [LoggerMessage(EventId = 1104, Level = LogLevel.Debug,
-        Message = "Cache disabled or unavailable — executing factory for key {KeyHash}.")]
-    public static partial void HybridCacheDisabled(this ILogger logger, string keyHash);
-
-    // ── Tag not supported ────────────────────────────────────────────────────
-
-    [LoggerMessage(EventId = 1200, Level = LogLevel.Debug,
-        Message = "RemoveByTagAsync is not supported in this mode; no-op for tag {Tag}. Use Hybrid mode for tag support.")]
-    public static partial void TagNotSupported(this ILogger logger, string tag);
 }

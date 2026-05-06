@@ -88,9 +88,7 @@ internal sealed class InMemoryCacheService(
     /// <inheritdoc />
     public Task RemoveByTagAsync(IEnumerable<string> tags, CancellationToken cancellationToken = default)
     {
-        if (tags != null)
-            foreach (var tag in tags)
-                logger.TagNotSupported(tag);
+        logger.TagNotSupported("(multiple tags)");
         return Task.CompletedTask;
     }
 }

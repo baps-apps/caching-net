@@ -105,17 +105,17 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                         CacheInstruments.RecordMiss(Mode, "get_or_create", "SerializationFailed");
                         break;
                     case PayloadEnvelopeReadResult.EnvelopeInvalid:
-                        _logger.RedisEnvelopeInvalid(TruncateKey(key));
+                        _logger.RedisEnvelopeInvalid(FormatKey(key));
                         CacheInstruments.RecordMiss(Mode, "get_or_create", "EnvelopeInvalid");
                         CacheInstruments.RecordSchemaDrift(Mode, "envelope_invalid");
                         break;
                     case PayloadEnvelopeReadResult.FormatDrift:
-                        _logger.RedisFormatDrift(TruncateKey(key));
+                        _logger.RedisFormatDrift(FormatKey(key));
                         CacheInstruments.RecordMiss(Mode, "get_or_create", "EnvelopeInvalid");
                         CacheInstruments.RecordSchemaDrift(Mode, "format_drift");
                         break;
                     case PayloadEnvelopeReadResult.SchemaDrift:
-                        _logger.RedisSchemaDrift(TruncateKey(key));
+                        _logger.RedisSchemaDrift(FormatKey(key));
                         CacheInstruments.RecordMiss(Mode, "get_or_create", "EnvelopeInvalid");
                         CacheInstruments.RecordSchemaDrift(Mode, "schema_drift");
                         break;
@@ -126,7 +126,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         {
             if (_options.Value.ThrowOnFailure && !_options.Value.FailOpen)
                 throw;
-            _logger.RedisGetFailed(TruncateKey(key), ex);
+            _logger.RedisGetFailed(FormatKey(key), ex);
             CacheInstruments.RecordError(Mode, "get_or_create", ClassifyError(ex));
             return await factory(cancellationToken).ConfigureAwait(false);
         }
@@ -139,7 +139,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         }
         catch (Exception ex) when (_options.Value.FailOpen)
         {
-            _logger.RedisSetFailed(TruncateKey(key), ex);
+            _logger.RedisSetFailedAfterFactory(FormatKey(key), ex);
             CacheInstruments.RecordError(Mode, "set", ClassifyError(ex));
         }
         return result;
@@ -159,7 +159,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         }
         catch (Exception ex)
         {
-            _logger.RedisSerializationFailed(TruncateKey(key), ex);
+            _logger.RedisSerializationFailed(FormatKey(key), ex);
             if (_options.Value.ThrowOnFailure && !_options.Value.FailOpen) throw;
             CacheInstruments.RecordError(Mode, "serialize", "Serialization");
             return;
@@ -167,7 +167,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
 
         if (_options.Value.MaximumPayloadBytes > 0 && payload.Length > _options.Value.MaximumPayloadBytes)
         {
-            _logger.RedisPayloadTooLarge(TruncateKey(key), payload.Length);
+            _logger.RedisPayloadTooLarge(FormatKey(key), payload.Length);
             return;
         }
 
@@ -188,7 +188,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         catch (Exception ex)
         {
             if (_options.Value.ThrowOnFailure && !_options.Value.FailOpen) throw;
-            _logger.RedisSetFailed(TruncateKey(key), ex);
+            _logger.RedisSetFailed(FormatKey(key), ex);
             CacheInstruments.RecordError(Mode, "set", ClassifyError(ex));
         }
     }
@@ -208,7 +208,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         catch (Exception ex)
         {
             if (_options.Value.ThrowOnFailure && !_options.Value.FailOpen) throw;
-            _logger.RedisRemoveFailed(TruncateKey(key), ex);
+            _logger.RedisRemoveFailed(FormatKey(key), ex);
             CacheInstruments.RecordError(Mode, "remove", ClassifyError(ex));
         }
     }
@@ -231,9 +231,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
     /// <inheritdoc />
     public Task RemoveByTagAsync(IEnumerable<string> tags, CancellationToken cancellationToken = default)
     {
-        if (tags != null)
-            foreach (var tag in tags)
-                _logger.TagNotSupported(tag);
+        _logger.TagNotSupported("(multiple tags)");
         return Task.CompletedTask;
     }
 
@@ -246,10 +244,12 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         return true;
     }
 
-    private static string TruncateKey(string key)
+    private string FormatKey(string key)
     {
         if (string.IsNullOrEmpty(key)) return "(empty)";
-        return key.Length <= 64 ? key : key[..64] + "...";
+        if (_options.Value.IncludeRawKeyInLogs)
+            return key.Length <= 64 ? key : key[..64] + "...";
+        return StableStringHash.Compute64(key).ToString("x16");
     }
 
     private static byte ResolveFormatId(string formatId) => formatId switch

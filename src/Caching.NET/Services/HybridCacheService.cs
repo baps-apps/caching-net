@@ -40,7 +40,7 @@ internal sealed class HybridCacheService(
 
         if (!options.Value.Enabled || cache == null)
         {
-            logger.HybridCacheDisabled(TruncateKey(key));
+            logger.HybridCacheDisabled(FormatKey(key));
             CacheInstruments.RecordMiss(Mode, "get_or_create", "Disabled");
             return await factory(cancellationToken).ConfigureAwait(false);
         }
@@ -63,7 +63,7 @@ internal sealed class HybridCacheService(
         }
         catch (Exception ex)
         {
-            logger.HybridGetFailed(TruncateKey(key), ex);
+            logger.HybridGetFailed(FormatKey(key), ex);
             CacheInstruments.RecordError(Mode, "get_or_create", ClassifyError(ex));
             return await factory(cancellationToken).ConfigureAwait(false);
         }
@@ -89,7 +89,7 @@ internal sealed class HybridCacheService(
         }
         catch (Exception ex)
         {
-            logger.HybridSetFailed(TruncateKey(key), ex);
+            logger.HybridSetFailed(FormatKey(key), ex);
             CacheInstruments.RecordError(Mode, "set", ClassifyError(ex));
         }
     }
@@ -106,7 +106,7 @@ internal sealed class HybridCacheService(
         }
         catch (Exception ex)
         {
-            logger.HybridRemoveFailed(TruncateKey(key), ex);
+            logger.HybridRemoveFailed(FormatKey(key), ex);
             CacheInstruments.RecordError(Mode, "remove", ClassifyError(ex));
         }
     }
@@ -144,10 +144,12 @@ internal sealed class HybridCacheService(
             await RemoveByTagAsync(tag, cancellationToken).ConfigureAwait(false);
     }
 
-    private static string TruncateKey(string key)
+    private string FormatKey(string key)
     {
         if (string.IsNullOrEmpty(key)) return "(empty)";
-        return key.Length <= 64 ? key : key[..64] + "...";
+        if (options.Value.IncludeRawKeyInLogs)
+            return key.Length <= 64 ? key : key[..64] + "...";
+        return StableStringHash.Compute64(key).ToString("x16");
     }
 
     private static HybridCacheEntryOptions? BuildEntryOptions(TimeSpan? expiration, TimeSpan? localExpiration)
