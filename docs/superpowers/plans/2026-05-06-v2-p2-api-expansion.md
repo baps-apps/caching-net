@@ -1,5 +1,7 @@
 # Caching.NET v2 — P2 API Expansion Implementation Plan
 
+> **Status: COMPLETE — all tasks implemented and verified as of 2026-05-06**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Land all P2 deliverables from `docs/superpowers/specs/2026-05-05-v2-amazon-scale-design.md` §4–§5 + §12: batch APIs (`GetMany/SetMany/RemoveMany`), single-key extras (`GetAsync/RefreshAsync/ExistsAsync`), per-call expiration controls (sliding + jitter + AllowStaleFor), `CacheKeyBuilder`, `MessagePackCacheSerializer`, stale-while-revalidate orchestrator, `RequireTagSupport()` builder gate.
