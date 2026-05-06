@@ -70,6 +70,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
 
         if (IsDisabled)
         {
+            CacheInstruments.RecordMiss(Mode, "get_or_create", "Disabled");
             return await factory(cancellationToken).ConfigureAwait(false);
         }
 
@@ -77,6 +78,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
 
         if ((callOptions?.BypassCache ?? false))
         {
+            CacheInstruments.RecordMiss(Mode, "get_or_create", "Bypass");
             var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
             try
             {

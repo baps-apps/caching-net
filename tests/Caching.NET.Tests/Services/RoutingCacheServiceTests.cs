@@ -1,6 +1,7 @@
 using Caching.NET.Abstractions;
 using Caching.NET.Extensions;
 using Caching.NET.Options;
+using Caching.NET.Tests.Telemetry;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -187,6 +188,58 @@ public class RoutingCacheServiceTests
         await cache.RemoveAsync(new[] { "disabled:rem1", "disabled:rem2" });
         await cache.RemoveByTagAsync("tag");
         await cache.RemoveByTagAsync(new[] { "tag1", "tag2" });
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_records_Bypass_miss_when_BypassCache_is_set()
+    {
+        var (values, listener) = MeterListenerHelpers.Capture<long>("cache.misses", "Routing");
+        using var _ = listener;
+
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "true",
+            ["CacheOptions:Mode"] = "InMemory"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<ICacheService>();
+
+        await cache.GetOrCreateAsync(
+            "bypass:miss",
+            _ => Task.FromResult("v"),
+            new CacheCallOptions { BypassCache = true },
+            expiration: null,
+            localExpiration: null,
+            CancellationToken.None);
+
+        Assert.Contains(values, v => v.tags.Any(t => t.Key == "cache.miss_reason" && (string?)t.Value == "Bypass"));
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_records_Disabled_miss_when_Enabled_is_false()
+    {
+        var (values, listener) = MeterListenerHelpers.Capture<long>("cache.misses", "Routing");
+        using var _ = listener;
+
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "false",
+            ["CacheOptions:Mode"] = "InMemory"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<ICacheService>();
+
+        await cache.GetOrCreateAsync("disabled:miss", _ => Task.FromResult("v"));
+
+        Assert.Contains(values, v => v.tags.Any(t => t.Key == "cache.miss_reason" && (string?)t.Value == "Disabled"));
     }
 }
 
