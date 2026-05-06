@@ -1,5 +1,7 @@
 # Caching.NET Health Checks
 
+> **v2 note:** The builder API is unchanged. Use `WithKeyPrefix(...)` (not `WithInstanceName`) when configuring the cache mode alongside health checks. See [MIGRATION-V1-TO-V2.md](MIGRATION-V1-TO-V2.md) for the full v2 change list.
+
 Caching.NET includes a built-in health check that verifies the cache pipeline is operational. It integrates with ASP.NET Core's standard health check system.
 
 ## Quick Start
