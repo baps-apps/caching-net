@@ -71,14 +71,6 @@ internal sealed class InMemoryCacheService(
     }
 
     /// <inheritdoc />
-    public async Task RemoveAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
-    {
-        if (keys == null) return;
-        foreach (var key in keys)
-            await RemoveAsync(key, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <inheritdoc />
     public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
         logger.TagNotSupported(tag);
@@ -126,5 +118,42 @@ internal sealed class InMemoryCacheService(
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         var value = await factory(cancellationToken).ConfigureAwait(false);
         await SetAsync(key, value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<string, T?>> GetManyAsync<T>(
+        IEnumerable<string> keys, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        var dict = new Dictionary<string, T?>();
+        foreach (var k in keys)
+        {
+            if (string.IsNullOrWhiteSpace(k)) continue;
+            dict[k] = await GetAsync<T>(k, cancellationToken).ConfigureAwait(false);
+        }
+        return dict;
+    }
+
+    /// <inheritdoc />
+    public async Task SetManyAsync<T>(
+        IReadOnlyDictionary<string, T> items,
+        TimeSpan? expiration = null,
+        TimeSpan? localExpiration = null,
+        CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        foreach (var kvp in items)
+            await SetAsync(kvp.Key, kvp.Value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task RemoveManyAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
+    {
+        if (keys is null) return;
+        foreach (var k in keys)
+        {
+            if (!string.IsNullOrWhiteSpace(k))
+                await RemoveAsync(k, cancellationToken).ConfigureAwait(false);
+        }
     }
 }

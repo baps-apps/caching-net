@@ -42,7 +42,7 @@ public class BoundaryTests
     }
 
     [Fact]
-    public async Task RemoveAsync_NullKeys_DoesNotThrow()
+    public async Task RemoveManyAsync_NullKeys_DoesNotThrow()
     {
         var config = new Dictionary<string, string?>
         {
@@ -56,7 +56,7 @@ public class BoundaryTests
         using var provider = services.BuildServiceProvider();
         var cache = provider.GetRequiredService<ICacheService>();
 
-        await cache.RemoveAsync((IEnumerable<string>?)null!);
+        await cache.RemoveManyAsync((IEnumerable<string>?)null!);
     }
 
     [Fact]

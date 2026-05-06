@@ -192,16 +192,6 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     }
 
     /// <inheritdoc />
-    public async Task RemoveAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
-    {
-        if (IsDisabled || keys is null) return;
-        var service = ResolveService(modeOverride: null);
-        var prefixed = new List<string>();
-        foreach (var k in keys) prefixed.Add(PrependPrefix(k));
-        await service.RemoveAsync(prefixed, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <inheritdoc />
     public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
         if (IsDisabled) return Task.CompletedTask;
@@ -247,6 +237,53 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         if (IsDisabled) return Task.CompletedTask;
         return ResolveService(modeOverride: null)
             .RefreshAsync(PrependPrefix(key), factory, expiration, localExpiration, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<string, T?>> GetManyAsync<T>(
+        IEnumerable<string> keys, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        if (IsDisabled)
+            return new Dictionary<string, T?>();
+
+        var keyList = keys.Where(k => !string.IsNullOrWhiteSpace(k)).ToArray();
+        if (keyList.Length == 0) return new Dictionary<string, T?>();
+
+        var prefixed = new string[keyList.Length];
+        for (int i = 0; i < keyList.Length; i++) prefixed[i] = PrependPrefix(keyList[i]);
+
+        var inner = await ResolveService(modeOverride: null)
+            .GetManyAsync<T>(prefixed, cancellationToken).ConfigureAwait(false);
+
+        var dict = new Dictionary<string, T?>(keyList.Length);
+        for (int i = 0; i < keyList.Length; i++)
+            dict[keyList[i]] = inner.TryGetValue(prefixed[i], out var v) ? v : default;
+        return dict;
+    }
+
+    /// <inheritdoc />
+    public Task SetManyAsync<T>(
+        IReadOnlyDictionary<string, T> items,
+        TimeSpan? expiration = null,
+        TimeSpan? localExpiration = null,
+        CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        if (IsDisabled) return Task.CompletedTask;
+        var prefixed = new Dictionary<string, T>(items.Count);
+        foreach (var kvp in items) prefixed[PrependPrefix(kvp.Key)] = kvp.Value;
+        return ResolveService(modeOverride: null)
+            .SetManyAsync(prefixed, expiration, localExpiration, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task RemoveManyAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
+    {
+        if (IsDisabled || keys is null) return Task.CompletedTask;
+        var prefixed = new List<string>();
+        foreach (var k in keys) if (!string.IsNullOrWhiteSpace(k)) prefixed.Add(PrependPrefix(k));
+        return ResolveService(modeOverride: null).RemoveManyAsync(prefixed, cancellationToken);
     }
 
     private ICacheService ResolveService(CacheMode? modeOverride)

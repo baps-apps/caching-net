@@ -68,14 +68,6 @@ public interface ICacheService
     Task RemoveAsync(string key, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Removes multiple values from the cache by keys.
-    /// Implementations should ignore <c>null</c> or empty keys.
-    /// </summary>
-    /// <param name="keys">The collection of cache keys to remove. When <c>null</c>, the call is ignored.</param>
-    /// <param name="cancellationToken">Token used to cancel the underlying cache operations.</param>
-    Task RemoveAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Removes all cache entries associated with a tag.
     /// Implementations that do not support tags must treat this as a no-op.
     /// </summary>
@@ -115,4 +107,26 @@ public interface ICacheService
         TimeSpan? expiration = null,
         TimeSpan? localExpiration = null,
         CancellationToken cancellationToken = default) where T : notnull;
+
+    /// <summary>
+    /// Reads multiple values from the cache. The returned dictionary contains an entry
+    /// for every key in <paramref name="keys"/> — missing keys map to <c>default(T)</c>.
+    /// </summary>
+    Task<IReadOnlyDictionary<string, T?>> GetManyAsync<T>(
+        IEnumerable<string> keys,
+        CancellationToken cancellationToken = default) where T : notnull;
+
+    /// <summary>
+    /// Writes multiple values to the cache. All entries share the same expiration arguments.
+    /// </summary>
+    Task SetManyAsync<T>(
+        IReadOnlyDictionary<string, T> items,
+        TimeSpan? expiration = null,
+        TimeSpan? localExpiration = null,
+        CancellationToken cancellationToken = default) where T : notnull;
+
+    /// <summary>
+    /// Removes multiple keys. <c>null</c>/empty/whitespace keys are skipped.
+    /// </summary>
+    Task RemoveManyAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default);
 }

@@ -214,14 +214,6 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
     }
 
     /// <inheritdoc />
-    public async Task RemoveAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
-    {
-        if (keys == null) return;
-        foreach (var key in keys)
-            await RemoveAsync(key, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <inheritdoc />
     public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
         _logger.TagNotSupported(tag);
@@ -318,6 +310,49 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         var value = await factory(cancellationToken).ConfigureAwait(false);
         await SetAsync(key, value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<string, T?>> GetManyAsync<T>(
+        IEnumerable<string> keys, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        var keyList = keys.Where(k => !string.IsNullOrWhiteSpace(k)).ToArray();
+        if (keyList.Length == 0) return new Dictionary<string, T?>();
+
+        var tasks = new Task<T?>[keyList.Length];
+        for (int i = 0; i < keyList.Length; i++)
+            tasks[i] = GetAsync<T>(keyList[i], cancellationToken);
+        var values = await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        var dict = new Dictionary<string, T?>(keyList.Length);
+        for (int i = 0; i < keyList.Length; i++) dict[keyList[i]] = values[i];
+        return dict;
+    }
+
+    /// <inheritdoc />
+    public async Task SetManyAsync<T>(
+        IReadOnlyDictionary<string, T> items,
+        TimeSpan? expiration = null,
+        TimeSpan? localExpiration = null,
+        CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        var tasks = new List<Task>(items.Count);
+        foreach (var kvp in items)
+            tasks.Add(SetAsync(kvp.Key, kvp.Value, expiration, localExpiration, cancellationToken));
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task RemoveManyAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
+    {
+        if (keys is null) return;
+        var tasks = new List<Task>();
+        foreach (var k in keys)
+            if (!string.IsNullOrWhiteSpace(k))
+                tasks.Add(RemoveAsync(k, cancellationToken));
+        await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
     private bool ExceedsKeyLimit(string key, string operation)

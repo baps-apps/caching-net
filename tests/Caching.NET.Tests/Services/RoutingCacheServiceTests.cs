@@ -185,7 +185,7 @@ public class RoutingCacheServiceTests
 
         await cache.SetAsync("disabled:set", "value");
         await cache.RemoveAsync("disabled:rem");
-        await cache.RemoveAsync(new[] { "disabled:rem1", "disabled:rem2" });
+        await cache.RemoveManyAsync(new[] { "disabled:rem1", "disabled:rem2" });
         await cache.RemoveByTagAsync("tag");
         await cache.RemoveByTagAsync(new[] { "tag1", "tag2" });
     }
