@@ -9,8 +9,10 @@
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Caching.NET/Caching.NET.csproj" />
+    <Project Path="src/Caching.NET.Analyzers/Caching.NET.Analyzers.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Caching.NET.Tests/Caching.NET.Tests.csproj" />
+    <Project Path="tests/Caching.NET.Tests.Analyzers/Caching.NET.Tests.Analyzers.csproj" />
   </Folder>
 </Solution>
