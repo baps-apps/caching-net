@@ -190,6 +190,7 @@ static Caching.NET.Serialization.PayloadEnvelope.Magic.get -> System.ReadOnlySpa
 static Caching.NET.Serialization.PayloadEnvelope.TryRead(System.ReadOnlySpan<byte> wire, byte expectedFormatId, ulong expectedSchemaHash, out System.ReadOnlySpan<byte> payload) -> Caching.NET.Serialization.PayloadEnvelopeReadResult
 static Caching.NET.Serialization.PayloadEnvelope.Write(System.ReadOnlySpan<byte> payload, byte formatId, ulong schemaHash) -> byte[]!
 static Caching.NET.Telemetry.CacheInstruments.AddStaleRefreshInFlight(string! mode, long delta) -> void
+static Caching.NET.Telemetry.CacheInstruments.RecordTlsValidation(string! mode, string! result) -> void
 static Caching.NET.Telemetry.CacheInstruments.RecordCircuitStateChange(string! mode, string! pipeline, string! circuitState) -> void
 static Caching.NET.Telemetry.CacheInstruments.RecordDuration(string! mode, string! operation, double milliseconds) -> void
 static Caching.NET.Telemetry.CacheInstruments.RecordError(string! mode, string! operation, string! errorKind) -> void

@@ -52,6 +52,9 @@ public static class CacheInstruments
     internal static readonly UpDownCounter<long> StaleRefreshInFlight =
         Meter.CreateUpDownCounter<long>("cache.stale_refresh.in_flight", unit: "{task}", description: "Background stale-refresh tasks in flight.");
 
+    internal static readonly Counter<long> TlsValidations =
+        Meter.CreateCounter<long>("cache.tls.validation", unit: "{event}", description: "Redis TLS certificate validation outcomes.");
+
     /// <summary>Record a cache hit.</summary>
     public static void RecordHit(string mode, string operation)
         => Hits.Add(1,
@@ -125,5 +128,11 @@ public static class CacheInstruments
     public static void AddStaleRefreshInFlight(string mode, long delta)
         => StaleRefreshInFlight.Add(delta,
             new KeyValuePair<string, object?>("cache.mode", mode));
+
+    /// <summary>Record a Redis TLS validation outcome.</summary>
+    public static void RecordTlsValidation(string mode, string result)
+        => TlsValidations.Add(1,
+            new KeyValuePair<string, object?>("cache.mode", mode),
+            new KeyValuePair<string, object?>("cache.tls_result", result));
 
 }

@@ -2,6 +2,7 @@ using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.ComponentModel.DataAnnotations;
 using StackExchange.Redis;
@@ -219,6 +220,19 @@ public static class ServiceCollectionExtensions
             }
         }
 
+        // 7b. Register TLS certificate validator for Redis/Hybrid modes.
+        if (effectiveOptions.Mode is CacheMode.Redis or CacheMode.Hybrid)
+        {
+            services.TryAddSingleton(sp =>
+            {
+                var opts = sp.GetRequiredService<IOptions<CacheOptions>>().Value;
+                var logger = sp.GetRequiredService<ILogger<RedisCertificateValidator>>();
+                var validator = new RedisCertificateValidator(logger, opts.StrictRedisCertificateValidation);
+                RedisCertificateValidation.Configure(validator);
+                return validator;
+            });
+        }
+
         // 8. Register the striped lock manager for stampede protection.
         services.TryAddSingleton<Internal.StripedLockManager>(sp =>
             new Internal.StripedLockManager(sp.GetRequiredService<IOptions<CacheOptions>>().Value.StripeLockCount));
@@ -292,8 +306,11 @@ public static class ServiceCollectionExtensions
         CacheOptions options,
         Action<ConfigurationOptions>? redisConfigAction)
     {
-        services.TryAddSingleton<IConnectionMultiplexer>(_ =>
+        services.TryAddSingleton<IConnectionMultiplexer>(sp =>
         {
+            // Ensure the TLS validator is configured before the multiplexer connects.
+            _ = sp.GetService<RedisCertificateValidator>();
+
             ConfigurationOptions conf;
             if (redisConfigAction is not null)
             {
@@ -352,9 +369,7 @@ public static class ServiceCollectionExtensions
             }
 
             // RedisInstanceName removed in v2; KeyPrefix is applied at the routing layer instead.
-            var strict = options.StrictRedisCertificateValidation;
-            redis.ConfigurationOptions.CertificateValidation += (sender, certificate, chain, errors) =>
-                RedisCertificateValidation.ValidateServerCertificate(sender, certificate, chain, errors, strict);
+            redis.ConfigurationOptions.CertificateValidation += RedisCertificateValidation.ValidateServerCertificate;
         });
     }
 
@@ -391,9 +406,7 @@ public static class ServiceCollectionExtensions
                 }
 
                 // RedisInstanceName removed in v2; KeyPrefix is applied at the routing layer instead.
-                var strict = options.StrictRedisCertificateValidation;
-                redis.ConfigurationOptions.CertificateValidation += (sender, certificate, chain, errors) =>
-                    RedisCertificateValidation.ValidateServerCertificate(sender, certificate, chain, errors, strict);
+                redis.ConfigurationOptions.CertificateValidation += RedisCertificateValidation.ValidateServerCertificate;
             });
         }
     }
