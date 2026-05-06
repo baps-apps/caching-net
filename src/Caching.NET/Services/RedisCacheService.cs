@@ -146,14 +146,19 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
             return;
         }
 
+        byte formatId = ResolveFormatId(_serializer.FormatId);
+        ulong schemaHash = StableTypeHash.Compute<T>();
+        byte[] wire = PayloadEnvelope.Write(bytes, formatId, schemaHash);
+
         try
         {
             using var cts = CreateOpCts(cancellationToken);
             var entryOptions = new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan };
             await _writePipeline.ExecuteAsync(
-                async ct => await _cache.SetAsync(key, bytes, entryOptions, ct).ConfigureAwait(false),
+                async ct => await _cache.SetAsync(key, wire, entryOptions, ct).ConfigureAwait(false),
                 cts.Token).ConfigureAwait(false);
             CacheInstruments.RecordSet(Mode);
+            CacheInstruments.RecordPayloadBytes(Mode, "set", bytes.Length);
         }
         catch (Exception ex)
         {
@@ -219,4 +224,11 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         if (string.IsNullOrEmpty(key)) return "(empty)";
         return key.Length <= 64 ? key : key[..64] + "...";
     }
+
+    private static byte ResolveFormatId(string formatId) => formatId switch
+    {
+        "json"    => PayloadEnvelope.FormatIdJson,
+        "msgpack" => PayloadEnvelope.FormatIdMsgPack,
+        _         => 0xFF,
+    };
 }

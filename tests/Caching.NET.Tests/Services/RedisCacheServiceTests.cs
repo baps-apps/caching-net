@@ -111,4 +111,32 @@ public class RedisCacheServiceTests
         await cache.RemoveByTagAsync("tag");
         await cache.RemoveByTagAsync(new[] { "a", "b" });
     }
+
+    [Fact]
+    public async Task SetAsync_writes_envelope_wrapped_payload_to_distributed_cache()
+    {
+        var distributed = new Mock<IDistributedCache>();
+        byte[]? captured = null;
+        distributed
+            .Setup(d => d.SetAsync(
+                It.IsAny<string>(),
+                It.IsAny<byte[]>(),
+                It.IsAny<DistributedCacheEntryOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string, byte[], DistributedCacheEntryOptions, CancellationToken>((_, b, _, _) => captured = b)
+            .Returns(Task.CompletedTask);
+
+        var services = BaseServices(distributed.Object);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<RedisCacheService>();
+
+        await cache.SetAsync("orders-svc:Order:1", new TestDto { Id = 1 });
+
+        Assert.NotNull(captured);
+        Assert.True(captured!.Length >= PayloadEnvelope.HeaderSize);
+        Assert.True(captured.AsSpan(0, 4).SequenceEqual("CN20"u8));
+        Assert.Equal(PayloadEnvelope.FormatIdJson, captured[4]);
+    }
+
+    private sealed class TestDto { public int Id { get; init; } }
 }
