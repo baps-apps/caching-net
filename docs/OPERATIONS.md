@@ -1,90 +1,84 @@
-# Caching.NET operational runbook
+# Operations
 
-This guide helps operations and support teams run Caching.NET in production. For configuration options, see the [README](../README.md#configuration).
+## Configuration
 
-## Runtime configuration changes
-
-Mode is determined by `CacheOptions.Mode` (InMemory, Redis, Hybrid). Change the configuration (e.g., `appsettings.json`, environment variables, or your config provider) and restart the application.
-
-**Hot-reloadable (no restart):**
-
-- `Enabled` flag — takes effect immediately via IOptionsMonitor
-
-**Restart required:**
-
-- `Mode`, `RedisConnectionString`, `RedisInstanceName`, and all other settings
-
-**Safe ordering:** Prefer switching to a mode that does not add new dependencies (e.g., from Redis to InMemory) to avoid new failure modes. When moving from InMemory to Redis or Hybrid, ensure Redis is reachable and connection strings are correct before deploying.
-
-**Hybrid without Redis:** For Hybrid mode, omitting `RedisConnectionString` runs in-memory-only (with stampede protection). You can "disable Redis" by removing or blanking `RedisConnectionString` and restarting, so the app keeps caching locally without Redis.
-
-## Disabling caching
-
-1. Set `CacheOptions:Enabled` to `false` in configuration.
-2. Configuration takes effect immediately (hot-reloadable) — no restart required.
-3. Verify: all `GetOrCreateAsync` calls now run the factory directly; `SetAsync` / `Remove*` are no-op.
-4. To re-enable: set `Enabled` back to `true`.
-
-Use this when:
-
-- Cache or Redis is causing errors and you want to reduce impact while you fix the backend.
-- You need to rule out cache-related bugs (stale data, serialization, etc.).
-
-## Health checks
-
-For full health check details — probe logic, FailOpen interaction, Kubernetes probes, combining with Redis health checks, and troubleshooting — see [HEALTH-CHECKS.md](HEALTH-CHECKS.md).
-
-### Startup validation
-
-After building the service provider, call **`serviceProvider.ValidateCacheRegistration()`** (e.g., in host startup) to ensure `ICacheService` resolves and the configured mode's backing services are registered. This fails fast on DI misconfiguration; it does **not** probe Redis or the cache backend.
-
-### Quick setup
-
-```csharp
-builder.Services.AddCaching(builder.Configuration, cache => cache
-    .WithHealthChecks());
-
-var app = builder.Build();
-app.Services.ValidateCacheRegistration();
-app.MapHealthChecks("/health");
+```jsonc
+// appsettings.json
+{
+  "Caching": {
+    "KeyPrefix": "orders-svc:v1",
+    "Mode": "Hybrid",
+    "RedisConnectionString": "rediss://elasticache.amzn.example:6380",
+    "StrictRedisCertificateValidation": true,
+    "FailOpen": true,
+    "DefaultExpiration": "00:10:00",
+    "TtlJitterPercentage": 0.10,
+    "MaximumKeyLength": 512,
+    "MaximumPayloadBytes": 1048576,
+    "StaleRefreshConcurrency": 256,
+    "FactoryTimeout": "00:00:30",
+    "RedisOperationTimeout": "00:00:02"
+  }
+}
 ```
 
-## Interpreting logs
+```csharp
+services.AddCaching(builder.Configuration.GetSection("Caching"));
+```
 
-- **InMemory / Redis tag calls:** If you see debug messages like *"RemoveByTagAsync is not supported in InMemory/Redis mode"*, the app is calling tag APIs in a mode that does not support them. This is a no-op; switch to **Hybrid** if you need tag-based invalidation.
-- **Redis failures (fail-open):** With default `FailOpen=true`, Redis get/set/remove failures are logged (warning/error) and the operation falls back to the factory (get) or is skipped (set/remove). Look for messages such as *"Redis get failed for key ...; executing factory (fail-open)"* or *"Redis set failed for key ..."*. These indicate Redis connectivity or serialization issues; the app continues to work without caching.
-- **Hybrid failures:** Similar messages for Hybrid (e.g., *"Error getting or creating cache entry for key ...; executing factory (fail-open)"*) mean the hybrid layer caught an exception and ran the factory instead. Check Redis and in-memory tier health.
-- **Key/payload limits:** Warnings like *"Key length ... exceeds MaximumKeyLength"* or *"Payload for key ... exceeds MaximumPayloadBytes"* mean the entry was not cached. Consider shortening keys or reducing payload size, or increasing limits if appropriate.
-- **Cache disabled/unavailable:** Debug messages like *"Cache disabled or unavailable - executing factory for key ..."* (Hybrid) indicate caching is off or the cache instance is null; the factory is executed every time.
+## AWS ElastiCache (TLS, IAM auth)
 
-## Tuning
+1. Create a Redis 7.x replication group with **encryption-in-transit enabled** and **IAM authentication** enabled.
+2. Configure the security group to allow port 6380 from the EKS pod CIDR.
+3. Generate a connection string of the form:
+   `rediss://<cluster>.cache.amazonaws.com:6380,ssl=true,abortConnect=false,user=<iam-user>,password=<token>`
+4. Use the AWS SDK to mint a short-lived auth token (15-min TTL) and write it to a secret.
+5. Point `Caching:RedisConnectionString` at that secret. Rotate the secret periodically — the `RedisConnectionRotator` hosted service rebuilds the multiplexer when the value changes; no pod restart required.
 
-- **DefaultExpiration / DefaultLocalExpiration:** Shorter TTLs reduce stale data and memory use but increase load on the source (e.g., database). For high-churn or volatile data, use shorter values (e.g., 1-5 minutes). For stable reference data, longer values (e.g., 30-60 minutes) are fine. When you do not configure these options explicitly, Caching.NET uses sensible internal defaults (currently 10 minutes for `DefaultExpiration` and 5 minutes for `DefaultLocalExpiration` in Hybrid) so entries are not unbounded.
-- **MemorySizeLimitMb:** When set, the in-memory cache uses a size limit (see [INTERNALS.md](INTERNALS.md#configuration-deep-dive) for behavior). Use this in production to cap memory; tune based on instance size and number of keys.
-- **MaximumPayloadBytes / MaximumKeyLength:** When left unset, Caching.NET does not impose extra limits beyond the underlying caches. For large-scale systems, set these (for example, payloads capped in the low megabytes and keys capped in the low hundreds to ~1k characters) to avoid storing very large keys or values and to protect memory and network.
+## Kubernetes deployment
 
-## Incident playbooks
+```yaml
+# Excerpt
+apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        env:
+        - name: Caching__KeyPrefix
+          value: orders-svc:v1
+        - name: Caching__Mode
+          value: Hybrid
+        envFrom:
+        - secretRef:
+            name: cache-secrets   # contains Caching__RedisConnectionString
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080  # caching-net health-check is wired here
+```
 
-### Redis instability
+## Sharding
 
-- **Symptoms:** Logs show repeated messages like *"Redis get failed for key ...; executing factory (fail-open)"* or *"Redis set failed for key ..."*. Upstream databases see increased load as cache falls back to the factory.
-- **Actions:**
-  1. Confirm `FailOpen=true` so requests continue to succeed.
-  2. Temporarily switch to `Mode=InMemory` or set `Enabled=false` in `CacheOptions` for affected services and redeploy, to remove Redis from the critical path.
-  3. Investigate Redis separately (connectivity, CPU, memory, slowlog).
-  4. Once Redis is stable, switch mode back to Redis or Hybrid and redeploy.
-- **Resolution:** Redis log messages stop; cache hit rates return to normal; upstream database load decreases.
+Caching.NET delegates sharding to `IDistributedCache` (StackExchange.Redis). For ElastiCache cluster mode, set the connection-string `replicationGroup=<id>` so the multiplexer routes by hash slot. For self-hosted Redis Cluster use `cluster=true` in the connection string.
 
-### Suspected stale or corrupted cached data
+## Credential rotation
 
-- **Symptoms:** Users see outdated responses even after underlying data is updated. Logs do not show factory exceptions, but cache hits are frequent.
-- **Actions:**
-  1. Use `CacheCallOptions.ForceRefresh` for the affected keys to refresh entries without flushing the entire cache.
-  2. If using Hybrid with tags, call `RemoveByTagAsync` for relevant tags to invalidate groups of keys.
-  3. Temporarily reduce `DefaultExpiration` (and `DefaultLocalExpiration` for Hybrid) to accelerate natural expiration.
-  4. Review serialization changes or DTO versioning that may have caused incompatibilities.
-- **Resolution:** Responses reflect current data; cache miss rate temporarily increases then stabilizes.
+`RedisConnectionRotator` listens on `IOptionsMonitor<CacheOptions>`. When the Configuration provider re-reads `RedisConnectionString` (triggered by your secret reloader), the rotator:
+1. Builds a new `IConnectionMultiplexer` with the new credentials.
+2. Atomically swaps the singleton in DI.
+3. Disposes the old multiplexer (existing in-flight requests complete on the old connection).
 
-## Security
+Operational checklist for rotation:
+- [ ] Confirm `IConfigurationRoot.Reload()` is wired to your secret store.
+- [ ] Pre-rotate: monitor `cache.errors{cache.error_kind="ConnectionFailed"}` for spikes.
+- [ ] Rotate: write the new credential to the secret store.
+- [ ] Post-rotate: verify `cache.hits` continues to flow at the previous rate.
 
-For security guidance (secrets, PII, key namespacing, Redis TLS), see the [README security section](../README.md#security) and [INTERNALS.md](INTERNALS.md#security-and-tls).
+## Circuit-breaker tuning
+
+Defaults (Polly v8): 50% failure ratio over a 30-second sampling window with a 20-call minimum throughput; opens for 15s.
+
+Watch `cache.circuit_state_changes` and `cache.errors{cache.error_kind="CircuitOpen"}` to validate the new shape.
