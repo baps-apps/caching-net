@@ -125,4 +125,5 @@ public static class CacheInstruments
     public static void AddStaleRefreshInFlight(string mode, long delta)
         => StaleRefreshInFlight.Add(delta,
             new KeyValuePair<string, object?>("cache.mode", mode));
+
 }

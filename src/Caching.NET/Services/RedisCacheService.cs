@@ -254,8 +254,8 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
 
     private static byte ResolveFormatId(string formatId) => formatId switch
     {
-        "json"    => PayloadEnvelope.FormatIdJson,
+        "json" => PayloadEnvelope.FormatIdJson,
         "msgpack" => PayloadEnvelope.FormatIdMsgPack,
-        _         => PayloadEnvelope.FormatIdUnknown,
+        _ => PayloadEnvelope.FormatIdUnknown,
     };
 }
