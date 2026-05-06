@@ -22,6 +22,9 @@ public static class PayloadEnvelope
     /// <summary>FormatId for the built-in MessagePack serializer.</summary>
     public const byte FormatIdMsgPack = 0x02;
 
+    /// <summary>FormatId for unknown or custom serializers.</summary>
+    public const byte FormatIdUnknown = 0xFF;
+
     /// <summary>Allocate a wire-format byte[] containing the envelope and payload.</summary>
     /// <param name="payload">Serialized payload bytes (empty allowed).</param>
     /// <param name="formatId">Caller's serializer FormatId byte.</param>

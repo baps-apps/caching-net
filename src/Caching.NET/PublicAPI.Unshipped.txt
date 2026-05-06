@@ -134,6 +134,7 @@ Caching.NET.Telemetry.CacheInstruments
 const Caching.NET.Configuration.CacheConfigurationKeys.CacheOptions = "CacheOptions" -> string!
 const Caching.NET.Serialization.PayloadEnvelope.FormatIdJson = 1 -> byte
 const Caching.NET.Serialization.PayloadEnvelope.FormatIdMsgPack = 2 -> byte
+const Caching.NET.Serialization.PayloadEnvelope.FormatIdUnknown = 255 -> byte
 const Caching.NET.Serialization.PayloadEnvelope.HeaderSize = 17 -> int
 const Caching.NET.Resilience.ResiliencePipelineNames.RedisDelete = "cache.redis.delete" -> string!
 const Caching.NET.Resilience.ResiliencePipelineNames.RedisRead = "cache.redis.read" -> string!

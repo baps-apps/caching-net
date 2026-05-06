@@ -127,10 +127,10 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         if (ExceedsKeyLimit(key, nameof(SetAsync))) return;
 
         var expirationSpan = expiration ?? _options.Value.GetDefaultExpiration() ?? DefaultExpiration;
-        byte[] bytes;
+        byte[] payload;
         try
         {
-            bytes = _serializer.Serialize(value);
+            payload = _serializer.Serialize(value);
         }
         catch (Exception ex)
         {
@@ -140,15 +140,15 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
             return;
         }
 
-        if (_options.Value.MaximumPayloadBytes > 0 && bytes.Length > _options.Value.MaximumPayloadBytes)
+        if (_options.Value.MaximumPayloadBytes > 0 && payload.Length > _options.Value.MaximumPayloadBytes)
         {
-            _logger.LogWarning(CacheLogEvents.RedisPayloadTooLarge, "Payload for key {Key} exceeds MaximumPayloadBytes ({Size} bytes); not caching.", TruncateKey(key), bytes.Length);
+            _logger.LogWarning(CacheLogEvents.RedisPayloadTooLarge, "Payload for key {Key} exceeds MaximumPayloadBytes ({Size} bytes); not caching.", TruncateKey(key), payload.Length);
             return;
         }
 
         byte formatId = ResolveFormatId(_serializer.FormatId);
         ulong schemaHash = StableTypeHash.Compute<T>();
-        byte[] wire = PayloadEnvelope.Write(bytes, formatId, schemaHash);
+        byte[] wire = PayloadEnvelope.Write(payload, formatId, schemaHash);
 
         try
         {
@@ -158,7 +158,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                 async ct => await _cache.SetAsync(key, wire, entryOptions, ct).ConfigureAwait(false),
                 cts.Token).ConfigureAwait(false);
             CacheInstruments.RecordSet(Mode);
-            CacheInstruments.RecordPayloadBytes(Mode, "set", bytes.Length);
+            CacheInstruments.RecordPayloadBytes(Mode, "set", payload.Length);
         }
         catch (Exception ex)
         {
@@ -229,6 +229,6 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
     {
         "json"    => PayloadEnvelope.FormatIdJson,
         "msgpack" => PayloadEnvelope.FormatIdMsgPack,
-        _         => 0xFF,
+        _         => PayloadEnvelope.FormatIdUnknown,
     };
 }
