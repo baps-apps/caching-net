@@ -59,4 +59,26 @@ public class CacheServiceCoreApiTests
         await svc.RefreshAsync("k", _ => Task.FromResult("first"));
         Assert.Equal("first", await svc.GetAsync<string>("k"));
     }
+
+    [Fact]
+    public async Task Sliding_expiration_keeps_entry_alive_on_each_access_in_memory()
+    {
+        var memory = new MemoryCache(new MemoryCacheOptions());
+        var opts = MsOptions.Options.Create(
+            new CacheOptions { KeyPrefix = "sliding", TtlJitterPercentage = 0 });
+        var inMem = new InMemoryCacheService(memory, opts,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<InMemoryCacheService>.Instance);
+        var entry = new Microsoft.Extensions.Caching.Memory.MemoryCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromMilliseconds(500),
+            SlidingExpiration = TimeSpan.FromMilliseconds(200),
+        };
+        await inMem.SetAsync("k", "v", entry);
+
+        for (int i = 0; i < 4; i++)
+        {
+            await Task.Delay(100);
+            Assert.True(await inMem.ExistsAsync("k"));
+        }
+    }
 }

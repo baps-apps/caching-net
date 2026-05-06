@@ -61,6 +61,15 @@ internal sealed class InMemoryCacheService(
         return Task.CompletedTask;
     }
 
+    internal Task SetAsync<T>(string key, T value, MemoryCacheEntryOptions entry, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        entry.PostEvictionCallbacks.Add(new PostEvictionCallbackRegistration { EvictionCallback = s_evictionCallback });
+        cache.Set(key, value, entry);
+        CacheInstruments.RecordSet(Mode);
+        return Task.CompletedTask;
+    }
+
     /// <inheritdoc />
     public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
     {

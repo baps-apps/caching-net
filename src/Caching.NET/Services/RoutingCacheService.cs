@@ -46,6 +46,34 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
 
     private string PrependPrefix(string key) => _keyPrefix.Length == 0 ? key : _keyPrefix + key;
 
+    private TimeSpan? ApplyJitter(TimeSpan? expiration, double? perCallPercentage)
+    {
+        if (expiration is not { } ttl) return expiration;
+        var pct = perCallPercentage ?? _optionsMonitor.CurrentValue.TtlJitterPercentage;
+        return TtlJitter.Apply(ttl, pct);
+    }
+
+    private Task SetWithExpirationAsync<T>(
+        ICacheService service, string prefixedKey, T value,
+        TimeSpan? expiration, TimeSpan? sliding, TimeSpan? localExpiration,
+        CancellationToken ct) where T : notnull
+    {
+        if (sliding is null) return service.SetAsync(prefixedKey, value, expiration, localExpiration, ct);
+        if (service is InMemoryCacheService inMem)
+        {
+            var entry = new Microsoft.Extensions.Caching.Memory.MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = expiration,
+                SlidingExpiration = sliding,
+            };
+            return inMem.SetAsync(prefixedKey, value, entry, ct);
+        }
+        if (service is RedisCacheService redis)
+            return redis.SetWithSlidingAsync(prefixedKey, value, expiration, sliding, ct);
+        // Hybrid does not support sliding — drop silently.
+        return service.SetAsync(prefixedKey, value, expiration, localExpiration, ct);
+    }
+
     /// <inheritdoc />
     public Task<T> GetOrCreateAsync<T>(
         string key,
@@ -104,7 +132,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
                     try
                     {
                         T value = await factory(ct).ConfigureAwait(false);
-                        await service.SetAsync(prefixed, value, expiration, localExpiration, ct).ConfigureAwait(false);
+                        var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
+                        await SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, ct).ConfigureAwait(false);
                         CacheInstruments.RecordSet(Mode);
                         return value;
                     }
@@ -117,7 +146,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
                 var innerCt = ApplyFactoryTimeout(cancellationToken, out var innerCts);
                 try
                 {
-                    return await service.GetOrCreateAsync(prefixed, factory, expiration, localExpiration, innerCt).ConfigureAwait(false);
+                    var jitteredExp = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
+                    return await service.GetOrCreateAsync(prefixed, factory, jitteredExp, localExpiration, innerCt).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -136,7 +166,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
             try
             {
                 T value = await factory(ct).ConfigureAwait(false);
-                await service.SetAsync(prefixed, value, expiration, localExpiration, ct).ConfigureAwait(false);
+                var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
+                await SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, ct).ConfigureAwait(false);
                 CacheInstruments.RecordSet(Mode);
                 return value;
             }
@@ -149,7 +180,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         var noLockCt = ApplyFactoryTimeout(cancellationToken, out var noLockCts);
         try
         {
-            return await service.GetOrCreateAsync(prefixed, factory, expiration, localExpiration, noLockCt).ConfigureAwait(false);
+            var jitteredExp = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
+            return await service.GetOrCreateAsync(prefixed, factory, jitteredExp, localExpiration, noLockCt).ConfigureAwait(false);
         }
         finally
         {
@@ -181,7 +213,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         if (IsDisabled) return Task.CompletedTask;
         if ((callOptions?.BypassCache ?? false)) return Task.CompletedTask;
         var service = ResolveService(callOptions?.Mode);
-        return service.SetAsync(PrependPrefix(key), value, expiration, localExpiration, cancellationToken);
+        var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
+        return SetWithExpirationAsync(service, PrependPrefix(key), value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -273,8 +306,9 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         if (IsDisabled) return Task.CompletedTask;
         var prefixed = new Dictionary<string, T>(items.Count);
         foreach (var kvp in items) prefixed[PrependPrefix(kvp.Key)] = kvp.Value;
+        var jitteredExpiration = ApplyJitter(expiration, null);
         return ResolveService(modeOverride: null)
-            .SetManyAsync(prefixed, expiration, localExpiration, cancellationToken);
+            .SetManyAsync(prefixed, jitteredExpiration, localExpiration, cancellationToken);
     }
 
     /// <inheritdoc />

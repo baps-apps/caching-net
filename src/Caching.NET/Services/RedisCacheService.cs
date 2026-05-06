@@ -146,7 +146,13 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
     }
 
     /// <inheritdoc />
-    public async Task SetAsync<T>(string key, T value, TimeSpan? expiration = null, TimeSpan? localExpiration = null, CancellationToken cancellationToken = default) where T : notnull
+    public Task SetAsync<T>(string key, T value, TimeSpan? expiration = null, TimeSpan? localExpiration = null, CancellationToken cancellationToken = default) where T : notnull
+        => SetAsyncCore(key, value, expiration, sliding: null, cancellationToken);
+
+    internal Task SetWithSlidingAsync<T>(string key, T value, TimeSpan? expiration, TimeSpan? sliding, CancellationToken cancellationToken) where T : notnull
+        => SetAsyncCore(key, value, expiration, sliding, cancellationToken);
+
+    private async Task SetAsyncCore<T>(string key, T value, TimeSpan? expiration, TimeSpan? sliding, CancellationToken cancellationToken) where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         if (ExceedsKeyLimit(key, nameof(SetAsync))) return;
@@ -178,7 +184,11 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         try
         {
             using var cts = CreateOpCts(cancellationToken);
-            var entryOptions = new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan };
+            var entryOptions = new DistributedCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = expirationSpan,
+                SlidingExpiration = sliding,
+            };
             await _writePipeline.ExecuteAsync(
                 async ct => await _cache.SetAsync(key, wire, entryOptions, ct).ConfigureAwait(false),
                 cts.Token).ConfigureAwait(false);
