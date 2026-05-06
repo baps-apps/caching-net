@@ -4,6 +4,9 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
+  <Folder Name="/aot/">
+    <Project Path="aot/Caching.NET.AotSmoke/Caching.NET.AotSmoke.csproj" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/Caching.NET.Sample/Caching.NET.Sample.csproj" />
   </Folder>
