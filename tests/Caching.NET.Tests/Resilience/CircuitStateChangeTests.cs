@@ -63,6 +63,7 @@ public sealed class CircuitStateChangeTests
         try { await pipeline.ExecuteAsync(_ => ValueTask.FromResult(1)); } catch (BrokenCircuitException) { /* may still be open */ }
 
         Assert.Contains(values, v => v.tags.Any(t => t.Key == "cache.circuit_state" && (string?)t.Value == "open"));
+        Assert.Contains(values, v => v.tags.Any(t => t.Key == "cache.circuit_state" && (string?)t.Value == "half-open"));
     }
 
     [Fact]
