@@ -2,18 +2,19 @@
 Caching.NET.Abstractions.ICacheService
 Caching.NET.Abstractions.ICacheService.ExistsAsync(string! key, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<bool>!
 Caching.NET.Abstractions.ICacheService.GetAsync<T>(string! key, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T?>!
+Caching.NET.Abstractions.ICacheService.GetManyAsync<T>(System.Collections.Generic.IEnumerable<string!>! keys, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyDictionary<string!, T?>!>!
 Caching.NET.Abstractions.ICacheService.GetOrCreateAsync<T>(string! key, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! factory, System.TimeSpan? expiration = null, System.TimeSpan? localExpiration = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T>!
 Caching.NET.Abstractions.ICacheService.RefreshAsync<T>(string! key, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! factory, System.TimeSpan? expiration = null, System.TimeSpan? localExpiration = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
-Caching.NET.Abstractions.ICacheService.GetManyAsync<T>(System.Collections.Generic.IEnumerable<string!>! keys, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyDictionary<string!, T?>!>!
-Caching.NET.Abstractions.ICacheService.RemoveManyAsync(System.Collections.Generic.IEnumerable<string!>! keys, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
-Caching.NET.Abstractions.ICacheService.SetManyAsync<T>(System.Collections.Generic.IReadOnlyDictionary<string!, T>! items, System.TimeSpan? expiration = null, System.TimeSpan? localExpiration = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 Caching.NET.Abstractions.ICacheService.RemoveAsync(string! key, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 Caching.NET.Abstractions.ICacheService.RemoveByTagAsync(System.Collections.Generic.IEnumerable<string!>! tags, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 Caching.NET.Abstractions.ICacheService.RemoveByTagAsync(string! tag, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Caching.NET.Abstractions.ICacheService.RemoveManyAsync(System.Collections.Generic.IEnumerable<string!>! keys, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 Caching.NET.Abstractions.ICacheService.SetAsync<T>(string! key, T value, System.TimeSpan? expiration = null, System.TimeSpan? localExpiration = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Caching.NET.Abstractions.ICacheService.SetManyAsync<T>(System.Collections.Generic.IReadOnlyDictionary<string!, T>! items, System.TimeSpan? expiration = null, System.TimeSpan? localExpiration = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 Caching.NET.CachingBuilder
 Caching.NET.CachingBuilder.CachingBuilder() -> void
 Caching.NET.CachingBuilder.Disable() -> Caching.NET.CachingBuilder!
+Caching.NET.CachingBuilder.RequireTagSupport() -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.UseHybrid() -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.UseHybrid(string! connectionString) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.UseInMemory() -> Caching.NET.CachingBuilder!
@@ -28,15 +29,14 @@ Caching.NET.CachingBuilder.WithKeyPrefix(string! keyPrefix) -> Caching.NET.Cachi
 Caching.NET.CachingBuilder.WithMaximumKeyLength(int length) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithMaximumPayloadBytes(long bytes) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithMemorySizeLimit(int megabytes) -> Caching.NET.CachingBuilder!
-Caching.NET.CachingBuilder.WithOpenTelemetry() -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithMessagePackSerializer() -> Caching.NET.CachingBuilder!
+Caching.NET.CachingBuilder.WithOpenTelemetry() -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithRedisOperationTimeout(System.TimeSpan timeout) -> Caching.NET.CachingBuilder!
-Caching.NET.CachingBuilder.RequireTagSupport() -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithResilience(System.Action<Caching.NET.Resilience.ResiliencePipelineRegistryOptions!>! configure) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithSerializer(Caching.NET.Serialization.ICacheSerializer! serializer) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithSerializer<TSerializer>() -> Caching.NET.CachingBuilder!
-Caching.NET.CachingBuilder.WithStrictCertificateValidation() -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithStaleRefreshConcurrency(int maxConcurrent) -> Caching.NET.CachingBuilder!
+Caching.NET.CachingBuilder.WithStrictCertificateValidation() -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithStripedLocks(int stripeCount) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithTtlJitter(double percentage) -> Caching.NET.CachingBuilder!
 Caching.NET.Configuration.CacheConfigurationKeys
@@ -166,20 +166,16 @@ Caching.NET.Serialization.PayloadEnvelopeReadResult.Ok = 0 -> Caching.NET.Serial
 Caching.NET.Serialization.PayloadEnvelopeReadResult.SchemaDrift = 3 -> Caching.NET.Serialization.PayloadEnvelopeReadResult
 Caching.NET.Telemetry.CacheInstruments
 const Caching.NET.Configuration.CacheConfigurationKeys.CacheOptions = "CacheOptions" -> string!
+const Caching.NET.Resilience.ResiliencePipelineNames.RedisDelete = "cache.redis.delete" -> string!
+const Caching.NET.Resilience.ResiliencePipelineNames.RedisRead = "cache.redis.read" -> string!
+const Caching.NET.Resilience.ResiliencePipelineNames.RedisWrite = "cache.redis.write" -> string!
 const Caching.NET.Serialization.PayloadEnvelope.FormatIdJson = 1 -> byte
 const Caching.NET.Serialization.PayloadEnvelope.FormatIdMsgPack = 2 -> byte
 const Caching.NET.Serialization.PayloadEnvelope.FormatIdUnknown = 255 -> byte
 const Caching.NET.Serialization.PayloadEnvelope.HeaderSize = 17 -> int
-const Caching.NET.Resilience.ResiliencePipelineNames.RedisDelete = "cache.redis.delete" -> string!
-const Caching.NET.Resilience.ResiliencePipelineNames.RedisRead = "cache.redis.read" -> string!
-const Caching.NET.Resilience.ResiliencePipelineNames.RedisWrite = "cache.redis.write" -> string!
 const Caching.NET.Telemetry.CacheInstruments.ActivitySourceName = "Caching.NET" -> string!
 const Caching.NET.Telemetry.CacheInstruments.MeterName = "Caching.NET" -> string!
 const Caching.NET.Telemetry.CacheInstruments.Version = "2.0.0" -> string!
-static Caching.NET.Serialization.PayloadEnvelope.Magic.get -> System.ReadOnlySpan<byte>
-static Caching.NET.Serialization.PayloadEnvelope.TryRead(System.ReadOnlySpan<byte> wire, byte expectedFormatId, ulong expectedSchemaHash, out System.ReadOnlySpan<byte> payload) -> Caching.NET.Serialization.PayloadEnvelopeReadResult
-static Caching.NET.Serialization.PayloadEnvelope.Write(System.ReadOnlySpan<byte> payload, byte formatId, ulong schemaHash) -> byte[]!
-static Caching.NET.Keys.CacheKey.For<T>(object! id) -> Caching.NET.Keys.CacheKeyBuilder!
 static Caching.NET.Extensions.CacheServiceCallExtensions.GetOrCreateAsync<T>(this Caching.NET.Abstractions.ICacheService! cache, string! key, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! factory, Caching.NET.Options.CacheCallOptions? callOptions, System.TimeSpan? expiration = null, System.TimeSpan? localExpiration = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T>!
 static Caching.NET.Extensions.CacheServiceCallExtensions.SetAsync<T>(this Caching.NET.Abstractions.ICacheService! cache, string! key, T value, Caching.NET.Options.CacheCallOptions? callOptions, System.TimeSpan? expiration = null, System.TimeSpan? localExpiration = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 static Caching.NET.Extensions.ServiceCollectionExtensions.AddCaching(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
@@ -188,7 +184,11 @@ static Caching.NET.Extensions.ServiceCollectionExtensions.AddCaching(this Micros
 static Caching.NET.Extensions.ServiceCollectionExtensions.AddCaching(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, System.Action<Caching.NET.CachingBuilder!>! configure) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
 static Caching.NET.Extensions.ServiceCollectionExtensions.AddCachingHealthChecks(this Microsoft.Extensions.DependencyInjection.IHealthChecksBuilder! builder, string! name = "caching-net", Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus failureStatus = Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy) -> Microsoft.Extensions.DependencyInjection.IHealthChecksBuilder!
 static Caching.NET.Extensions.ServiceCollectionExtensions.ValidateCacheRegistration(this System.IServiceProvider! serviceProvider) -> System.IServiceProvider!
+static Caching.NET.Keys.CacheKey.For<T>(object! id) -> Caching.NET.Keys.CacheKeyBuilder!
 static Caching.NET.Resilience.CacheResiliencePipelineBuilder.BuildDefaultRegistry(System.TimeSpan? timeout = null, double failureRatio = 0.5, int minimumThroughput = 20, System.TimeSpan? samplingDuration = null, System.TimeSpan? breakDuration = null, int retryCount = 2, Microsoft.Extensions.Logging.ILoggerFactory? loggerFactory = null) -> Polly.Registry.ResiliencePipelineRegistry<string!>!
+static Caching.NET.Serialization.PayloadEnvelope.Magic.get -> System.ReadOnlySpan<byte>
+static Caching.NET.Serialization.PayloadEnvelope.TryRead(System.ReadOnlySpan<byte> wire, byte expectedFormatId, ulong expectedSchemaHash, out System.ReadOnlySpan<byte> payload) -> Caching.NET.Serialization.PayloadEnvelopeReadResult
+static Caching.NET.Serialization.PayloadEnvelope.Write(System.ReadOnlySpan<byte> payload, byte formatId, ulong schemaHash) -> byte[]!
 static Caching.NET.Telemetry.CacheInstruments.AddStaleRefreshInFlight(string! mode, long delta) -> void
 static Caching.NET.Telemetry.CacheInstruments.RecordCircuitStateChange(string! mode, string! pipeline, string! circuitState) -> void
 static Caching.NET.Telemetry.CacheInstruments.RecordDuration(string! mode, string! operation, double milliseconds) -> void

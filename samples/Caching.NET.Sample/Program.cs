@@ -98,7 +98,9 @@ public class Program
         //   Fluent settings override config-file values on conflict.
         builder.Services.AddCaching(builder.Configuration, cache => cache
             .WithOpenTelemetry()
-            .WithHealthChecks());
+            .WithHealthChecks()
+            .WithTtlJitter(0.10)
+            .WithStaleRefreshConcurrency(128));
 
         // ── Example 9: Explicitly disabled ─────────────────────────
         //   ICacheService still resolves — all calls pass through to factories.

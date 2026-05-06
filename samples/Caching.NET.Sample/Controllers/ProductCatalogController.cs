@@ -1,5 +1,6 @@
 using Caching.NET.Abstractions;
 using Caching.NET.Extensions;
+using Caching.NET.Keys;
 using Caching.NET.Options;
 using Microsoft.AspNetCore.Mvc;
 
@@ -155,6 +156,43 @@ public class ProductCatalogController : ControllerBase
 
         await cache.RemoveByTagAsync(category, cancellationToken);
         return NoContent();
+    }
+
+    /// <summary>
+    /// Returns a single product using stale-while-revalidate semantics.
+    /// After the absolute expiration the cached value continues to be served for an additional
+    /// <c>AllowStaleFor</c> window while a single background refresh runs.
+    /// Demonstrates <see cref="CacheKey.For{T}(object)"/> for structured key construction and
+    /// <see cref="CacheCallOptions.AllowStaleFor"/> for SWR-style caching.
+    /// </summary>
+    /// <param name="id">The product identifier (e.g. <c>p-100</c>).</param>
+    /// <param name="cache">Cache service injected per-request via <c>[FromServices]</c>.</param>
+    /// <param name="ct">Request cancellation token.</param>
+    /// <returns>The product, or <c>404 Not Found</c> when the identifier does not exist.</returns>
+    [HttpGet("products/{id}/with-swr")]
+    public async Task<IActionResult> GetWithSwr(
+        string id,
+        [FromServices] ICacheService cache,
+        CancellationToken ct)
+    {
+        var key = CacheKey.For<Product>(id).Build();
+
+        var product = await cache.GetOrCreateAsync(
+            key,
+            _ =>
+            {
+                var found = AllProducts.FirstOrDefault(p => p.Id == id);
+                return Task.FromResult(found ?? throw new KeyNotFoundException($"Product '{id}' not found."));
+            },
+            callOptions: new CacheCallOptions
+            {
+                AbsoluteExpiration = TimeSpan.FromMinutes(2),
+                AllowStaleFor      = TimeSpan.FromSeconds(30),
+                JitterPercentage   = 0.05,
+            },
+            cancellationToken: ct);
+
+        return Ok(product);
     }
 
     /// <summary>Represents a product in the sample catalog.</summary>
