@@ -1,3 +1,5 @@
+using Caching.NET.Telemetry;
+using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.CircuitBreaker;
 using Polly.Registry;
@@ -20,12 +22,15 @@ public static class CacheResiliencePipelineBuilder
         int minimumThroughput = 20,
         TimeSpan? samplingDuration = null,
         TimeSpan? breakDuration = null,
-        int retryCount = 2)
+        int retryCount = 2,
+        ILoggerFactory? loggerFactory = null)
     {
         var registry = new ResiliencePipelineRegistry<string>();
         foreach (var name in new[] { ResiliencePipelineNames.RedisRead, ResiliencePipelineNames.RedisWrite, ResiliencePipelineNames.RedisDelete })
         {
-            registry.TryAddBuilder(name, (builder, _) =>
+            var pipelineName = name; // capture per-iteration for lambdas
+            var logger = loggerFactory?.CreateLogger(nameof(CacheResiliencePipelineBuilder));
+            registry.TryAddBuilder(pipelineName, (builder, _) =>
             {
                 builder
                     .AddTimeout(new TimeoutStrategyOptions
@@ -38,7 +43,25 @@ public static class CacheResiliencePipelineBuilder
                         MinimumThroughput = minimumThroughput,
                         SamplingDuration = samplingDuration ?? TimeSpan.FromSeconds(30),
                         BreakDuration = breakDuration ?? TimeSpan.FromSeconds(15),
-                        ShouldHandle = static args => ValueTask.FromResult(IsTransient(args.Outcome.Exception))
+                        ShouldHandle = static args => ValueTask.FromResult(IsTransient(args.Outcome.Exception)),
+                        OnOpened = args =>
+                        {
+                            CacheInstruments.RecordCircuitStateChange("Redis", pipelineName, "open");
+                            logger?.LogWarning("Circuit breaker opened for pipeline {Pipeline} (break duration: {BreakDuration})", pipelineName, args.BreakDuration);
+                            return default;
+                        },
+                        OnClosed = _ =>
+                        {
+                            CacheInstruments.RecordCircuitStateChange("Redis", pipelineName, "closed");
+                            logger?.LogWarning("Circuit breaker closed for pipeline {Pipeline}", pipelineName);
+                            return default;
+                        },
+                        OnHalfOpened = _ =>
+                        {
+                            CacheInstruments.RecordCircuitStateChange("Redis", pipelineName, "half-open");
+                            logger?.LogWarning("Circuit breaker half-opened for pipeline {Pipeline}", pipelineName);
+                            return default;
+                        }
                     });
 
                 if (retryCount > 0)
