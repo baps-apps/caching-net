@@ -153,16 +153,16 @@ static Caching.NET.Extensions.ServiceCollectionExtensions.AddCaching(this Micros
 static Caching.NET.Extensions.ServiceCollectionExtensions.AddCachingHealthChecks(this Microsoft.Extensions.DependencyInjection.IHealthChecksBuilder! builder, string! name = "caching-net", Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus failureStatus = Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy) -> Microsoft.Extensions.DependencyInjection.IHealthChecksBuilder!
 static Caching.NET.Extensions.ServiceCollectionExtensions.ValidateCacheRegistration(this System.IServiceProvider! serviceProvider) -> System.IServiceProvider!
 static Caching.NET.Resilience.CacheResiliencePipelineBuilder.BuildDefaultRegistry(System.TimeSpan? timeout = null, double failureRatio = 0.5, int minimumThroughput = 20, System.TimeSpan? samplingDuration = null, System.TimeSpan? breakDuration = null, int retryCount = 2) -> Polly.Registry.ResiliencePipelineRegistry<string!>!
-static Caching.NET.Telemetry.CacheInstruments.RecordDuration(string! mode, string! operation, double milliseconds) -> void
-static Caching.NET.Telemetry.CacheInstruments.RecordError(string! mode, string! operation, string! errorKind) -> void
-static Caching.NET.Telemetry.CacheInstruments.RecordHit(string! mode, string! operation) -> void
-static Caching.NET.Telemetry.CacheInstruments.RecordMiss(string! mode, string! operation, string! reason = "NotFound") -> void
-static Caching.NET.Telemetry.CacheInstruments.RecordRemove(string! mode, string! operation = "remove") -> void
-static Caching.NET.Telemetry.CacheInstruments.RecordSet(string! mode, string! operation = "set") -> void
-static readonly Caching.NET.Telemetry.CacheInstruments.Activity -> System.Diagnostics.ActivitySource!
 static Caching.NET.Telemetry.CacheInstruments.AddStaleRefreshInFlight(string! mode, long delta) -> void
 static Caching.NET.Telemetry.CacheInstruments.RecordCircuitStateChange(string! mode, string! pipeline, string! circuitState) -> void
+static Caching.NET.Telemetry.CacheInstruments.RecordDuration(string! mode, string! operation, double milliseconds) -> void
+static Caching.NET.Telemetry.CacheInstruments.RecordError(string! mode, string! operation, string! errorKind) -> void
 static Caching.NET.Telemetry.CacheInstruments.RecordEviction(string! mode, string! evictionReason) -> void
+static Caching.NET.Telemetry.CacheInstruments.RecordHit(string! mode, string! operation) -> void
+static Caching.NET.Telemetry.CacheInstruments.RecordMiss(string! mode, string! operation, string! reason = "NotFound") -> void
 static Caching.NET.Telemetry.CacheInstruments.RecordPayloadBytes(string! mode, string! operation, long bytes) -> void
+static Caching.NET.Telemetry.CacheInstruments.RecordRemove(string! mode, string! operation = "remove") -> void
 static Caching.NET.Telemetry.CacheInstruments.RecordSchemaDrift(string! mode, string! driftKind) -> void
+static Caching.NET.Telemetry.CacheInstruments.RecordSet(string! mode, string! operation = "set") -> void
 static Caching.NET.Telemetry.CacheInstruments.RecordStaleServed(string! mode, string! operation) -> void
+static readonly Caching.NET.Telemetry.CacheInstruments.Activity -> System.Diagnostics.ActivitySource!
