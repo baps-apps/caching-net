@@ -1,3 +1,4 @@
+using Caching.NET;
 using Caching.NET.Extensions;
 using Caching.NET.Options;
 using Microsoft.Extensions.DependencyInjection;
@@ -7,6 +8,30 @@ namespace Caching.NET.Tests.Builder;
 
 public class CachingBuilderP2Tests
 {
+    [Fact]
+    public void WithTtlJitter_throws_when_builder_lacks_service_collection()
+    {
+        var b = new CachingBuilder();
+        var ex = Assert.Throws<InvalidOperationException>(() => b.WithTtlJitter(0.10));
+        Assert.Contains("WithTtlJitter()", ex.Message);
+    }
+
+    [Fact]
+    public void WithStaleRefreshConcurrency_throws_when_builder_lacks_service_collection()
+    {
+        var b = new CachingBuilder();
+        var ex = Assert.Throws<InvalidOperationException>(() => b.WithStaleRefreshConcurrency(64));
+        Assert.Contains("WithStaleRefreshConcurrency()", ex.Message);
+    }
+
+    [Fact]
+    public void RequireTagSupport_throws_when_builder_lacks_service_collection()
+    {
+        var b = new CachingBuilder();
+        var ex = Assert.Throws<InvalidOperationException>(() => b.RequireTagSupport());
+        Assert.Contains("RequireTagSupport()", ex.Message);
+    }
+
     [Fact]
     public void WithTtlJitter_writes_value_to_options()
     {

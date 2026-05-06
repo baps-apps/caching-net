@@ -233,14 +233,22 @@ public sealed class CachingBuilder
     /// <summary>Apply ±<paramref name="percentage"/> jitter to all entry TTLs (clamped to 0–0.5).</summary>
     public CachingBuilder WithTtlJitter(double percentage)
     {
-        _services?.PostConfigure<CacheOptions>(o => o.TtlJitterPercentage = Math.Clamp(percentage, 0.0, 0.5));
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithTtlJitter() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.PostConfigure<CacheOptions>(o => o.TtlJitterPercentage = Math.Clamp(percentage, 0.0, 0.5));
         return this;
     }
 
     /// <summary>Cap concurrent in-flight stale-while-revalidate background refreshes.</summary>
     public CachingBuilder WithStaleRefreshConcurrency(int maxConcurrent)
     {
-        _services?.PostConfigure<CacheOptions>(o => o.StaleRefreshConcurrency = maxConcurrent);
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithStaleRefreshConcurrency() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.PostConfigure<CacheOptions>(o => o.StaleRefreshConcurrency = maxConcurrent);
         return this;
     }
 
@@ -250,7 +258,11 @@ public sealed class CachingBuilder
     /// </summary>
     public CachingBuilder RequireTagSupport()
     {
-        _services?.PostConfigure<CacheOptions>(o => o.RequireTagSupport = true);
+        if (_services is null)
+            throw new InvalidOperationException(
+                "RequireTagSupport() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.PostConfigure<CacheOptions>(o => o.RequireTagSupport = true);
         return this;
     }
 
