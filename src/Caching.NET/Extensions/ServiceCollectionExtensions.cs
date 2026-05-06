@@ -221,6 +221,13 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<Internal.StripedLockManager>(sp =>
             new Internal.StripedLockManager(sp.GetRequiredService<IOptions<CacheOptions>>().Value.StripeLockCount));
 
+        services.TryAddSingleton<Internal.StaleEntryTracker>();
+        services.TryAddSingleton(sp =>
+        {
+            var opts = sp.GetRequiredService<IOptions<CacheOptions>>().Value;
+            return new Internal.StaleRefreshThrottle(opts.StaleRefreshConcurrency);
+        });
+
         // 9. Register the default ICacheSerializer (consumers may swap via WithSerializer<T>).
         services.TryAddSingleton<Serialization.ICacheSerializer>(_ => new Serialization.JsonCacheSerializer());
 

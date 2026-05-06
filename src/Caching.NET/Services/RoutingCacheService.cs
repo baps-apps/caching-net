@@ -19,6 +19,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     private readonly CacheOptions _startupOptions;
     private readonly ILogger<RoutingCacheService> _logger;
     private readonly StripedLockManager _lockManager;
+    private readonly StaleEntryTracker _staleTracker;
+    private readonly StaleRefreshThrottle _throttle;
     private readonly InMemoryCacheService? _inMemory;
     private readonly RedisCacheService? _redis;
     private readonly HybridCacheService? _hybrid;
@@ -28,6 +30,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         IOptionsMonitor<CacheOptions> optionsMonitor,
         ILogger<RoutingCacheService> logger,
         StripedLockManager lockManager,
+        StaleEntryTracker staleTracker,
+        StaleRefreshThrottle throttle,
         InMemoryCacheService? inMemory = null,
         RedisCacheService? redis = null,
         HybridCacheService? hybrid = null)
@@ -36,6 +40,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         _startupOptions = optionsMonitor.CurrentValue;
         _logger = logger;
         _lockManager = lockManager;
+        _staleTracker = staleTracker;
+        _throttle = throttle;
         _inMemory = inMemory;
         _redis = redis;
         _hybrid = hybrid;
@@ -120,6 +126,30 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
 
         var service = ResolveService(callOptions?.Mode);
 
+        // Stale-while-revalidate: if the entry is past its logical expiry but within the stale
+        // window, return the stale value immediately and schedule a background refresh.
+        // Not supported for Hybrid mode (Hybrid manages its own L1/L2 revalidation internally).
+        var allowStaleFor = callOptions?.AllowStaleFor;
+        if (allowStaleFor is { } swWindow && !IsHybridMode() && _staleTracker.TryGet(prefixed, out var staleMeta))
+        {
+            var nowTicks = DateTime.UtcNow.Ticks;
+            if (nowTicks > staleMeta.AbsExpiresAtUtcTicks && nowTicks <= staleMeta.StaleUntilUtcTicks)
+            {
+                var stale = await service.GetAsync<T>(prefixed, cancellationToken).ConfigureAwait(false);
+                if (stale is not null)
+                {
+                    CacheInstruments.RecordStaleServed(Mode, "get_or_create");
+                    ScheduleBackgroundRefresh(prefixed, factory, callOptions, expiration, localExpiration);
+                    return stale;
+                }
+                _staleTracker.Forget(prefixed);
+            }
+            else if (nowTicks > staleMeta.StaleUntilUtcTicks)
+            {
+                _staleTracker.Forget(prefixed);
+            }
+        }
+
         if ((callOptions?.CoalesceConcurrent ?? true))
         {
             var semaphore = _lockManager.GetLock(prefixed);
@@ -146,6 +176,28 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
                 var innerCt = ApplyFactoryTimeout(cancellationToken, out var innerCts);
                 try
                 {
+                    // When AllowStaleFor is configured, extend the underlying TTL so the entry
+                    // remains readable during the stale window, and register metadata so future
+                    // reads can detect the stale condition without a cache miss.
+                    if (allowStaleFor is { } swrTtl && !IsHybridMode())
+                    {
+                        var rawAbsExp = callOptions?.AbsoluteExpiration ?? expiration ?? _optionsMonitor.CurrentValue.DefaultExpiration;
+                        var jitteredAbsExp = ApplyJitter(rawAbsExp, callOptions?.JitterPercentage) ?? rawAbsExp;
+                        var extendedTtl = jitteredAbsExp + swrTtl;
+                        bool factoryRan = false;
+                        T result = await service.GetOrCreateAsync(
+                            prefixed,
+                            async ct =>
+                            {
+                                factoryRan = true;
+                                return await factory(ct).ConfigureAwait(false);
+                            },
+                            extendedTtl, localExpiration, innerCt).ConfigureAwait(false);
+                        if (factoryRan)
+                            _staleTracker.Register(prefixed, jitteredAbsExp, swrTtl);
+                        return result;
+                    }
+
                     var jitteredExp = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
                     return await service.GetOrCreateAsync(prefixed, factory, jitteredExp, localExpiration, innerCt).ConfigureAwait(false);
                 }
@@ -174,6 +226,34 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
             finally
             {
                 cts?.Dispose();
+            }
+        }
+
+        // No-coalesce path: when AllowStaleFor is configured, use extended TTL + register metadata.
+        if (allowStaleFor is { } swrNoLock && !IsHybridMode())
+        {
+            var rawAbsExpNoLock = callOptions?.AbsoluteExpiration ?? expiration ?? _optionsMonitor.CurrentValue.DefaultExpiration;
+            var jitteredAbsExpNoLock = ApplyJitter(rawAbsExpNoLock, callOptions?.JitterPercentage) ?? rawAbsExpNoLock;
+            var extendedTtlNoLock = jitteredAbsExpNoLock + swrNoLock;
+            var noLockCtSwr = ApplyFactoryTimeout(cancellationToken, out var noLockCtsSwr);
+            try
+            {
+                bool factoryRanNoLock = false;
+                T resultNoLock = await service.GetOrCreateAsync(
+                    prefixed,
+                    async ct =>
+                    {
+                        factoryRanNoLock = true;
+                        return await factory(ct).ConfigureAwait(false);
+                    },
+                    extendedTtlNoLock, localExpiration, noLockCtSwr).ConfigureAwait(false);
+                if (factoryRanNoLock)
+                    _staleTracker.Register(prefixed, jitteredAbsExpNoLock, swrNoLock);
+                return resultNoLock;
+            }
+            finally
+            {
+                noLockCtsSwr?.Dispose();
             }
         }
 
@@ -318,6 +398,45 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         var prefixed = new List<string>();
         foreach (var k in keys) if (!string.IsNullOrWhiteSpace(k)) prefixed.Add(PrependPrefix(k));
         return ResolveService(modeOverride: null).RemoveManyAsync(prefixed, cancellationToken);
+    }
+
+    private bool IsHybridMode() => _startupOptions.Mode == CacheMode.Hybrid;
+
+    private void ScheduleBackgroundRefresh<T>(
+        string prefixedKey,
+        Func<CancellationToken, Task<T>> factory,
+        CacheCallOptions? callOptions,
+        TimeSpan? expiration,
+        TimeSpan? localExpiration) where T : notnull
+    {
+        if (!_throttle.TryAcquire()) return;
+        CacheInstruments.AddStaleRefreshInFlight(Mode, +1);
+        _ = Task.Run(async () =>
+        {
+            var lockStripe = _lockManager.GetLock(prefixedKey);
+            await lockStripe.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                var value = await factory(CancellationToken.None).ConfigureAwait(false);
+                var inner = ResolveService(callOptions?.Mode);
+                var abs = callOptions?.AbsoluteExpiration ?? expiration ?? _optionsMonitor.CurrentValue.DefaultExpiration;
+                var staleFor = callOptions?.AllowStaleFor ?? TimeSpan.Zero;
+                var ttl = abs + staleFor;
+                await inner.SetAsync(prefixedKey, value, ttl, localExpiration, CancellationToken.None).ConfigureAwait(false);
+                if (staleFor > TimeSpan.Zero)
+                    _staleTracker.Register(prefixedKey, abs, staleFor);
+            }
+            catch
+            {
+                // refresh failed; leave stale entry in place to expire naturally
+            }
+            finally
+            {
+                lockStripe.Release();
+                _throttle.Release();
+                CacheInstruments.AddStaleRefreshInFlight(Mode, -1);
+            }
+        });
     }
 
     private ICacheService ResolveService(CacheMode? modeOverride)
