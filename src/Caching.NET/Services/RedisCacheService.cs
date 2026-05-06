@@ -10,6 +10,7 @@ using Polly;
 using Polly.CircuitBreaker;
 using Polly.Registry;
 using Polly.Timeout;
+using StackExchange.Redis;
 
 namespace Caching.NET.Services;
 
@@ -31,6 +32,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
     private readonly ResiliencePipeline _readPipeline;
     private readonly ResiliencePipeline _writePipeline;
     private readonly ResiliencePipeline _deletePipeline;
+    private readonly IConnectionMultiplexer? _multiplexer;
 
     /// <summary>Construct a new <see cref="RedisCacheService"/>.</summary>
     public RedisCacheService(
@@ -38,7 +40,8 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         IOptions<CacheOptions> options,
         ILogger<RedisCacheService> logger,
         ICacheSerializer serializer,
-        ResiliencePipelineRegistry<string> resiliencePipelines)
+        ResiliencePipelineRegistry<string> resiliencePipelines,
+        IConnectionMultiplexer? multiplexer = null)
     {
         _cache = cache;
         _options = options;
@@ -47,6 +50,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         _readPipeline = resiliencePipelines.GetPipeline(ResiliencePipelineNames.RedisRead);
         _writePipeline = resiliencePipelines.GetPipeline(ResiliencePipelineNames.RedisWrite);
         _deletePipeline = resiliencePipelines.GetPipeline(ResiliencePipelineNames.RedisDelete);
+        _multiplexer = multiplexer;
     }
 
     private static string ClassifyError(Exception ex) => ex switch
@@ -322,6 +326,9 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         await SetAsync(key, value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
     }
 
+    // Field name used by Microsoft.Extensions.Caching.StackExchangeRedis to store payload bytes.
+    private static readonly RedisValue _dataField = "data";
+
     /// <inheritdoc />
     public async Task<IReadOnlyDictionary<string, T?>> GetManyAsync<T>(
         IEnumerable<string> keys, CancellationToken cancellationToken = default) where T : notnull
@@ -330,13 +337,56 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         var keyList = keys.Where(k => !string.IsNullOrWhiteSpace(k)).ToArray();
         if (keyList.Length == 0) return new Dictionary<string, T?>();
 
-        var tasks = new Task<T?>[keyList.Length];
-        for (int i = 0; i < keyList.Length; i++)
-            tasks[i] = GetAsync<T>(keyList[i], cancellationToken);
-        var values = await Task.WhenAll(tasks).ConfigureAwait(false);
+        if (_multiplexer is not null)
+        {
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                // Pipeline N HashGetAsync("data") calls in a single roundtrip via IBatch.
+                // IDistributedCache (StackExchangeRedisCache) stores payloads in a Redis hash
+                // at field "data", so we read that field directly to stay format-compatible.
+                var db = _multiplexer.GetDatabase();
+                var batch = db.CreateBatch();
+                var hashTasks = new Task<RedisValue>[keyList.Length];
+                for (int i = 0; i < keyList.Length; i++)
+                    hashTasks[i] = batch.HashGetAsync(keyList[i], _dataField);
+                batch.Execute();
+                RedisValue[] rawValues = await Task.WhenAll(hashTasks).ConfigureAwait(false);
 
-        var dict = new Dictionary<string, T?>(keyList.Length);
-        for (int i = 0; i < keyList.Length; i++) dict[keyList[i]] = values[i];
+                var dict = new Dictionary<string, T?>(keyList.Length);
+                var expectedFormat = ResolveFormatId(_serializer.FormatId);
+                var expectedSchema = StableTypeHash.Compute<T>();
+                for (int i = 0; i < keyList.Length; i++)
+                {
+                    if (!rawValues[i].HasValue) { dict[keyList[i]] = default; continue; }
+                    byte[] wire = (byte[])rawValues[i]!;
+                    var status = PayloadEnvelope.TryRead(wire, expectedFormat, expectedSchema, out var payload);
+                    dict[keyList[i]] = status == PayloadEnvelopeReadResult.Ok
+                        ? _serializer.Deserialize<T>(payload)
+                        : default;
+                }
+                return dict;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.RedisMultiplexerFailed(nameof(GetManyAsync), ex);
+            }
+        }
+
+        return await FanOutGetManyAsync<T>(keyList, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<Dictionary<string, T?>> FanOutGetManyAsync<T>(string[] keys, CancellationToken ct) where T : notnull
+    {
+        var tasks = new Task<T?>[keys.Length];
+        for (int i = 0; i < keys.Length; i++) tasks[i] = GetAsync<T>(keys[i], ct);
+        var values = await Task.WhenAll(tasks).ConfigureAwait(false);
+        var dict = new Dictionary<string, T?>(keys.Length);
+        for (int i = 0; i < keys.Length; i++) dict[keys[i]] = values[i];
         return dict;
     }
 
@@ -358,10 +408,32 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
     public async Task RemoveManyAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
     {
         if (keys is null) return;
-        var tasks = new List<Task>();
-        foreach (var k in keys)
-            if (!string.IsNullOrWhiteSpace(k))
-                tasks.Add(RemoveAsync(k, cancellationToken));
+        var keyList = keys.Where(k => !string.IsNullOrWhiteSpace(k)).ToArray();
+        if (keyList.Length == 0) return;
+
+        if (_multiplexer is not null)
+        {
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var redisKeys = Array.ConvertAll(keyList, k => (RedisKey)k);
+                await _multiplexer.GetDatabase().KeyDeleteAsync(redisKeys).ConfigureAwait(false);
+                CacheInstruments.RecordRemove(Mode);
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.RedisMultiplexerFailed(nameof(RemoveManyAsync), ex);
+            }
+        }
+
+        var tasks = new List<Task>(keyList.Length);
+        foreach (var k in keyList)
+            tasks.Add(RemoveAsync(k, cancellationToken));
         await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 

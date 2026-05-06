@@ -197,6 +197,7 @@ public static class ServiceCollectionExtensions
                     services.TryAddSingleton<InMemoryCacheService>();
                     ConfigureRedisCache(services, effectiveOptions, builder?.RedisConfigurationAction);
                     EnsureCacheSerializerOptions(services);
+                    TryAddConnectionMultiplexer(services, effectiveOptions, builder?.RedisConfigurationAction);
                     services.TryAddSingleton<RedisCacheService>();
                     break;
 
@@ -207,6 +208,7 @@ public static class ServiceCollectionExtensions
                     if (!string.IsNullOrWhiteSpace(effectiveOptions.RedisConnectionString) || builder?.RedisConfigurationAction is not null)
                     {
                         EnsureCacheSerializerOptions(services);
+                        TryAddConnectionMultiplexer(services, effectiveOptions, builder?.RedisConfigurationAction);
                         services.TryAddSingleton<RedisCacheService>();
                     }
                     services.TryAddSingleton<HybridCacheService>();
@@ -283,6 +285,28 @@ public static class ServiceCollectionExtensions
                 .ValidateDataAnnotations()
                 .ValidateOnStart();
         }
+    }
+
+    private static void TryAddConnectionMultiplexer(
+        IServiceCollection services,
+        CacheOptions options,
+        Action<ConfigurationOptions>? redisConfigAction)
+    {
+        services.TryAddSingleton<IConnectionMultiplexer>(_ =>
+        {
+            ConfigurationOptions conf;
+            if (redisConfigAction is not null)
+            {
+                conf = new ConfigurationOptions();
+                redisConfigAction(conf);
+            }
+            else
+            {
+                conf = ConfigurationOptions.Parse(options.RedisConnectionString!, ignoreUnknown: true);
+            }
+            conf.AbortOnConnectFail = false;
+            return ConnectionMultiplexer.Connect(conf);
+        });
     }
 
     private static string SanitizeKeyPrefix(string raw)

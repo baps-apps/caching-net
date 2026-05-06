@@ -18,6 +18,10 @@ internal static partial class CacheLogMessages
         Message = "RemoveByTagAsync is not supported in this mode; no-op for tag {Tag}. Use Hybrid mode for tag support.")]
     public static partial void TagNotSupported(this ILogger logger, string tag);
 
+    [LoggerMessage(EventId = 1002, Level = LogLevel.Debug,
+        Message = "Server-side Redis {Operation} failed; falling back to fan-out.")]
+    public static partial void RedisMultiplexerFailed(this ILogger logger, string operation, Exception ex);
+
     // ── Warning (1100–1199) ───────────────────────────────────────────────────
 
     [LoggerMessage(EventId = 1100, Level = LogLevel.Warning,
