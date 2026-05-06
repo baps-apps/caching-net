@@ -41,6 +41,11 @@ Caching.NET.Extensions.ServiceCollectionExtensions
 Caching.NET.Health.CachingHealthCheck
 Caching.NET.Health.CachingHealthCheck.CachingHealthCheck(Caching.NET.Abstractions.ICacheService! cacheService, Microsoft.Extensions.Options.IOptions<Caching.NET.Options.CacheOptions!>! options, Microsoft.Extensions.Logging.ILogger<Caching.NET.Health.CachingHealthCheck!>! logger) -> void
 Caching.NET.Health.CachingHealthCheck.CheckHealthAsync(Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckContext! context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult>!
+Caching.NET.Keys.CacheKey
+Caching.NET.Keys.CacheKeyBuilder
+Caching.NET.Keys.CacheKeyBuilder.Build() -> string!
+Caching.NET.Keys.CacheKeyBuilder.WithSegment(string! segment) -> Caching.NET.Keys.CacheKeyBuilder!
+Caching.NET.Keys.CacheKeyBuilder.WithVariant(string! variant) -> Caching.NET.Keys.CacheKeyBuilder!
 Caching.NET.Options.CacheCallOptions
 Caching.NET.Options.CacheCallOptions.AbsoluteExpiration.get -> System.TimeSpan?
 Caching.NET.Options.CacheCallOptions.AbsoluteExpiration.init -> void
@@ -141,6 +146,12 @@ Caching.NET.Serialization.JsonCacheSerializer.JsonCacheSerializer() -> void
 Caching.NET.Serialization.JsonCacheSerializer.JsonCacheSerializer(System.Text.Json.JsonSerializerOptions! options) -> void
 Caching.NET.Serialization.JsonCacheSerializer.JsonCacheSerializer(System.Text.Json.Serialization.JsonSerializerContext! context) -> void
 Caching.NET.Serialization.JsonCacheSerializer.Serialize<T>(T value) -> byte[]!
+Caching.NET.Serialization.MessagePackCacheSerializer
+Caching.NET.Serialization.MessagePackCacheSerializer.Deserialize<T>(System.ReadOnlySpan<byte> bytes) -> T?
+Caching.NET.Serialization.MessagePackCacheSerializer.FormatId.get -> string!
+Caching.NET.Serialization.MessagePackCacheSerializer.MessagePackCacheSerializer() -> void
+Caching.NET.Serialization.MessagePackCacheSerializer.MessagePackCacheSerializer(MessagePack.MessagePackSerializerOptions! options) -> void
+Caching.NET.Serialization.MessagePackCacheSerializer.Serialize<T>(T value) -> byte[]!
 Caching.NET.Serialization.PayloadEnvelope
 Caching.NET.Serialization.PayloadEnvelopeReadResult
 Caching.NET.Serialization.PayloadEnvelopeReadResult.EnvelopeInvalid = 1 -> Caching.NET.Serialization.PayloadEnvelopeReadResult
@@ -162,6 +173,7 @@ const Caching.NET.Telemetry.CacheInstruments.Version = "2.0.0" -> string!
 static Caching.NET.Serialization.PayloadEnvelope.Magic.get -> System.ReadOnlySpan<byte>
 static Caching.NET.Serialization.PayloadEnvelope.TryRead(System.ReadOnlySpan<byte> wire, byte expectedFormatId, ulong expectedSchemaHash, out System.ReadOnlySpan<byte> payload) -> Caching.NET.Serialization.PayloadEnvelopeReadResult
 static Caching.NET.Serialization.PayloadEnvelope.Write(System.ReadOnlySpan<byte> payload, byte formatId, ulong schemaHash) -> byte[]!
+static Caching.NET.Keys.CacheKey.For<T>(object! id) -> Caching.NET.Keys.CacheKeyBuilder!
 static Caching.NET.Extensions.CacheServiceCallExtensions.GetOrCreateAsync<T>(this Caching.NET.Abstractions.ICacheService! cache, string! key, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! factory, Caching.NET.Options.CacheCallOptions? callOptions, System.TimeSpan? expiration = null, System.TimeSpan? localExpiration = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T>!
 static Caching.NET.Extensions.CacheServiceCallExtensions.SetAsync<T>(this Caching.NET.Abstractions.ICacheService! cache, string! key, T value, Caching.NET.Options.CacheCallOptions? callOptions, System.TimeSpan? expiration = null, System.TimeSpan? localExpiration = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 static Caching.NET.Extensions.ServiceCollectionExtensions.AddCaching(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
