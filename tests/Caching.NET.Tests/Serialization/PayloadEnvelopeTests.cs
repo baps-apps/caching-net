@@ -8,7 +8,6 @@ public class PayloadEnvelopeTests
 {
     private const byte FormatJson = 0x01;
     private const byte FormatMsgPack = 0x02;
-    private const byte FormatCustom = 0xFF;
 
     [Fact]
     public void Write_emits_magic_format_hash_length_payload()
