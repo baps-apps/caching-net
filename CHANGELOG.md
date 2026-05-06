@@ -1,43 +1,43 @@
 # Changelog
 
-All notable changes to Caching.NET are documented in this file.
+## 2.0.0 — 2026-05-06
 
-The project follows [Semantic Versioning](https://semver.org/). See [docs/INTERNALS.md](docs/INTERNALS.md) for versioning policy.
+Major release. Breaking changes from v1.x. See [docs/MIGRATION-V1-TO-V2.md](docs/MIGRATION-V1-TO-V2.md).
 
-## [Unreleased]
+### Highlights
 
-### Changed
+- Multi-target `net8.0`, `net9.0`, `net10.0` (single package).
+- `KeyPrefix` mandatory across all modes (replaces `RedisInstanceName`).
+- Striped lock manager with stable hashing — no per-key allocation, no leak.
+- Polly v8 resilience pipelines (timeout + circuit breaker + retry) per backend.
+- OpenTelemetry-native via static `CacheInstruments`. `ICacheTelemetry` removed.
+- `PayloadEnvelope` wire format with schema-drift detection.
+- `LoggerMessage` source-gen for hot-path logs.
+- `Caching.NET.Analyzers` ships in the main package — compile-time `CN0001` blocks high-cardinality OTel tags.
+- New API surface: `GetAsync`, `ExistsAsync`, `RefreshAsync`, `GetManyAsync`, `SetManyAsync`, `RemoveManyAsync`.
+- `CacheCallOptions`: `AbsoluteExpiration`, `SlidingExpiration`, `AllowStaleFor`, `Tags`, `JitterPercentage`, `FactoryTimeout`.
+- `CacheKey.For<T>(id).WithVariant(...).Build()` canonical key builder.
+- `MessagePackCacheSerializer` opt-in via `WithMessagePackSerializer()`.
+- Stale-while-revalidate orchestrator (in-process registry; bounded background refresh).
+- TTL jitter (`WithTtlJitter(0.10)` default).
+- TLS certificate audit logging + `cache.tls.validation` counter.
+- Credential rotation hook (`RedisConnectionRotator` reloads multiplexer on options change).
+- Server-side Redis MGET/MSET/KeyDelete pipelining (when `IConnectionMultiplexer` is registered).
+- AOT/trim verified via `Caching.NET.AotSmoke` smoke project.
+- Testcontainers Redis integration suite, Polly chaos suite, FsCheck property suite.
+- BenchmarkDotNet perf-gate via `scripts/dev.ps1 bench:gate` (10% regression threshold).
+- SPDX 2.2 SBOM emitted with the nupkg.
 
-- Renamed `docs/IMPLEMENTATION.md` to `docs/INTERNALS.md` and restructured all documentation to follow the shared package documentation template
+### Removed
 
-## [1.0.0](https://github.com/baps-apps/caching-net/releases/tag/v1.0.0) - Initial release
+- `ICacheTelemetry`, `NoopCacheTelemetry`, `OpenTelemetryCacheTelemetry`.
+- `CacheOptions.RedisInstanceName`, `CachingBuilder.WithRedisInstanceName`.
+- `RemoveAsync(IEnumerable<string>)` (renamed to `RemoveManyAsync`).
+- All synchronous overloads (v2 is async-only).
 
-### Added
+### Defaults changed
 
-- **ICacheService** abstraction for shared caching across .NET applications.
-- **Three cache modes:**
-  - **InMemory** – in-process memory cache only.
-  - **Redis** – distributed Redis via `Microsoft.Extensions.Caching.StackExchangeRedis`.
-  - **Hybrid** – in-memory + optional Redis with stampede protection via `Microsoft.Extensions.Caching.Hybrid`.
-- **CacheOptions** configuration bound from `CacheOptions` section:
-  - `Enabled` (default: `false`, opt-in) – when false, `RoutingCacheService` short-circuits all operations; invalid option values do not fail startup.
-  - `Mode` – InMemory, Redis, or Hybrid.
-  - `DefaultExpiration` / `DefaultLocalExpiration` (TimeSpan format).
-  - `RedisConnectionString`, `RedisInstanceName`, `MaximumPayloadBytes`, `MaximumKeyLength`, `MemorySizeLimitMb`.
-  - `FailOpen`, `ThrowOnFailure`, `FactoryTimeout`, `StrictRedisCertificateValidation`.
-- **CacheCallOptions** for per-call overrides: `OverrideMode`, `BypassCache`, `ForceRefresh`, `CoalesceConcurrent`.
-- **CacheSerializerOptions** for custom JSON serialization (Redis/Hybrid).
-- **AddCaching(IConfiguration)** extension – binds options, validates when enabled, registers mode-specific services and `RoutingCacheService` as `ICacheService`.
-- **AddCachingHealthChecks** for lightweight pipeline health checks.
-- **ValidateCacheRegistration** for fail-fast DI validation after host build.
-- **ICacheTelemetry** abstraction and optional **OpenTelemetryCacheTelemetry** for metrics and spans.
-- Data annotations and conditional validation on `CacheOptions` (validated only when `Enabled` is true).
-- Target framework: **.NET 10** (`net10.0`).
-
-### Documentation
-
-- [README.md](README.md) – quick start, configuration, per-call options, telemetry, security.
-- [docs/INTERNALS.md](docs/INTERNALS.md) – implementation details, modes, configuration, telemetry.
-- [docs/OPERATIONS.md](docs/OPERATIONS.md) – production runbooks (when present).
-
----
+- `Mode`: `Hybrid` → `InMemory` (zero-config friendlier).
+- `StrictRedisCertificateValidation`: `false` → `true`.
+- `MaximumKeyLength`: `null` → `512`.
+- `TtlJitterPercentage`: `0.0` → `0.10`.
