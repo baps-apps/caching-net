@@ -58,6 +58,8 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Caching.NET.Tests" />
+    <InternalsVisibleTo Include="Caching.NET.Tests.Chaos" />
+    <InternalsVisibleTo Include="Caching.NET.Tests.Properties" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Caching.NET.Analyzers\Caching.NET.Analyzers.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" PrivateAssets="all" />

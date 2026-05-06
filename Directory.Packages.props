@@ -5,6 +5,8 @@
   <ItemGroup>
     <PackageVersion Include="CodeStyle.NET" Version="1.0.0" />
     <PackageVersion Include="coverlet.collector" Version="8.0.1" />
+    <PackageVersion Include="FsCheck" Version="2.16.6" />
+    <PackageVersion Include="FsCheck.Xunit" Version="2.16.6" />
     <PackageVersion Include="MessagePack" Version="3.1.4" />
     <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.5" />
     <PackageVersion Include="Microsoft.CodeAnalysis.Analyzer.Testing" Version="1.1.2" />
@@ -33,6 +35,7 @@
     <PackageVersion Include="Moq" Version="4.20.72" />
     <PackageVersion Include="Polly" Version="8.5.0" />
     <PackageVersion Include="Polly.Extensions" Version="8.5.0" />
+    <PackageVersion Include="Polly.Testing" Version="8.5.0" />
     <PackageVersion Include="StackExchange.Redis" Version="2.8.16" />
     <PackageVersion Include="System.Diagnostics.DiagnosticSource" Version="10.0.5" />
     <PackageVersion Include="System.IO.Hashing" Version="10.0.5" />

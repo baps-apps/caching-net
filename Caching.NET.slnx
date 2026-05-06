@@ -12,6 +12,7 @@
     <Project Path="src/Caching.NET.Analyzers/Caching.NET.Analyzers.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Caching.NET.Tests.Chaos/Caching.NET.Tests.Chaos.csproj" />
     <Project Path="tests/Caching.NET.Tests.Integration/Caching.NET.Tests.Integration.csproj" />
     <Project Path="tests/Caching.NET.Tests/Caching.NET.Tests.csproj" />
     <Project Path="tests/Caching.NET.Tests.Analyzers/Caching.NET.Tests.Analyzers.csproj" />
