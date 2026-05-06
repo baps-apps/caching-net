@@ -37,15 +37,27 @@ Caching.NET.Health.CachingHealthCheck
 Caching.NET.Health.CachingHealthCheck.CachingHealthCheck(Caching.NET.Abstractions.ICacheService! cacheService, Microsoft.Extensions.Options.IOptions<Caching.NET.Options.CacheOptions!>! options, Microsoft.Extensions.Logging.ILogger<Caching.NET.Health.CachingHealthCheck!>! logger) -> void
 Caching.NET.Health.CachingHealthCheck.CheckHealthAsync(Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckContext! context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult>!
 Caching.NET.Options.CacheCallOptions
+Caching.NET.Options.CacheCallOptions.AbsoluteExpiration.get -> System.TimeSpan?
+Caching.NET.Options.CacheCallOptions.AbsoluteExpiration.init -> void
+Caching.NET.Options.CacheCallOptions.AllowStaleFor.get -> System.TimeSpan?
+Caching.NET.Options.CacheCallOptions.AllowStaleFor.init -> void
 Caching.NET.Options.CacheCallOptions.BypassCache.get -> bool
 Caching.NET.Options.CacheCallOptions.BypassCache.init -> void
 Caching.NET.Options.CacheCallOptions.CacheCallOptions() -> void
 Caching.NET.Options.CacheCallOptions.CoalesceConcurrent.get -> bool
 Caching.NET.Options.CacheCallOptions.CoalesceConcurrent.init -> void
+Caching.NET.Options.CacheCallOptions.FactoryTimeout.get -> System.TimeSpan?
+Caching.NET.Options.CacheCallOptions.FactoryTimeout.init -> void
 Caching.NET.Options.CacheCallOptions.ForceRefresh.get -> bool
 Caching.NET.Options.CacheCallOptions.ForceRefresh.init -> void
+Caching.NET.Options.CacheCallOptions.JitterPercentage.get -> double?
+Caching.NET.Options.CacheCallOptions.JitterPercentage.init -> void
 Caching.NET.Options.CacheCallOptions.Mode.get -> Caching.NET.Options.CacheMode?
 Caching.NET.Options.CacheCallOptions.Mode.init -> void
+Caching.NET.Options.CacheCallOptions.SlidingExpiration.get -> System.TimeSpan?
+Caching.NET.Options.CacheCallOptions.SlidingExpiration.init -> void
+Caching.NET.Options.CacheCallOptions.Tags.get -> System.Collections.Generic.IReadOnlyList<string!>?
+Caching.NET.Options.CacheCallOptions.Tags.init -> void
 Caching.NET.Options.CacheMode
 Caching.NET.Options.CacheMode.Hybrid = 2 -> Caching.NET.Options.CacheMode
 Caching.NET.Options.CacheMode.InMemory = 0 -> Caching.NET.Options.CacheMode

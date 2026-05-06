@@ -31,4 +31,44 @@ public sealed class CacheCallOptions
     /// Set false to opt out of coalescing for a specific call.
     /// </summary>
     public bool CoalesceConcurrent { get; init; } = true;
+
+    /// <summary>
+    /// Per-call factory timeout. When null, the application-level
+    /// <see cref="CacheOptions.FactoryTimeout"/> applies.
+    /// </summary>
+    public TimeSpan? FactoryTimeout { get; init; }
+
+    /// <summary>
+    /// Per-call absolute expiration override. When null, the call-site
+    /// <c>expiration</c> argument or the application default applies.
+    /// </summary>
+    public TimeSpan? AbsoluteExpiration { get; init; }
+
+    /// <summary>
+    /// Per-call sliding expiration. Resets the entry's TTL on each access.
+    /// Honoured by InMemory and Redis modes; ignored by Hybrid (HybridCache
+    /// does not expose sliding-expiration semantics).
+    /// </summary>
+    public TimeSpan? SlidingExpiration { get; init; }
+
+    /// <summary>
+    /// Stale-while-revalidate window: after the absolute expiration the entry
+    /// continues to serve for up to this duration while a single background
+    /// refresh runs. Honoured by InMemory and Redis modes; ignored by Hybrid.
+    /// </summary>
+    public TimeSpan? AllowStaleFor { get; init; }
+
+    /// <summary>
+    /// Tag identifiers associated with this entry. Tags are honoured only when
+    /// <see cref="CacheOptions.Mode"/> is <see cref="CacheMode.Hybrid"/>;
+    /// in other modes they are ignored unless <c>CachingBuilder.RequireTagSupport()</c>
+    /// has been called (which fails startup if Mode is not Hybrid).
+    /// </summary>
+    public IReadOnlyList<string>? Tags { get; init; }
+
+    /// <summary>
+    /// Per-call jitter override (0.0 disables; 0.50 = ±50%). Range 0.0–0.5.
+    /// When null, <see cref="CacheOptions.TtlJitterPercentage"/> applies.
+    /// </summary>
+    public double? JitterPercentage { get; init; }
 }
