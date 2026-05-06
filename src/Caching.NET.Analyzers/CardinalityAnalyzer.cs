@@ -71,9 +71,7 @@ public sealed class CardinalityAnalyzer : DiagnosticAnalyzer
     private static bool IsInstrumentType(string typeName) =>
         typeName == "System.Diagnostics.Metrics.Counter<T>" ||
         typeName == "System.Diagnostics.Metrics.Histogram<T>" ||
-        typeName == "System.Diagnostics.Metrics.UpDownCounter<T>" ||
-        typeName == "System.Diagnostics.Metrics.ObservableCounter<T>" ||
-        typeName == "System.Diagnostics.Metrics.ObservableUpDownCounter<T>";
+        typeName == "System.Diagnostics.Metrics.UpDownCounter<T>";
 
     private static string? ExtractTagKeyLiteral(ExpressionSyntax expr)
     {
