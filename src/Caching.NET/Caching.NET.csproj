@@ -57,6 +57,7 @@
     <AdditionalFiles Include="PublicAPI.Unshipped.txt" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Caching.NET.Bench" />
     <InternalsVisibleTo Include="Caching.NET.Tests" />
     <InternalsVisibleTo Include="Caching.NET.Tests.Chaos" />
     <InternalsVisibleTo Include="Caching.NET.Tests.Properties" />
