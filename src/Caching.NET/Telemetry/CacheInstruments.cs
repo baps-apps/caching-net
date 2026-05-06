@@ -37,6 +37,21 @@ public static class CacheInstruments
     internal static readonly Histogram<double> OperationDuration =
         Meter.CreateHistogram<double>("cache.operation.duration", unit: "ms", description: "Cache operation duration.");
 
+    internal static readonly Counter<long> EvictionsCounter =
+        Meter.CreateCounter<long>("cache.evictions", unit: "{entry}", description: "Cache entry evictions.");
+    internal static readonly Counter<long> StaleServedCounter =
+        Meter.CreateCounter<long>("cache.stale_served", unit: "{op}", description: "Stale entries served while a background refresh ran.");
+    internal static readonly Counter<long> CircuitStateChangesCounter =
+        Meter.CreateCounter<long>("cache.circuit_state_changes", unit: "{event}", description: "Polly circuit-breaker state transitions.");
+    internal static readonly Counter<long> SchemaDriftCounter =
+        Meter.CreateCounter<long>("cache.schema_drift", unit: "{event}", description: "Envelope/format/schema drift events on read.");
+
+    internal static readonly Histogram<long> PayloadBytesHistogram =
+        Meter.CreateHistogram<long>("cache.payload.bytes", unit: "By", description: "Serialized payload size in bytes.");
+
+    internal static readonly UpDownCounter<long> StaleRefreshInFlightCounter =
+        Meter.CreateUpDownCounter<long>("cache.stale_refresh.in_flight", unit: "{task}", description: "Background stale-refresh tasks in flight.");
+
     /// <summary>Record a cache hit.</summary>
     public static void RecordHit(string mode, string operation)
         => Hits.Add(1,
@@ -74,4 +89,40 @@ public static class CacheInstruments
         => OperationDuration.Record(milliseconds,
             new KeyValuePair<string, object?>("cache.mode", mode),
             new KeyValuePair<string, object?>("cache.operation", operation));
+
+    /// <summary>Record a cache entry eviction with the reason.</summary>
+    public static void RecordEviction(string mode, string evictionReason)
+        => EvictionsCounter.Add(1,
+            new KeyValuePair<string, object?>("cache.mode", mode),
+            new KeyValuePair<string, object?>("cache.eviction_reason", evictionReason));
+
+    /// <summary>Record a stale entry served while a background refresh was in progress.</summary>
+    public static void RecordStaleServed(string mode, string operation)
+        => StaleServedCounter.Add(1,
+            new KeyValuePair<string, object?>("cache.mode", mode),
+            new KeyValuePair<string, object?>("cache.operation", operation));
+
+    /// <summary>Record a Polly circuit-breaker state transition.</summary>
+    public static void RecordCircuitStateChange(string mode, string pipeline, string circuitState)
+        => CircuitStateChangesCounter.Add(1,
+            new KeyValuePair<string, object?>("cache.mode", mode),
+            new KeyValuePair<string, object?>("cache.pipeline", pipeline),
+            new KeyValuePair<string, object?>("cache.circuit_state", circuitState));
+
+    /// <summary>Record an envelope/format/schema drift event on read.</summary>
+    public static void RecordSchemaDrift(string mode, string driftKind)
+        => SchemaDriftCounter.Add(1,
+            new KeyValuePair<string, object?>("cache.mode", mode),
+            new KeyValuePair<string, object?>("cache.drift_kind", driftKind));
+
+    /// <summary>Record the serialized payload size in bytes.</summary>
+    public static void RecordPayloadBytes(string mode, string operation, long bytes)
+        => PayloadBytesHistogram.Record(bytes,
+            new KeyValuePair<string, object?>("cache.mode", mode),
+            new KeyValuePair<string, object?>("cache.operation", operation));
+
+    /// <summary>Increment or decrement the count of background stale-refresh tasks in flight.</summary>
+    public static void AddStaleRefreshInFlight(string mode, long delta)
+        => StaleRefreshInFlightCounter.Add(delta,
+            new KeyValuePair<string, object?>("cache.mode", mode));
 }

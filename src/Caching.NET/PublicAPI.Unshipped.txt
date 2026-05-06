@@ -160,3 +160,9 @@ static Caching.NET.Telemetry.CacheInstruments.RecordMiss(string! mode, string! o
 static Caching.NET.Telemetry.CacheInstruments.RecordRemove(string! mode, string! operation = "remove") -> void
 static Caching.NET.Telemetry.CacheInstruments.RecordSet(string! mode, string! operation = "set") -> void
 static readonly Caching.NET.Telemetry.CacheInstruments.Activity -> System.Diagnostics.ActivitySource!
+static Caching.NET.Telemetry.CacheInstruments.AddStaleRefreshInFlight(string! mode, long delta) -> void
+static Caching.NET.Telemetry.CacheInstruments.RecordCircuitStateChange(string! mode, string! pipeline, string! circuitState) -> void
+static Caching.NET.Telemetry.CacheInstruments.RecordEviction(string! mode, string! evictionReason) -> void
+static Caching.NET.Telemetry.CacheInstruments.RecordPayloadBytes(string! mode, string! operation, long bytes) -> void
+static Caching.NET.Telemetry.CacheInstruments.RecordSchemaDrift(string! mode, string! driftKind) -> void
+static Caching.NET.Telemetry.CacheInstruments.RecordStaleServed(string! mode, string! operation) -> void
