@@ -97,4 +97,19 @@ internal static class StableStringHash
     }
 
     private static uint RotL(uint x, int r) => (x << r) | (x >> (32 - r));
+
+    /// <summary>
+    /// 64-bit deterministic hash of a UTF-8 string. Backed by <see cref="System.IO.Hashing.XxHash64"/>.
+    /// Stable across processes/runtimes (NOT randomized like <see cref="string.GetHashCode()"/>).
+    /// </summary>
+    public static ulong Compute64(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (value.Length == 0) return System.IO.Hashing.XxHash64.HashToUInt64(ReadOnlySpan<byte>.Empty);
+        Span<byte> buf = value.Length <= 256
+            ? stackalloc byte[System.Text.Encoding.UTF8.GetMaxByteCount(value.Length)]
+            : new byte[System.Text.Encoding.UTF8.GetByteCount(value)];
+        int written = System.Text.Encoding.UTF8.GetBytes(value, buf);
+        return System.IO.Hashing.XxHash64.HashToUInt64(buf[..written]);
+    }
 }

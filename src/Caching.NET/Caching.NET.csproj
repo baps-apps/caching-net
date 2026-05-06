@@ -47,6 +47,7 @@
     <PackageReference Include="Polly.Extensions" />
     <PackageReference Include="System.Diagnostics.DiagnosticSource" />
     <PackageReference Include="MessagePack" />
+    <PackageReference Include="System.IO.Hashing" />
     <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers">
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
