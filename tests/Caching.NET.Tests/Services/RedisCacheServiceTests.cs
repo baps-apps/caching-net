@@ -139,12 +139,6 @@ public class RedisCacheServiceTests
         Assert.Equal(PayloadEnvelope.FormatIdJson, captured[4]);
     }
 
-    private static RedisCacheService BuildService(IDistributedCache distributedCache, CacheOptions? options = null)
-    {
-        var provider = BaseServices(distributedCache, options).BuildServiceProvider();
-        return provider.GetRequiredService<RedisCacheService>();
-    }
-
     [Fact]
     public async Task GetOrCreateAsync_returns_factory_value_when_envelope_magic_is_invalid()
     {
@@ -153,10 +147,29 @@ public class RedisCacheServiceTests
             .Setup(d => d.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new byte[] { 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
 
-        var service = BuildService(distributed.Object);
+        await using var provider = BaseServices(distributed.Object).BuildServiceProvider();
+        var service = provider.GetRequiredService<RedisCacheService>();
         var result = await service.GetOrCreateAsync("k", _ => Task.FromResult(new TestDto { Id = 42 }));
 
         Assert.Equal(42, result.Id);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_treats_format_drift_as_miss_and_runs_factory()
+    {
+        var realHash = StableTypeHash.Compute<TestDto>();
+        byte[] staleWire = PayloadEnvelope.Write("{\"Id\":99}"u8.ToArray(), PayloadEnvelope.FormatIdMsgPack, realHash);
+        var distributed = new Mock<IDistributedCache>();
+        distributed
+            .Setup(d => d.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(staleWire);
+
+        // service uses JSON serializer — format byte in wire is MsgPack = drift
+        await using var provider = BaseServices(distributed.Object).BuildServiceProvider();
+        var service = provider.GetRequiredService<RedisCacheService>();
+        var result = await service.GetOrCreateAsync("k", _ => Task.FromResult(new TestDto { Id = 5 }));
+
+        Assert.Equal(5, result.Id);
     }
 
     [Fact]
@@ -170,7 +183,8 @@ public class RedisCacheServiceTests
             .Setup(d => d.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(staleWire);
 
-        var service = BuildService(distributed.Object);
+        await using var provider = BaseServices(distributed.Object).BuildServiceProvider();
+        var service = provider.GetRequiredService<RedisCacheService>();
         var result = await service.GetOrCreateAsync("k", _ => Task.FromResult(new TestDto { Id = 7 }));
 
         Assert.Equal(7, result.Id);
@@ -186,7 +200,8 @@ public class RedisCacheServiceTests
             .Setup(d => d.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(wire);
 
-        var service = BuildService(distributed.Object);
+        await using var provider = BaseServices(distributed.Object).BuildServiceProvider();
+        var service = provider.GetRequiredService<RedisCacheService>();
         var result = await service.GetOrCreateAsync("k", _ => Task.FromResult(new TestDto { Id = 0 }));
 
         Assert.Equal(99, result.Id);

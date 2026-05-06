@@ -15,9 +15,9 @@ internal static class CacheLogEvents
     public static readonly EventId RedisKeyTooLong = new(1004, nameof(RedisKeyTooLong));
     public static readonly EventId RedisPayloadTooLarge = new(1005, nameof(RedisPayloadTooLarge));
 
-    public static readonly EventId RedisEnvelopeInvalid = new(1006, nameof(RedisEnvelopeInvalid));
-    public static readonly EventId RedisFormatDrift = new(1007, nameof(RedisFormatDrift));
-    public static readonly EventId RedisSchemaDrift = new(1008, nameof(RedisSchemaDrift));
+    public static readonly EventId RedisEnvelopeInvalid = new(1106, nameof(RedisEnvelopeInvalid));
+    public static readonly EventId RedisFormatDrift = new(1107, nameof(RedisFormatDrift));
+    public static readonly EventId RedisSchemaDrift = new(1108, nameof(RedisSchemaDrift));
 
     // Hybrid operations
     public static readonly EventId HybridGetFailed = new(1100, nameof(HybridGetFailed));
