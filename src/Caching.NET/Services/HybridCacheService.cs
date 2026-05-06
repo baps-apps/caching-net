@@ -40,7 +40,7 @@ internal sealed class HybridCacheService(
 
         if (!options.Value.Enabled || cache == null)
         {
-            logger.LogDebug(CacheLogEvents.HybridCacheDisabled, "Cache disabled or unavailable - executing factory for key: {Key}", TruncateKey(key));
+            logger.HybridCacheDisabled(TruncateKey(key));
             CacheInstruments.RecordMiss(Mode, "get_or_create", "Disabled");
             return await factory(cancellationToken).ConfigureAwait(false);
         }
@@ -63,7 +63,7 @@ internal sealed class HybridCacheService(
         }
         catch (Exception ex)
         {
-            logger.LogError(CacheLogEvents.HybridGetFailed, ex, "Error getting or creating cache entry for key: {Key}; executing factory (fail-open).", TruncateKey(key));
+            logger.HybridGetFailed(TruncateKey(key), ex);
             CacheInstruments.RecordError(Mode, "get_or_create", ClassifyError(ex));
             return await factory(cancellationToken).ConfigureAwait(false);
         }
@@ -89,7 +89,7 @@ internal sealed class HybridCacheService(
         }
         catch (Exception ex)
         {
-            logger.LogError(CacheLogEvents.HybridSetFailed, ex, "Error setting cache entry for key: {Key}.", TruncateKey(key));
+            logger.HybridSetFailed(TruncateKey(key), ex);
             CacheInstruments.RecordError(Mode, "set", ClassifyError(ex));
         }
     }
@@ -106,7 +106,7 @@ internal sealed class HybridCacheService(
         }
         catch (Exception ex)
         {
-            logger.LogError(CacheLogEvents.HybridRemoveFailed, ex, "Error removing cache entry for key: {Key}.", TruncateKey(key));
+            logger.HybridRemoveFailed(TruncateKey(key), ex);
             CacheInstruments.RecordError(Mode, "remove", ClassifyError(ex));
         }
     }
@@ -131,7 +131,7 @@ internal sealed class HybridCacheService(
         }
         catch (Exception ex)
         {
-            logger.LogError(CacheLogEvents.HybridTagRemoveFailed, ex, "Error removing cache entries for tag: {Tag}", tag);
+            logger.HybridTagRemoveFailed(tag, ex);
             CacheInstruments.RecordError(Mode, "remove_by_tag", ClassifyError(ex));
         }
     }

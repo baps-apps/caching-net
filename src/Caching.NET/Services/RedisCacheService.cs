@@ -105,17 +105,17 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                         CacheInstruments.RecordMiss(Mode, "get_or_create", "SerializationFailed");
                         break;
                     case PayloadEnvelopeReadResult.EnvelopeInvalid:
-                        _logger.LogWarning(CacheLogEvents.RedisEnvelopeInvalid, "Envelope invalid for key {Key}; treating as miss.", TruncateKey(key));
+                        _logger.RedisEnvelopeInvalid(TruncateKey(key));
                         CacheInstruments.RecordMiss(Mode, "get_or_create", "EnvelopeInvalid");
                         CacheInstruments.RecordSchemaDrift(Mode, "envelope_invalid");
                         break;
                     case PayloadEnvelopeReadResult.FormatDrift:
-                        _logger.LogWarning(CacheLogEvents.RedisFormatDrift, "Format drift for key {Key}; treating as miss.", TruncateKey(key));
+                        _logger.RedisFormatDrift(TruncateKey(key));
                         CacheInstruments.RecordMiss(Mode, "get_or_create", "EnvelopeInvalid");
                         CacheInstruments.RecordSchemaDrift(Mode, "format_drift");
                         break;
                     case PayloadEnvelopeReadResult.SchemaDrift:
-                        _logger.LogWarning(CacheLogEvents.RedisSchemaDrift, "Schema drift for key {Key}; treating as miss.", TruncateKey(key));
+                        _logger.RedisSchemaDrift(TruncateKey(key));
                         CacheInstruments.RecordMiss(Mode, "get_or_create", "EnvelopeInvalid");
                         CacheInstruments.RecordSchemaDrift(Mode, "schema_drift");
                         break;
@@ -126,7 +126,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         {
             if (_options.Value.ThrowOnFailure && !_options.Value.FailOpen)
                 throw;
-            _logger.LogWarning(CacheLogEvents.RedisGetFailed, ex, "Redis get failed for key {Key}; executing factory (fail-open).", TruncateKey(key));
+            _logger.RedisGetFailed(TruncateKey(key), ex);
             CacheInstruments.RecordError(Mode, "get_or_create", ClassifyError(ex));
             return await factory(cancellationToken).ConfigureAwait(false);
         }
@@ -139,7 +139,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         }
         catch (Exception ex) when (_options.Value.FailOpen)
         {
-            _logger.LogError(ex, "Redis set failed after factory for key {Key}; returning value without caching.", TruncateKey(key));
+            _logger.RedisSetFailed(TruncateKey(key), ex);
             CacheInstruments.RecordError(Mode, "set", ClassifyError(ex));
         }
         return result;
@@ -159,7 +159,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         }
         catch (Exception ex)
         {
-            _logger.LogError(CacheLogEvents.RedisSerializationFailed, ex, "Serialization failed for key {Key}.", TruncateKey(key));
+            _logger.RedisSerializationFailed(TruncateKey(key), ex);
             if (_options.Value.ThrowOnFailure && !_options.Value.FailOpen) throw;
             CacheInstruments.RecordError(Mode, "serialize", "Serialization");
             return;
@@ -167,7 +167,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
 
         if (_options.Value.MaximumPayloadBytes > 0 && payload.Length > _options.Value.MaximumPayloadBytes)
         {
-            _logger.LogWarning(CacheLogEvents.RedisPayloadTooLarge, "Payload for key {Key} exceeds MaximumPayloadBytes ({Size} bytes); not caching.", TruncateKey(key), payload.Length);
+            _logger.RedisPayloadTooLarge(TruncateKey(key), payload.Length);
             return;
         }
 
@@ -188,7 +188,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         catch (Exception ex)
         {
             if (_options.Value.ThrowOnFailure && !_options.Value.FailOpen) throw;
-            _logger.LogError(CacheLogEvents.RedisSetFailed, ex, "Redis set failed for key {Key}.", TruncateKey(key));
+            _logger.RedisSetFailed(TruncateKey(key), ex);
             CacheInstruments.RecordError(Mode, "set", ClassifyError(ex));
         }
     }
@@ -208,7 +208,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         catch (Exception ex)
         {
             if (_options.Value.ThrowOnFailure && !_options.Value.FailOpen) throw;
-            _logger.LogError(CacheLogEvents.RedisRemoveFailed, ex, "Redis remove failed for key {Key}.", TruncateKey(key));
+            _logger.RedisRemoveFailed(TruncateKey(key), ex);
             CacheInstruments.RecordError(Mode, "remove", ClassifyError(ex));
         }
     }
@@ -224,14 +224,16 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
     /// <inheritdoc />
     public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug(CacheLogEvents.TagNotSupported, "RemoveByTagAsync is not supported in Redis mode; no-op for tag {Tag}. Use Hybrid mode for tag support.", tag);
+        _logger.TagNotSupported(tag);
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
     public Task RemoveByTagAsync(IEnumerable<string> tags, CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug(CacheLogEvents.TagNotSupported, "RemoveByTagAsync is not supported in Redis mode; no-op. Use Hybrid mode for tag support.");
+        if (tags != null)
+            foreach (var tag in tags)
+                _logger.TagNotSupported(tag);
         return Task.CompletedTask;
     }
 
@@ -240,7 +242,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         var max = _options.Value.MaximumKeyLength;
         if (max <= 0) return false;
         if (key.Length <= max) return false;
-        _logger.LogWarning(CacheLogEvents.RedisKeyTooLong, "Key length ({Length}) exceeds MaximumKeyLength ({Max}); skipping cache for {Operation}.", key.Length, max, operation);
+        _logger.RedisKeyTooLong(key.Length, max, operation);
         return true;
     }
 

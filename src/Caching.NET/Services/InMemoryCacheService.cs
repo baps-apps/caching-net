@@ -1,3 +1,4 @@
+using Caching.NET.Internal;
 using Caching.NET.Options;
 using Caching.NET.Telemetry;
 using Microsoft.Extensions.Caching.Memory;
@@ -80,14 +81,16 @@ internal sealed class InMemoryCacheService(
     /// <inheritdoc />
     public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
-        logger.LogDebug(Internal.CacheLogEvents.TagNotSupported, "RemoveByTagAsync is not supported in InMemory mode; no-op for tag {Tag}. Use Hybrid mode for tag support.", tag);
+        logger.TagNotSupported(tag);
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
     public Task RemoveByTagAsync(IEnumerable<string> tags, CancellationToken cancellationToken = default)
     {
-        logger.LogDebug(Internal.CacheLogEvents.TagNotSupported, "RemoveByTagAsync is not supported in InMemory mode; no-op. Use Hybrid mode for tag support.");
+        if (tags != null)
+            foreach (var tag in tags)
+                logger.TagNotSupported(tag);
         return Task.CompletedTask;
     }
 }
