@@ -9,7 +9,7 @@ internal sealed class RedisCertificateValidator
 {
     private readonly ILogger<RedisCertificateValidator> _logger;
     private readonly bool _strict;
-    private bool _firstValidationLogged;
+    private int _firstValidationLogged; // 0 = not yet, 1 = done; use Interlocked for thread-safety
 
     public RedisCertificateValidator(ILogger<RedisCertificateValidator> logger, bool strict)
     {
@@ -19,9 +19,8 @@ internal sealed class RedisCertificateValidator
 
     public bool Validate(object sender, X509Certificate? certificate, X509Chain? chain, SslPolicyErrors sslPolicyErrors)
     {
-        if (!_firstValidationLogged && certificate is X509Certificate2 cert2)
+        if (Interlocked.CompareExchange(ref _firstValidationLogged, 1, 0) == 0 && certificate is X509Certificate2 cert2)
         {
-            _firstValidationLogged = true;
             _logger.LogInformation(
                 "Redis TLS first validation: subject={Subject} issuer={Issuer} thumbprint={Thumbprint} expires={Expires:o}",
                 cert2.Subject, cert2.Issuer, cert2.Thumbprint, cert2.NotAfter);

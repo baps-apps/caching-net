@@ -5,13 +5,14 @@ using Microsoft.Extensions.Options;
 
 namespace Caching.NET.Internal;
 
-internal sealed class RedisConnectionRotator : IHostedService, IDisposable
+internal sealed class RedisConnectionRotator : IHostedService, IAsyncDisposable
 {
     private readonly IOptionsMonitor<CacheOptions> _monitor;
     private readonly Func<string, object> _multiplexerFactory;
     private readonly ILogger<RedisConnectionRotator> _logger;
+    private readonly object _gate = new();
     private IDisposable? _subscription;
-    private object? _current;
+    private volatile object? _current;
     private string? _currentConnString;
 
     public RedisConnectionRotator(
@@ -31,8 +32,11 @@ internal sealed class RedisConnectionRotator : IHostedService, IDisposable
         var initial = _monitor.CurrentValue;
         if (initial.Mode is CacheMode.Redis or CacheMode.Hybrid && !string.IsNullOrEmpty(initial.RedisConnectionString))
         {
-            _current = _multiplexerFactory(initial.RedisConnectionString);
-            _currentConnString = initial.RedisConnectionString;
+            lock (_gate)
+            {
+                _current = _multiplexerFactory(initial.RedisConnectionString);
+                _currentConnString = initial.RedisConnectionString;
+            }
         }
         _subscription = _monitor.OnChange(HandleChange);
         return Task.CompletedTask;
@@ -41,8 +45,14 @@ internal sealed class RedisConnectionRotator : IHostedService, IDisposable
     public Task StopAsync(CancellationToken cancellationToken)
     {
         _subscription?.Dispose();
-        TryDispose(_current);
-        _current = null;
+        object? old;
+        lock (_gate)
+        {
+            old = _current;
+            _current = null;
+            _currentConnString = null;
+        }
+        TryDispose(old);
         return Task.CompletedTask;
     }
 
@@ -50,13 +60,16 @@ internal sealed class RedisConnectionRotator : IHostedService, IDisposable
     {
         if (next.Mode is not (CacheMode.Redis or CacheMode.Hybrid)) return;
         if (string.IsNullOrEmpty(next.RedisConnectionString)) return;
-        if (string.Equals(_currentConnString, next.RedisConnectionString, StringComparison.Ordinal)) return;
 
-        _logger.LogInformation("Redis connection string changed; rotating multiplexer.");
-        var oldMux = _current;
-        _current = _multiplexerFactory(next.RedisConnectionString);
-        _currentConnString = next.RedisConnectionString;
-        TryDispose(oldMux);
+        lock (_gate)
+        {
+            if (string.Equals(_currentConnString, next.RedisConnectionString, StringComparison.Ordinal)) return;
+            _logger.LogInformation("Redis connection string changed; rotating multiplexer.");
+            var oldMux = _current;
+            _current = _multiplexerFactory(next.RedisConnectionString);
+            _currentConnString = next.RedisConnectionString;
+            TryDispose(oldMux);
+        }
     }
 
     private static void TryDispose(object? obj)
@@ -65,5 +78,7 @@ internal sealed class RedisConnectionRotator : IHostedService, IDisposable
         else if (obj is IAsyncDisposable ad) _ = ad.DisposeAsync().AsTask();
     }
 
-    public void Dispose() => StopAsync(CancellationToken.None).GetAwaiter().GetResult();
+    public void Dispose() => _ = DisposeAsync().AsTask();
+
+    public ValueTask DisposeAsync() => new(StopAsync(CancellationToken.None));
 }

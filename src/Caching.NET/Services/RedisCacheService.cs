@@ -361,9 +361,19 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                     if (!rawValues[i].HasValue) { dict[keyList[i]] = default; continue; }
                     byte[] wire = (byte[])rawValues[i]!;
                     var status = PayloadEnvelope.TryRead(wire, expectedFormat, expectedSchema, out var payload);
-                    dict[keyList[i]] = status == PayloadEnvelopeReadResult.Ok
-                        ? _serializer.Deserialize<T>(payload)
-                        : default;
+                    if (status == PayloadEnvelopeReadResult.Ok)
+                    {
+                        dict[keyList[i]] = _serializer.Deserialize<T>(payload);
+                    }
+                    else
+                    {
+                        dict[keyList[i]] = default;
+                        CacheInstruments.RecordMiss(Mode, "get_many", "EnvelopeInvalid");
+                        if (status == PayloadEnvelopeReadResult.SchemaDrift)
+                            CacheInstruments.RecordSchemaDrift(Mode, "schema_drift");
+                        else if (status == PayloadEnvelopeReadResult.FormatDrift)
+                            CacheInstruments.RecordSchemaDrift(Mode, "format_drift");
+                    }
                 }
                 return dict;
             }
@@ -418,7 +428,8 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                 cancellationToken.ThrowIfCancellationRequested();
                 var redisKeys = Array.ConvertAll(keyList, k => (RedisKey)k);
                 await _multiplexer.GetDatabase().KeyDeleteAsync(redisKeys).ConfigureAwait(false);
-                CacheInstruments.RecordRemove(Mode);
+                for (int i = 0; i < keyList.Length; i++)
+                    CacheInstruments.RecordRemove(Mode);
                 return;
             }
             catch (OperationCanceledException)

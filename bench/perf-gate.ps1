@@ -22,13 +22,19 @@ if (-not (Test-Path $ResultsDir)) {
     exit 0
 }
 
+function ConvertTo-BaselineKey([string]$bdn) {
+    # BDN FullName: "Namespace.Class.Method(Param: Value, Param2: Value2)"
+    # Baseline key:  "Namespace.Class.Method-Param=Value-Param2=Value2"
+    $bdn -replace '\(', '-' -replace ': ', '=' -replace '\)', '' -replace ', ', '-'
+}
+
 $regressions = @()
 $jsonFiles = Get-ChildItem -Path $ResultsDir -Filter "*-report-full.json" -Recurse
 
 foreach ($file in $jsonFiles) {
     $data = Get-Content $file.FullName | ConvertFrom-Json
     foreach ($bench in $data.Benchmarks) {
-        $name = $bench.FullName
+        $name = ConvertTo-BaselineKey $bench.FullName
         $meanNs = $bench.Statistics.Mean
         $allocBytes = $bench.Memory.BytesAllocatedPerOperation
 

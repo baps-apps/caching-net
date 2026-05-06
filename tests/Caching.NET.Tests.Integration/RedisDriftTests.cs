@@ -21,7 +21,9 @@ public class RedisDriftTests
         var fakeHash = 0xDEAD_BEEF_CAFE_BABEul;
         var fakePayload = "{\"Id\":99}"u8.ToArray();
         var wire = PayloadEnvelope.Write(fakePayload, PayloadEnvelope.FormatIdJson, fakeHash);
-        await mux.GetDatabase().StringSetAsync("rt-drift:k", wire);
+        // StackExchangeRedisCache stores entries as Redis Hashes with field "data".
+        // Plant the value in Hash format so schema-drift is exercised (not WRONGTYPE error).
+        await mux.GetDatabase().HashSetAsync("rt-drift:k", "data", wire);
 
         var (sp, cache) = IntegrationServiceProvider.Build(_redis.ConnectionString, "rt-drift");
         await using var _ = (Microsoft.Extensions.DependencyInjection.ServiceProvider)sp;
