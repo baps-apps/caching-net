@@ -23,7 +23,7 @@
 ```
 
 ```csharp
-services.AddCaching(builder.Configuration.GetSection("Caching"));
+services.AddCaching(builder.Configuration);
 ```
 
 ## AWS ElastiCache (TLS, IAM auth)
@@ -68,7 +68,7 @@ Caching.NET delegates sharding to `IDistributedCache` (StackExchange.Redis). For
 
 `RedisConnectionRotator` listens on `IOptionsMonitor<CacheOptions>`. When the Configuration provider re-reads `RedisConnectionString` (triggered by your secret reloader), the rotator:
 1. Builds a new `IConnectionMultiplexer` with the new credentials.
-2. Atomically swaps the singleton in DI.
+2. Rotates the active multiplexer reference used by the cache services.
 3. Disposes the old multiplexer (existing in-flight requests complete on the old connection).
 
 Operational checklist for rotation:

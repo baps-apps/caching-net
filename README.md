@@ -1,6 +1,6 @@
 # Caching.NET
 
-Production-grade .NET caching for high-throughput microservice-to-microservice communication. One `ICacheService` abstraction. Three modes: **InMemory**, **Redis**, **Hybrid**. Stampede protection, Polly resilience, OpenTelemetry-native, AOT-friendly.
+Production-grade caching for high-throughput .NET services. One `ICacheService` abstraction. Three modes: **InMemory**, **Redis**, **Hybrid**. Stampede protection, Polly resilience, OpenTelemetry-native, AOT-friendly.
 
 ## Install
 

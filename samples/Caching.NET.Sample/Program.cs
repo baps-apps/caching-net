@@ -15,98 +15,56 @@ public class Program
 
         builder.Services.AddOpenApi();
 
-        // ════════════════════════════════════════════════════════════
-        // Caching.NET Registration — pick ONE of the examples below.
-        // ════════════════════════════════════════════════════════════
-
-        // ── Example 1: Zero-config ─────────────────────────────────
-        //   Hybrid mode (in-memory only), enabled, 10-minute default expiration.
-        //   No appsettings section needed. Great for prototyping or simple apps.
+        // v2 default reference (when not explicitly overridden):
+        // - Enabled: true
+        // - Mode: InMemory
+        // - KeyPrefix: REQUIRED (must be provided via config or builder)
+        // - DefaultExpiration: 00:10:00
+        // - TtlJitterPercentage: 0.10
+        // - MaximumKeyLength: 512
+        // - MaximumPayloadBytes: 1_048_576 (1 MiB)
+        // - StripeLockCount: 1024
+        // - StaleRefreshConcurrency: 256
+        // - FactoryTimeout: 00:00:30
+        // - RedisOperationTimeout: 00:00:02
+        // - StrictRedisCertificateValidation: true
+        // - FailOpen: true
         //
-        // builder.Services.AddCaching();
+        // Note: RedisConnectionString is required when Mode is Redis/Hybrid.
+        // Note: HybridLocalCacheExpiration and MemorySizeLimitMb are optional.
 
-        // ── Example 2: Config-file driven ──────────────────────────
-        //   Reads CacheOptions section from appsettings.json.
-        //
-        // builder.Services.AddCaching(builder.Configuration);
-
-        // ── Example 3: InMemory with all builder options ───────────
-        //   Programmatic configuration with IntelliSense. No config file needed.
-        //
-        // builder.Services.AddCaching(cache => cache
-        //     .UseInMemory()
-        //     .WithDefaultExpiration(TimeSpan.FromMinutes(15))
-        //     .WithMemorySizeLimit(256)                        // cap IMemoryCache at 256 MB
-        //     .WithMaximumKeyLength(512)                       // reject keys longer than 512 chars
-        //     .WithFactoryTimeout(TimeSpan.FromSeconds(30))    // cancel slow factories after 30s
-        //     .WithOpenTelemetry()
-        //     .WithHealthChecks());
-
-        // ── Example 4: Redis with connection string ────────────────
-        //   Distributed cache backed by Redis. Includes payload limits and TLS.
-        //
-        // builder.Services.AddCaching(cache => cache
-        //     .UseRedis("localhost:6379,abortConnect=false")
-        //     .WithKeyPrefix("sampleapp:")                  // key prefix for multi-service clusters
-        //     .WithDefaultExpiration(TimeSpan.FromMinutes(10))
-        //     .WithMaximumPayloadBytes(5_000_000)              // skip caching entries > 5 MB
-        //     .WithMaximumKeyLength(1024)
-        //     .WithStrictCertificateValidation()               // enforce strict TLS in production
-        //     .WithOpenTelemetry()
-        //     .WithHealthChecks());
-
-        // ── Example 5: Redis with programmatic ConfigurationOptions ─
-        //   Full control over StackExchange.Redis settings.
-        //
-        // builder.Services.AddCaching(cache => cache
-        //     .UseRedis(redis =>
-        //     {
-        //         redis.EndPoints.Add("redis-primary", 6379);
-        //         redis.EndPoints.Add("redis-replica", 6380);
-        //         redis.Password = Environment.GetEnvironmentVariable("REDIS_PASSWORD");
-        //         redis.ConnectTimeout = 5000;
-        //         redis.SyncTimeout = 3000;
-        //         redis.AbortOnConnectFail = false;
-        //     })
-        //     .WithKeyPrefix("sampleapp:")
-        //     .WithOpenTelemetry());
-
-        // ── Example 6: Hybrid (in-memory + Redis) ──────────────────
-        //   Two-tier cache with stampede protection. Best for production.
-        //
-        // builder.Services.AddCaching(cache => cache
-        //     .UseHybrid("localhost:6379")
-        //     .WithDefaultExpiration(TimeSpan.FromMinutes(15))       // distributed tier TTL
-        //     .WithDefaultLocalExpiration(TimeSpan.FromMinutes(5))   // in-memory tier TTL
-        //     .WithKeyPrefix("sampleapp:")
-        //     .WithMemorySizeLimit(128)
-        //     .WithMaximumPayloadBytes(10_000_000)
-        //     .WithFactoryTimeout(TimeSpan.FromSeconds(30))
-        //     .WithOpenTelemetry()
-        //     .WithHealthChecks());
-
-        // ── Example 7: Hybrid (in-memory only, no Redis) ───────────
-        //   Stampede protection without a Redis dependency.
-        //
-        // builder.Services.AddCaching(cache => cache
-        //     .UseHybrid()
-        //     .WithDefaultExpiration(TimeSpan.FromMinutes(10))
-        //     .WithOpenTelemetry());
-
-        // ── Example 8: Config-file + fluent overrides (recommended) ─
-        //   Base configuration from appsettings.json, with fluent additions.
-        //   Fluent settings override config-file values on conflict.
+        // Recommended v2 setup: appsettings baseline + fluent overrides.
+        // This sample intentionally shows all high-impact options with comments
+        // so teams can understand operational trade-offs quickly.
         builder.Services.AddCaching(builder.Configuration, cache => cache
-            .WithOpenTelemetry()
-            .WithHealthChecks()
-            .WithTtlJitter(0.10)
-            .WithStaleRefreshConcurrency(128));
+            // Mode + backend (for this sample we use Hybrid with Redis).
+            .UseHybrid(builder.Configuration["CacheOptions:RedisConnectionString"] ?? "localhost:6379")
+            .WithKeyPrefix("sample-api-dev") // isolation in shared Redis clusters.
 
-        // ── Example 9: Explicitly disabled ─────────────────────────
-        //   ICacheService still resolves — all calls pass through to factories.
-        //   Useful for testing or staging environments.
-        //
-        // builder.Services.AddCaching(cache => cache.Disable());
+            // TTL / freshness behavior.
+            .WithDefaultExpiration(TimeSpan.FromMinutes(10))     // Primary cache lifetime.
+            .WithDefaultLocalExpiration(TimeSpan.FromMinutes(3)) // Hybrid local (L1) lifetime.
+            .WithTtlJitter(0.10)                                 // +/-10% expiry spread to reduce herd effects.
+
+            // Capacity / limits.
+            .WithMaximumKeyLength(512)             // Prevents pathological key growth.
+            .WithMaximumPayloadBytes(1_048_576)    // 1MiB guardrail against oversized objects.
+            .WithMemorySizeLimit(256)              // L1 cache cap in MB.
+            .WithStripedLocks(2048)                // Higher concurrency for hot-key workloads.
+
+            // Timeout / resilience tuning.
+            .WithFactoryTimeout(TimeSpan.FromSeconds(30))
+            .WithRedisOperationTimeout(TimeSpan.FromSeconds(2))
+            .WithStaleRefreshConcurrency(256)      // Bound SWR background refresh pressure.
+            .WithStrictCertificateValidation()      // Production-safe Redis TLS posture.
+
+            // Feature toggles / integrations.
+            .WithOpenTelemetry()                    // In v2 this is API-compatible; host OTel wiring does the work.
+            .WithHealthChecks()                     // Adds CachingHealthCheck registration.
+            .RequireTagSupport());                  // Enforces Hybrid mode for tag invalidation paths.
+
+        // Optional: use MessagePack serializer when payload size/CPU profile benefits from binary format.
+        // builder.Services.AddCaching(cache => cache.WithMessagePackSerializer());
 
         builder.Services.AddControllers();
 

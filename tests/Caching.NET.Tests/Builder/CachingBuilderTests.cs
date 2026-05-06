@@ -10,19 +10,14 @@ namespace Caching.NET.Tests.Builder;
 public class CachingBuilderTests
 {
     [Fact]
-    public void AddCaching_ZeroConfig_RegistersICacheService_HybridEnabled()
+    public void AddCaching_ZeroConfig_Throws_When_KeyPrefix_NotProvided()
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddCaching();
-        using var provider = services.BuildServiceProvider();
 
-        var cache = provider.GetRequiredService<ICacheService>();
-        Assert.NotNull(cache);
-
-        var options = provider.GetRequiredService<IOptions<CacheOptions>>().Value;
-        Assert.True(options.Enabled);
-        Assert.Equal(CacheMode.InMemory, options.Mode);
+        var ex = Assert.Throws<OptionsValidationException>(() => services.BuildServiceProvider().ValidateCacheRegistration());
+        Assert.Contains("KeyPrefix", ex.Message);
     }
 
     [Fact]
@@ -31,7 +26,8 @@ public class CachingBuilderTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "true",
-            ["CacheOptions:Mode"] = "InMemory"
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
@@ -48,7 +44,7 @@ public class CachingBuilderTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCaching(cache => cache.UseInMemory());
+        services.AddCaching(cache => cache.UseInMemory().WithKeyPrefix("test"));
         using var provider = services.BuildServiceProvider();
 
         var cache = provider.GetRequiredService<ICacheService>();
@@ -63,7 +59,7 @@ public class CachingBuilderTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCaching(cache => cache.Disable());
+        services.AddCaching(cache => cache.Disable().WithKeyPrefix("test"));
         using var provider = services.BuildServiceProvider();
 
         var cache = provider.GetRequiredService<ICacheService>();
@@ -79,12 +75,13 @@ public class CachingBuilderTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "true",
-            ["CacheOptions:Mode"] = "InMemory"
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCaching(configuration, cache => cache.UseHybrid());
+        services.AddCaching(configuration, cache => cache.UseHybrid("localhost:6379"));
         using var provider = services.BuildServiceProvider();
 
         var options = provider.GetRequiredService<IOptions<CacheOptions>>().Value;
@@ -100,6 +97,7 @@ public class CachingBuilderTests
         services.AddLogging();
         services.AddCaching(cache => cache
             .UseInMemory()
+            .WithKeyPrefix("test")
             .WithOpenTelemetry());
         using var provider = services.BuildServiceProvider();
         Assert.NotNull(provider.GetRequiredService<ICacheService>());
@@ -118,7 +116,7 @@ public class CachingBuilderTests
             .WithMaximumKeyLength(512)
             .WithMemorySizeLimit(256)
             .WithFactoryTimeout(TimeSpan.FromSeconds(30))
-            .WithInstanceName("test:"));
+            .WithKeyPrefix("test:"));
         using var provider = services.BuildServiceProvider();
 
         var options = provider.GetRequiredService<IOptions<CacheOptions>>().Value;
@@ -147,7 +145,8 @@ public class CachingBuilderTests
         var configData = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "true",
-            ["CacheOptions:Mode"] = "InMemory"
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "hotreload"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(configData).Build();
         var services = new ServiceCollection();
@@ -174,20 +173,73 @@ public class CachingBuilderTests
     }
 
     [Fact]
-    public void AddCaching_DisabledWithRedisMode_DoesNotThrow()
+    public async Task AddCaching_TogglingEnabledWithSameSampleConfig_RoundTrips()
     {
+        // Same registration code must work for Enabled=true and Enabled=false. Mirrors the
+        // sample's UseHybrid + WithHealthChecks + RequireTagSupport setup with no Redis available.
+        static ServiceProvider Build(bool enabled)
+        {
+            var config = new Dictionary<string, string?>
+            {
+                ["CacheOptions:Enabled"] = enabled ? "true" : "false",
+                ["CacheOptions:Mode"] = "Hybrid",
+                ["CacheOptions:KeyPrefix"] = "sample",
+                // Connection string intentionally omitted — when disabled it MUST not be required.
+            };
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddCaching(configuration, b => b
+                .WithKeyPrefix("sample")
+                .WithDefaultExpiration(TimeSpan.FromMinutes(10))
+                .WithTtlJitter(0.10)
+                .WithMaximumKeyLength(512)
+                .WithStripedLocks(2048)
+                .WithHealthChecks()
+                .RequireTagSupport());
+            return services.BuildServiceProvider();
+        }
+
+        // Disabled path: no connection string required, ICacheService resolves and short-circuits.
+        using (var disabled = Build(enabled: false))
+        {
+            disabled.ValidateCacheRegistration();
+            var cache = disabled.GetRequiredService<ICacheService>();
+            int factoryHits = 0;
+            var v1 = await cache.GetOrCreateAsync("k", _ => { factoryHits++; return Task.FromResult(42); });
+            var v2 = await cache.GetOrCreateAsync("k", _ => { factoryHits++; return Task.FromResult(42); });
+            Assert.Equal(42, v1);
+            Assert.Equal(42, v2);
+            Assert.Equal(2, factoryHits); // disabled = factory always runs
+        }
+
+        // Enabled=true with the same code path requires the connection string. That validates
+        // the inverse contract: missing config surfaces only when caching is actually on.
+        var enabledEx = Record.Exception(() => Build(enabled: true).GetRequiredService<ICacheService>());
+        Assert.NotNull(enabledEx);
+    }
+
+    [Fact]
+    public void AddCaching_DisabledWithRedisMode_WithoutRedisConnection_DoesNotThrow()
+    {
+        // When Enabled is false, no caching infrastructure is registered at any level — no
+        // backend, no validator pressure, no Redis connection required. RoutingCacheService is
+        // still resolvable and short-circuits every call to the factory.
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "false",
-            ["CacheOptions:Mode"] = "Redis"
+            ["CacheOptions:Mode"] = "Redis",
+            ["CacheOptions:KeyPrefix"] = "test"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddCaching(configuration);
-        using var provider = services.BuildServiceProvider();
 
-        var cache = provider.GetRequiredService<ICacheService>();
+        using var provider = services.BuildServiceProvider();
+        provider.ValidateCacheRegistration();
+
+        var cache = provider.GetRequiredService<Abstractions.ICacheService>();
         Assert.NotNull(cache);
     }
 }

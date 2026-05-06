@@ -26,17 +26,17 @@ builder.Services.AddOpenTelemetry()
 | `cache.payload.bytes` | Histogram | `By` | |
 | `cache.stale_refresh.in_flight` | UpDownCounter | `{task}` | |
 
-Activity source: `Caching.NET`. One activity per public op (`cache.get_or_create`, `cache.get`, …).
+Activity source name is `Caching.NET`. Current implementation focuses on metrics/logging; activity emission is limited.
 
 ## Allowed tags
 
-- `cache.mode` ∈ {`InMemory`, `Redis`, `Hybrid`}
+- `cache.mode` ∈ {`InMemory`, `Redis`, `Hybrid`, `Routing`}
 - `cache.operation` ∈ {`get`, `set`, `remove`, `get_many`, `set_many`, `remove_many`, `exists`, `refresh`, `get_or_create`}
 - `cache.miss_reason` ∈ {`NotFound`, `Expired`, `Stale`, `SerializationFailed`, `EnvelopeInvalid`, `CircuitOpen`, `Disabled`, `Bypass`}
 - `cache.error_kind` ∈ {`Timeout`, `ConnectionFailed`, `Serialization`, `CircuitOpen`, `Cancelled`, `Unknown`}
 - `cache.circuit_state` ∈ {`closed`, `open`, `half-open`}
 - `cache.drift_kind` ∈ {`envelope_invalid`, `format_drift`, `schema_drift`}
-- `cache.tls_result` ∈ {`ok`, `name_mismatch`, `chain_error`, `expired`, `untrusted`}
+- `cache.tls_result` ∈ {`ok`, `name_mismatch`, `chain_error`, `untrusted`}
 
 ## Forbidden tags (compile-time enforced via CN0001)
 

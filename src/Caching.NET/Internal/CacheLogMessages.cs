@@ -68,6 +68,14 @@ internal static partial class CacheLogMessages
         Message = "Redis set failed after factory for key {Key}; returning value without caching.")]
     public static partial void RedisSetFailedAfterFactory(this ILogger logger, string key, Exception ex);
 
+    [LoggerMessage(EventId = 1111, Level = LogLevel.Warning,
+        Message = "Background stale refresh failed for key {Key}; stale entry will expire naturally.")]
+    public static partial void StaleRefreshFailed(this ILogger logger, string key, Exception ex);
+
+    [LoggerMessage(EventId = 1112, Level = LogLevel.Warning,
+        Message = "Background stale refresh skipped for key {Key}: could not acquire stripe lock within {TimeoutMs}ms.")]
+    public static partial void StaleRefreshLockTimeout(this ILogger logger, string key, double timeoutMs);
+
     // ── Error (1200–1299) ─────────────────────────────────────────────────────
 
     [LoggerMessage(EventId = 1200, Level = LogLevel.Error,

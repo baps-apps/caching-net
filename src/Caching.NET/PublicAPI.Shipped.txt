@@ -24,7 +24,6 @@ Caching.NET.CachingBuilder.WithDefaultExpiration(System.TimeSpan expiration) -> 
 Caching.NET.CachingBuilder.WithDefaultLocalExpiration(System.TimeSpan expiration) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithFactoryTimeout(System.TimeSpan timeout) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithHealthChecks(string! name = "caching-net") -> Caching.NET.CachingBuilder!
-Caching.NET.CachingBuilder.WithInstanceName(string! name) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithKeyPrefix(string! keyPrefix) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithMaximumKeyLength(int length) -> Caching.NET.CachingBuilder!
 Caching.NET.CachingBuilder.WithMaximumPayloadBytes(long bytes) -> Caching.NET.CachingBuilder!

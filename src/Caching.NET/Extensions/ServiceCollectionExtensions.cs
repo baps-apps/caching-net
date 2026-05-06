@@ -141,21 +141,7 @@ public static class ServiceCollectionExtensions
             });
         }
 
-        // 5. KeyPrefix fallback: if neither config nor builder set KeyPrefix, default to the entry
-        //    assembly name (sanitized). Spec §13 — production deployments should still set KeyPrefix
-        //    explicitly, but this avoids forcing every test/sample to specify one and keeps validation
-        //    passing for zero-config use.
-        services.PostConfigure<CacheOptions>(options =>
-        {
-            if (string.IsNullOrWhiteSpace(options.KeyPrefix))
-            {
-                var name = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name
-                           ?? "caching-net";
-                options.KeyPrefix = SanitizeKeyPrefix(name);
-            }
-        });
-
-        // 6. Resolve effective options for service registration (config + builder merged)
+        // 5. Resolve effective options for service registration (config + builder merged)
         CacheOptions effectiveOptions = new();
         if (configuration is not null)
         {
@@ -166,24 +152,17 @@ public static class ServiceCollectionExtensions
         {
             effectiveOptions.Enabled = true;
         }
-        if (string.IsNullOrWhiteSpace(effectiveOptions.KeyPrefix))
-        {
-            effectiveOptions.KeyPrefix = SanitizeKeyPrefix(
-                System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name ?? "caching-net");
-        }
-
         // 6. Telemetry: v2 uses static CacheInstruments (Meter/ActivitySource).
         //    No DI registration needed; consumers wire OTel pipeline to subscribe.
 
-        // 7. Register cache infrastructure based on effective mode.
-        // When disabled, only register minimal InMemory infrastructure (RoutingCacheService
-        // will short-circuit anyway, but services must be resolvable if Enabled is toggled on at runtime).
-        if (!effectiveOptions.Enabled)
-        {
-            AddMemoryCacheWithOptions(services, effectiveOptions);
-            services.TryAddSingleton<InMemoryCacheService>();
-        }
-        else
+        // 7. Register cache infrastructure.
+        // When Enabled is false, the cache is OFF at every level:
+        //   - No backend (no MemoryCache, no Redis multiplexer, no HybridCache).
+        //   - No serializer, no resilience pipeline, no TLS validator, no health check.
+        //   - No options validation (CacheOptionsValidator short-circuits on Enabled=false).
+        // RoutingCacheService is still registered so injected ICacheService consumers resolve;
+        // every operation short-circuits to the factory (GetOrCreateAsync) or no-ops.
+        if (effectiveOptions.Enabled)
         {
             switch (effectiveOptions.Mode)
             {
@@ -204,40 +183,66 @@ public static class ServiceCollectionExtensions
                     break;
 
                 case CacheMode.Hybrid:
+                    if (string.IsNullOrWhiteSpace(effectiveOptions.RedisConnectionString) && builder?.RedisConfigurationAction is null)
+                        throw new InvalidOperationException("CacheOptions.Mode is Hybrid but RedisConnectionString is not set.");
                     AddMemoryCacheWithOptions(services, effectiveOptions);
                     services.TryAddSingleton<InMemoryCacheService>();
                     ConfigureHybridCache(services, effectiveOptions, builder?.RedisConfigurationAction);
-                    if (!string.IsNullOrWhiteSpace(effectiveOptions.RedisConnectionString) || builder?.RedisConfigurationAction is not null)
-                    {
-                        EnsureCacheSerializerOptions(services);
-                        TryAddConnectionMultiplexer(services, effectiveOptions, builder?.RedisConfigurationAction);
-                        services.TryAddSingleton<RedisCacheService>();
-                    }
+                    EnsureCacheSerializerOptions(services);
+                    TryAddConnectionMultiplexer(services, effectiveOptions, builder?.RedisConfigurationAction);
+                    services.TryAddSingleton<RedisCacheService>();
                     services.TryAddSingleton<HybridCacheService>();
                     break;
 
                 default:
                     throw new InvalidOperationException($"Unsupported CacheOptions.Mode: {effectiveOptions.Mode}");
             }
-        }
 
-        // 7b. Register TLS certificate validator for Redis/Hybrid modes.
-        if (effectiveOptions.Mode is CacheMode.Redis or CacheMode.Hybrid)
-        {
-            services.TryAddSingleton(sp =>
+            // 7b. TLS certificate validator (Redis/Hybrid only, only when enabled).
+            if (effectiveOptions.Mode is CacheMode.Redis or CacheMode.Hybrid)
             {
-                var opts = sp.GetRequiredService<IOptions<CacheOptions>>().Value;
-                var logger = sp.GetRequiredService<ILogger<RedisCertificateValidator>>();
-                var validator = new RedisCertificateValidator(logger, opts.StrictRedisCertificateValidation);
-                RedisCertificateValidation.Configure(validator);
-                return validator;
+                services.TryAddSingleton(sp =>
+                {
+                    var opts = sp.GetRequiredService<IOptions<CacheOptions>>().Value;
+                    var logger = sp.GetRequiredService<ILogger<RedisCertificateValidator>>();
+                    var validator = new RedisCertificateValidator(logger, opts.StrictRedisCertificateValidation);
+                    RedisCertificateValidation.Configure(validator);
+                    return validator;
+                });
+            }
+
+            // 8. Default ICacheSerializer (consumers may swap via WithSerializer<T>).
+            services.TryAddSingleton<Serialization.ICacheSerializer>(_ => new Serialization.JsonCacheSerializer());
+
+            // 9. Default Polly resilience pipeline registry (timeout + circuit breaker + retry).
+            services.TryAddSingleton<Polly.Registry.ResiliencePipelineRegistry<string>>(sp =>
+            {
+                var opts = sp.GetService<IOptions<Resilience.ResiliencePipelineRegistryOptions>>()?.Value
+                           ?? new Resilience.ResiliencePipelineRegistryOptions();
+                return Resilience.CacheResiliencePipelineBuilder.BuildDefaultRegistry(
+                    timeout: opts.Timeout,
+                    failureRatio: opts.FailureRatio,
+                    minimumThroughput: opts.MinimumThroughput,
+                    samplingDuration: opts.SamplingDuration,
+                    breakDuration: opts.BreakDuration,
+                    retryCount: opts.RetryCount);
             });
+
         }
 
-        // 8. Register the striped lock manager for stampede protection.
+        // 10. Health checks (when opted in via builder). Registered regardless of Enabled so
+        // the health-check endpoint stays wired. The check itself returns Healthy when caching
+        // is disabled by configuration — no backend probe is attempted.
+        if (builder?.RegisterHealthChecks == true)
+        {
+            services.AddHealthChecks()
+                .AddCachingHealthChecks(name: builder.HealthCheckName);
+        }
+
+        // 11. Always register routing infrastructure so RoutingCacheService can be constructed.
+        // These are stateless and zero-cost when the cache short-circuits.
         services.TryAddSingleton<Internal.StripedLockManager>(sp =>
             new Internal.StripedLockManager(sp.GetRequiredService<IOptions<CacheOptions>>().Value.StripeLockCount));
-
         services.TryAddSingleton<Internal.StaleEntryTracker>();
         services.TryAddSingleton(sp =>
         {
@@ -245,32 +250,9 @@ public static class ServiceCollectionExtensions
             return new Internal.StaleRefreshThrottle(opts.StaleRefreshConcurrency);
         });
 
-        // 9. Register the default ICacheSerializer (consumers may swap via WithSerializer<T>).
-        services.TryAddSingleton<Serialization.ICacheSerializer>(_ => new Serialization.JsonCacheSerializer());
-
-        // 10. Register the default Polly resilience pipeline registry (timeout + circuit breaker + retry).
-        services.TryAddSingleton<Polly.Registry.ResiliencePipelineRegistry<string>>(sp =>
-        {
-            var opts = sp.GetService<IOptions<Resilience.ResiliencePipelineRegistryOptions>>()?.Value
-                       ?? new Resilience.ResiliencePipelineRegistryOptions();
-            return Resilience.CacheResiliencePipelineBuilder.BuildDefaultRegistry(
-                timeout: opts.Timeout,
-                failureRatio: opts.FailureRatio,
-                minimumThroughput: opts.MinimumThroughput,
-                samplingDuration: opts.SamplingDuration,
-                breakDuration: opts.BreakDuration,
-                retryCount: opts.RetryCount);
-        });
-
-        // 11. Always register RoutingCacheService as ICacheService (TryAdd for idempotency)
+        // 12. Always register RoutingCacheService as ICacheService (TryAdd for idempotency).
+        // When Enabled is false, RoutingCacheService short-circuits every call.
         services.TryAddSingleton<ICacheService, RoutingCacheService>();
-
-        // 9. Register health checks if requested via builder
-        if (builder?.RegisterHealthChecks == true)
-        {
-            services.AddHealthChecks()
-                .AddCachingHealthChecks(name: builder.HealthCheckName);
-        }
 
         return services;
     }
@@ -344,21 +326,6 @@ public static class ServiceCollectionExtensions
             conf.AbortOnConnectFail = false;
             return ConnectionMultiplexer.Connect(conf);
         });
-    }
-
-    private static string SanitizeKeyPrefix(string raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw)) return "caching-net";
-        Span<char> buffer = stackalloc char[Math.Min(raw.Length, 64)];
-        var len = Math.Min(raw.Length, 64);
-        for (var i = 0; i < len; i++)
-        {
-            var c = raw[i];
-            buffer[i] = char.IsLetterOrDigit(c) || c is '.' or ':' or '-' or '_' ? c : '-';
-        }
-        if (buffer.Length == 0) return "caching-net";
-        if (!char.IsLetterOrDigit(buffer[0])) buffer[0] = 'a';
-        return new string(buffer);
     }
 
     private static bool ValidateCacheOptions(CacheOptions options)

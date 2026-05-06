@@ -821,7 +821,7 @@ Open `src/Caching.NET/Options/CacheOptions.cs` and replace its body so the publi
 - Add `public int StaleRefreshConcurrency { get; set; } = 256;` (used in P2; reserved here so options are stable).
 - Add `public TimeSpan RedisOperationTimeout { get; set; } = TimeSpan.FromSeconds(2);`.
 - Add `public bool IncludeRawKeyInLogs { get; set; } = false;`.
-- Add `public bool IncludeKeyHashInTraces { get; set; } = false;`.
+- Optional trace key-hash toggles were deferred; keep key material redacted by default.
 
 Keep existing: `Mode`, `RedisConnectionString`, `Enabled`, `FailOpen`, `DefaultExpiration`, `MaximumPayloadBytes`, `MemorySizeLimitMb`, `FactoryTimeout`, `HybridLocalCacheExpiration`, plus any helper methods (`GetFactoryTimeout`, `GetConnectionString`).
 
@@ -923,7 +923,7 @@ BREAKING: StrictRedisCertificateValidation defaults to true.
 BREAKING: MaximumKeyLength defaults to 512 (was unbounded).
 
 New: StripeLockCount, RedisOperationTimeout, TtlJitterPercentage,
-StaleRefreshConcurrency, IncludeRawKeyInLogs, IncludeKeyHashInTraces.
+StaleRefreshConcurrency, IncludeRawKeyInLogs.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```

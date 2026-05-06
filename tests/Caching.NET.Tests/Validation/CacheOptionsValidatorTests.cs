@@ -58,12 +58,10 @@ public sealed class CacheOptionsValidatorTests
     }
 
     [Fact]
-    public void HybridMode_DoesNotRequireConnectionString()
+    public void HybridMode_RequiresConnectionString()
     {
-        // v2 tolerates Redis-less Hybrid (in-memory-only) for ergonomics. Strict enforcement
-        // applies only to Mode=Redis.
         var o = ValidBaseline(); o.Mode = CacheMode.Hybrid; o.RedisConnectionString = null;
-        Assert.True(Validate(o).Succeeded);
+        Assert.True(Validate(o).Failed);
     }
 
     [Theory]

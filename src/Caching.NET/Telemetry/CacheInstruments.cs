@@ -18,10 +18,28 @@ public static class CacheInstruments
     /// <summary>Library version reported on instruments.</summary>
     public const string Version = "2.0.0";
 
-    internal static readonly Meter Meter = new(MeterName, Version);
+    // Resolve the actual assembly informational version at runtime so Meter/ActivitySource
+    // version tags track the shipped package even when this constant lags behind. The public
+    // <see cref="Version"/> constant is preserved for source/binary compatibility.
+    private static readonly string s_runtimeVersion = ResolveRuntimeVersion();
+
+    internal static readonly Meter Meter = new(MeterName, s_runtimeVersion);
 
     /// <summary>The shared ActivitySource for cache operations.</summary>
-    public static readonly ActivitySource Activity = new(ActivitySourceName, Version);
+    public static readonly ActivitySource Activity = new(ActivitySourceName, s_runtimeVersion);
+
+    private static string ResolveRuntimeVersion()
+    {
+        var asm = typeof(CacheInstruments).Assembly;
+        var info = asm.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false);
+        if (info.Length > 0 && info[0] is System.Reflection.AssemblyInformationalVersionAttribute aiva)
+        {
+            var v = aiva.InformationalVersion;
+            var plus = v.IndexOf('+');
+            return plus >= 0 ? v[..plus] : v;
+        }
+        return asm.GetName().Version?.ToString() ?? Version;
+    }
 
     internal static readonly Counter<long> Hits =
         Meter.CreateCounter<long>("cache.hits", unit: "{op}", description: "Cache hits.");

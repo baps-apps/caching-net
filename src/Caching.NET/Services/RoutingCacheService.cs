@@ -383,12 +383,14 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentNullException.ThrowIfNull(items);
-        if (IsDisabled) return Task.CompletedTask;
+        if (IsDisabled || items.Count == 0) return Task.CompletedTask;
+        var jitteredExpiration = ApplyJitter(expiration, null);
+        var inner = ResolveService(modeOverride: null);
+        if (_keyPrefix.Length == 0)
+            return inner.SetManyAsync(items, jitteredExpiration, localExpiration, cancellationToken);
         var prefixed = new Dictionary<string, T>(items.Count);
         foreach (var kvp in items) prefixed[PrependPrefix(kvp.Key)] = kvp.Value;
-        var jitteredExpiration = ApplyJitter(expiration, null);
-        return ResolveService(modeOverride: null)
-            .SetManyAsync(prefixed, jitteredExpiration, localExpiration, cancellationToken);
+        return inner.SetManyAsync(prefixed, jitteredExpiration, localExpiration, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -397,6 +399,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         if (IsDisabled || keys is null) return Task.CompletedTask;
         var prefixed = new List<string>();
         foreach (var k in keys) if (!string.IsNullOrWhiteSpace(k)) prefixed.Add(PrependPrefix(k));
+        if (prefixed.Count == 0) return Task.CompletedTask;
         return ResolveService(modeOverride: null).RemoveManyAsync(prefixed, cancellationToken);
     }
 
@@ -410,13 +413,22 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         TimeSpan? localExpiration) where T : notnull
     {
         if (!_throttle.TryAcquire()) return;
-        CacheInstruments.AddStaleRefreshInFlight(Mode, +1);
         _ = Task.Run(async () =>
         {
+            CacheInstruments.AddStaleRefreshInFlight(Mode, +1);
             var lockStripe = _lockManager.GetLock(prefixedKey);
-            await lockStripe.WaitAsync().ConfigureAwait(false);
+            // Bound the wait so a stuck stripe-holder cannot pin a throttle slot indefinitely.
+            var lockTimeout = _optionsMonitor.CurrentValue.GetFactoryTimeout() ?? TimeSpan.FromSeconds(30);
+            bool lockAcquired = false;
             try
             {
+                lockAcquired = await lockStripe.WaitAsync(lockTimeout).ConfigureAwait(false);
+                if (!lockAcquired)
+                {
+                    _logger.StaleRefreshLockTimeout(prefixedKey, lockTimeout.TotalMilliseconds);
+                    CacheInstruments.RecordError(Mode, "stale_refresh", "Timeout");
+                    return;
+                }
                 var value = await factory(CancellationToken.None).ConfigureAwait(false);
                 var inner = ResolveService(callOptions?.Mode);
                 var abs = callOptions?.AbsoluteExpiration ?? expiration ?? _optionsMonitor.CurrentValue.DefaultExpiration;
@@ -426,18 +438,31 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
                 if (staleFor > TimeSpan.Zero)
                     _staleTracker.Register(prefixedKey, abs, staleFor);
             }
-            catch
+            catch (Exception ex)
             {
-                // refresh failed; leave stale entry in place to expire naturally
+                _logger.StaleRefreshFailed(prefixedKey, ex);
+                CacheInstruments.RecordError(Mode, "stale_refresh", ClassifyError(ex));
             }
             finally
             {
-                lockStripe.Release();
+                if (lockAcquired) lockStripe.Release();
                 _throttle.Release();
                 CacheInstruments.AddStaleRefreshInFlight(Mode, -1);
             }
         });
     }
+
+    private static string ClassifyError(Exception ex) => ex switch
+    {
+        // RedisTimeoutException derives from TimeoutException — listing TimeoutException covers both.
+        TimeoutException => "Timeout",
+        OperationCanceledException => "Canceled",
+        StackExchange.Redis.RedisConnectionException => "ConnectionFailed",
+        Polly.CircuitBreaker.BrokenCircuitException => "CircuitOpen",
+        System.Text.Json.JsonException => "Serialization",
+        MessagePack.MessagePackSerializationException => "Serialization",
+        _ => "Unknown"
+    };
 
     private ICacheService ResolveService(CacheMode? modeOverride)
     {

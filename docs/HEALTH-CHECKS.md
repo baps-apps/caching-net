@@ -226,4 +226,4 @@ readinessProbe:
 | Health always returns Healthy even when Redis is down | `FailOpen=true` (default) — factory runs successfully | Expected behavior. Set `FailOpen=false` if you need strict Redis health gating |
 | Health returns Unhealthy on startup | Redis not yet available | Ensure Redis is up before the app starts, or use `FailOpen=true` |
 | Health check not appearing at `/health` | Missing `app.MapHealthChecks("/health")` | Add the endpoint mapping after `builder.Build()` |
-| `InvalidOperationException` on startup | `WithHealthChecks()` called but `MapHealthChecks()` missing | Both registration and endpoint mapping are required |
+| Endpoint returns 404 | `app.MapHealthChecks(...)` missing | Add endpoint mapping after `builder.Build()` |

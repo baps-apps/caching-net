@@ -14,7 +14,7 @@ Connection strings with `password=`, `user=`, and `name=` segments are redacted 
 ## PII
 
 - Raw cache keys never appear in metrics tags (the `CN0001` analyzer enforces this).
-- Cache keys never appear in trace activities by default. Toggle `Options.IncludeKeyHashInTraces=true` to emit a `cache.key_hash` (xxHash64 hex) attribute when needed.
+- Tracing support is available via OpenTelemetry wiring; sensitive key material remains redacted by default.
 - Cache keys never appear in log messages by default. Toggle `Options.IncludeRawKeyInLogs=true` for dev only.
 
 ## Supply chain

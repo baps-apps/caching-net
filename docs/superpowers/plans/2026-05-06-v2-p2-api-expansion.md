@@ -18,7 +18,7 @@
 **Scope clarifications (vs literal spec):**
 - Spec §4 ICacheService drops the `localExpiration` parameter from `GetOrCreateAsync`/`SetAsync`. **This plan keeps `localExpiration`** because P0 already stabilised it and three current implementations rely on it. Sliding expiration arrives via `CacheCallOptions.SlidingExpiration`, not a new positional argument.
 - Spec §4 shows `RemoveByTagAsync(string tag)` only. Existing v2 contract has both `string` and `IEnumerable<string>` overloads. Keep both — they cost nothing and the IEnumerable form is just a fan-out.
-- Tag effects on InMemory/Redis are **no-op + log + miss-reason "TagsUnsupported"**. Full tag-association keys (Redis Set semantics) are deferred beyond v2.0.0.
+- Tag effects on InMemory/Redis are **no-op** unless `RequireTagSupport()` is configured (which startup-validates Hybrid mode).
 - Server-side Redis MGET/MSET pipelining is **deferred to P3**. P2 batch ops are client-side fan-out via `Task.WhenAll`.
 - Stale-while-revalidate is **InMemory + Redis only**. Hybrid is a no-op (HybridCache does not expose stale-window semantics).
 

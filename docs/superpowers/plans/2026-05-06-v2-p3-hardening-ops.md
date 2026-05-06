@@ -2239,7 +2239,7 @@ RoutingCacheService     KeyPrefix injection · mode dispatch · per-call options
     ▼
    InMemoryCacheService    RedisCacheService    HybridCacheService
    (IMemoryCache +         (IDistributedCache + (Microsoft HybridCache —
-    PostEvictionCallbacks) Polly pipeline)       coalesce delegated to it)
+    PostEvictionCallbacks) Polly pipeline)       used for Hybrid mode operations
 ```
 
 ## StripedLockManager
@@ -2288,14 +2288,14 @@ In-process registry (`StaleEntryTracker`, `ConcurrentDictionary<string, StaleMet
 2. If `StaleRefreshThrottle.TryAcquire()`, schedule a background `Task.Run` that takes the stripe lock for the same key, runs the factory, writes the fresh entry, updates the registry, then releases throttle + lock.
 3. `cache.stale_refresh.in_flight` UpDownCounter increments before factory and decrements in `finally`.
 
-Hybrid mode bypasses the orchestrator: `HybridCache` manages its own L1/L2 lifecycle.
+Hybrid mode still flows through routing/coalescing; `HybridCacheService` delegates storage lifecycle to `HybridCache`.
 
 ## Hot-reload matrix
 
 | Option | Hot-reloadable? |
 |--------|:---------------:|
 | `Enabled`, `FailOpen`, `DefaultExpiration`, `TtlJitterPercentage` | ✅ |
-| `MaximumPayloadBytes`, `MaximumKeyLength`, `IncludeRawKeyInLogs`, `IncludeKeyHashInTraces` | ✅ |
+| `MaximumPayloadBytes`, `MaximumKeyLength`, `IncludeRawKeyInLogs` | partial (service-dependent) |
 | `FactoryTimeout`, `RedisOperationTimeout`, `StaleRefreshConcurrency` | ✅ |
 | `KeyPrefix`, `Mode`, `RedisConnectionString`*, `StrictRedisCertificateValidation` | ❌ |
 | `StripeLockCount`, `MemorySizeLimitMb`, `HybridLocalCacheExpiration` | ❌ |
@@ -2341,7 +2341,7 @@ Sections: Hot-reload matrix (link to INTERNALS), AWS ElastiCache setup, Kubernet
 ```
 
 ```csharp
-services.AddCaching(builder.Configuration.GetSection("Caching"));
+services.AddCaching(builder.Configuration);
 ```
 
 ## AWS ElastiCache (TLS, IAM auth)
@@ -2466,7 +2466,6 @@ Activity source: `Caching.NET`. One activity per public op (`cache.get_or_create
 
 - `cache.mode` ∈ {`InMemory`, `Redis`, `Hybrid`}
 - `cache.operation` ∈ {`get`, `set`, `remove`, `get_many`, `set_many`, `remove_many`, `exists`, `refresh`, `get_or_create`}
-- `cache.layer` ∈ {`l1`, `l2`} (Hybrid only)
 - `cache.miss_reason` ∈ {`NotFound`, `Expired`, `Stale`, `SerializationFailed`, `EnvelopeInvalid`, `CircuitOpen`, `Disabled`, `Bypass`, `KeyTooLong`, `TagsUnsupported`}
 - `cache.eviction_reason` ∈ {`Expired`, `Capacity`, `Replaced`, `Removed`, `TokenExpired`}
 - `cache.error_kind` ∈ {`Timeout`, `ConnectionFailed`, `Serialization`, `CircuitOpen`, `Cancelled`, `Unknown`}
@@ -2547,7 +2546,7 @@ git commit -m "docs(p3): rewrite TELEMETRY.md for v2 (instruments, tags, cardina
 ## PII
 
 - Raw cache keys never appear in metrics tags (the `CN0001` analyzer enforces this).
-- Cache keys never appear in trace activities by default. Toggle `Options.IncludeKeyHashInTraces=true` to emit a `cache.key_hash` (xxHash64 hex) attribute when needed.
+- Cache keys never appear in metrics tags or logs by default; keep key material redacted.
 - Cache keys never appear in log messages by default. Toggle `Options.IncludeRawKeyInLogs=true` for dev only.
 
 ## Supply chain

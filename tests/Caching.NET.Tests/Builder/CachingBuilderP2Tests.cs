@@ -56,7 +56,7 @@ public class CachingBuilderP2Tests
     public void RequireTagSupport_with_Hybrid_succeeds()
     {
         var services = new ServiceCollection();
-        services.AddCaching(b => b.UseHybrid().WithKeyPrefix("p2").RequireTagSupport());
+        services.AddCaching(b => b.UseHybrid("localhost:6379").WithKeyPrefix("p2").RequireTagSupport());
         using var sp = services.BuildServiceProvider();
         var opts = sp.GetRequiredService<IOptions<CacheOptions>>().Value;
         Assert.True(opts.RequireTagSupport);

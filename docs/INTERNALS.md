@@ -19,7 +19,7 @@ RoutingCacheService     KeyPrefix injection · mode dispatch · per-call options
     ▼
    InMemoryCacheService    RedisCacheService    HybridCacheService
    (IMemoryCache +         (IDistributedCache + (Microsoft HybridCache —
-    PostEvictionCallbacks) Polly pipeline)       coalesce delegated to it)
+    PostEvictionCallbacks) Polly pipeline)       used for Hybrid mode operations)
 ```
 
 ## StripedLockManager
@@ -67,15 +67,15 @@ In-process registry (`StaleEntryTracker`, `ConcurrentDictionary<string, StaleMet
 2. If `StaleRefreshThrottle.TryAcquire()`, schedule a background `Task.Run` that takes the stripe lock for the same key, runs the factory, writes the fresh entry, updates the registry, then releases throttle + lock.
 3. `cache.stale_refresh.in_flight` UpDownCounter increments before factory and decrements in `finally`.
 
-Hybrid mode bypasses the orchestrator: `HybridCache` manages its own L1/L2 lifecycle.
+Hybrid mode still flows through routing/coalescing. `HybridCacheService` delegates storage lifecycle to `HybridCache`.
 
 ## Hot-reload matrix
 
 | Option | Hot-reloadable? |
 |--------|:---------------:|
-| `Enabled`, `FailOpen`, `DefaultExpiration`, `TtlJitterPercentage` | ✅ |
-| `MaximumPayloadBytes`, `MaximumKeyLength`, `IncludeRawKeyInLogs` | ✅ |
-| `FactoryTimeout`, `RedisOperationTimeout`, `StaleRefreshConcurrency` | ✅ |
+| `Enabled`, `DefaultExpiration`, `TtlJitterPercentage` | ✅ |
+| `MaximumPayloadBytes`, `MaximumKeyLength`, `IncludeRawKeyInLogs` | partial (service-dependent) |
+| `FactoryTimeout`, `RedisOperationTimeout`, `StaleRefreshConcurrency`, `FailOpen` | partial (not uniformly re-read across all services) |
 | `KeyPrefix`, `Mode`, `RedisConnectionString`*, `StrictRedisCertificateValidation` | ❌ |
 | `StripeLockCount`, `MemorySizeLimitMb`, `HybridLocalCacheExpiration` | ❌ |
 

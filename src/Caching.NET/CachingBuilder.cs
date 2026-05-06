@@ -123,12 +123,6 @@ public sealed class CachingBuilder
     }
 
     /// <summary>
-    /// v1 alias for <see cref="WithKeyPrefix(string)"/>. In v2, this maps to <see cref="CacheOptions.KeyPrefix"/>
-    /// which is applied at the routing layer across all modes (not just Redis).
-    /// </summary>
-    public CachingBuilder WithInstanceName(string name) => WithKeyPrefix(name);
-
-    /// <summary>
     /// Sets the mandatory key prefix prepended to every cache key by the routing layer.
     /// Replaces v1's RedisInstanceName; applies uniformly across InMemory, Redis, and Hybrid backends.
     /// </summary>

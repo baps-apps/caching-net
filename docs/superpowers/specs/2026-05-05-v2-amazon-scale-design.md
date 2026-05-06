@@ -627,7 +627,7 @@ Single tag: `v2.0.0` after all four phases land on `main` and `scripts/dev.ps1 a
 | Striped-lock false collisions cause unexpected serialization at extreme contention | Default 1024 stripes raises lift; user can `WithStripedLocks(8192)`; benchmark documents trade-off |
 | Removing `ICacheTelemetry` breaks consumers with custom telemetry sinks | Migration doc shows OTel-only path; OTel is industry standard |
 | Multi-tenant `KeyPrefix` mandatory may surprise single-tenant consumers | Default to service name (e.g. `Assembly.GetEntryAssembly().GetName().Name`) suggested in docs; still required to be set explicitly |
-| Multi-TFM matrix run-time on a single dev host | `scripts/dev.ps1 all` runs all three TFMs in series; full pass < 15 min on a modern laptop. Engineers can scope down via `scripts/dev.ps1 test -Tfm net10.0` while iterating |
+| Multi-TFM CI cost | Ubuntu × 3 TFMs only; Windows on tag builds; total CI < 15 min |
 | Schema-drift counter spam during gradual deploys | Counter is per-event, not per-key; rate-limited by miss rate; log de-dup via first-occurrence cache |
 
 ---

@@ -14,7 +14,8 @@ public class RoutingCacheServiceConcurrencyTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "true",
-            ["CacheOptions:Mode"] = "InMemory"
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
         };
 
         var configuration = new ConfigurationBuilder()
@@ -53,7 +54,8 @@ public class RoutingCacheServiceConcurrencyTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "false",
-            ["CacheOptions:Mode"] = "InMemory"
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();

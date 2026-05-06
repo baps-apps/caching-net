@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace Caching.NET.Keys;
 
 /// <summary>
@@ -11,6 +13,11 @@ public static class CacheKey
     public static CacheKeyBuilder For<T>(object id)
     {
         ArgumentNullException.ThrowIfNull(id);
-        return new CacheKeyBuilder(typeof(T).Name, id.ToString() ?? string.Empty);
+        // Format id with the invariant culture so locale-sensitive types (DateTime, decimal,
+        // double, …) produce the same wire key on every host.
+        var idString = id is IFormattable f
+            ? f.ToString(format: null, formatProvider: CultureInfo.InvariantCulture)
+            : id.ToString() ?? string.Empty;
+        return new CacheKeyBuilder(typeof(T).Name, idString);
     }
 }
