@@ -17,6 +17,10 @@ internal sealed class InMemoryCacheService(
 {
     private const string Mode = "InMemory";
     private static readonly TimeSpan FallbackExpiration = TimeSpan.FromMinutes(10);
+    private static readonly PostEvictionDelegate s_evictionCallback = OnEvicted;
+
+    private static void OnEvicted(object key, object? value, EvictionReason reason, object? state) =>
+        CacheInstruments.RecordEviction(Mode, reason.ToString());
 
     /// <inheritdoc />
     public async Task<T> GetOrCreateAsync<T>(
@@ -37,7 +41,9 @@ internal sealed class InMemoryCacheService(
         CacheInstruments.RecordMiss(Mode, "get_or_create", "NotFound");
         T value = await factory(cancellationToken).ConfigureAwait(false);
         var expirationSpan = expiration ?? options.Value.GetDefaultExpiration() ?? FallbackExpiration;
-        cache.Set(key, value, new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan });
+        var entryOpts1 = new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan };
+        entryOpts1.PostEvictionCallbacks.Add(new PostEvictionCallbackRegistration { EvictionCallback = s_evictionCallback });
+        cache.Set(key, value, entryOpts1);
         CacheInstruments.RecordSet(Mode);
         return value;
     }
@@ -47,7 +53,9 @@ internal sealed class InMemoryCacheService(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         var expirationSpan = expiration ?? options.Value.GetDefaultExpiration() ?? FallbackExpiration;
-        cache.Set(key, value, new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan });
+        var entryOpts2 = new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan };
+        entryOpts2.PostEvictionCallbacks.Add(new PostEvictionCallbackRegistration { EvictionCallback = s_evictionCallback });
+        cache.Set(key, value, entryOpts2);
         CacheInstruments.RecordSet(Mode);
         return Task.CompletedTask;
     }
