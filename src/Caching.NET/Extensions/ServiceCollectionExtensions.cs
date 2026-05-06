@@ -2,6 +2,7 @@ using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.ComponentModel.DataAnnotations;
@@ -306,11 +307,30 @@ public static class ServiceCollectionExtensions
         CacheOptions options,
         Action<ConfigurationOptions>? redisConfigAction)
     {
+        // Register the rotator that reloads the multiplexer when the connection string changes.
+        services.TryAddSingleton<RedisConnectionRotator>(sp =>
+        {
+            var monitor = sp.GetRequiredService<IOptionsMonitor<CacheOptions>>();
+            var logger = sp.GetRequiredService<ILogger<RedisConnectionRotator>>();
+            return new RedisConnectionRotator(monitor, conn =>
+            {
+                var conf = ConfigurationOptions.Parse(conn, ignoreUnknown: true);
+                conf.AbortOnConnectFail = false;
+                return ConnectionMultiplexer.Connect(conf);
+            }, logger);
+        });
+        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<RedisConnectionRotator>());
+
         services.TryAddSingleton<IConnectionMultiplexer>(sp =>
         {
             // Ensure the TLS validator is configured before the multiplexer connects.
             _ = sp.GetService<RedisCertificateValidator>();
 
+            // Use the rotator's current multiplexer when available (normal hosted-app path).
+            var rotator = sp.GetRequiredService<RedisConnectionRotator>();
+            if (rotator.Current is IConnectionMultiplexer mux) return mux;
+
+            // Fallback: rotator not yet started (pure DI without IHost) or redisConfigAction used.
             ConfigurationOptions conf;
             if (redisConfigAction is not null)
             {
@@ -319,7 +339,7 @@ public static class ServiceCollectionExtensions
             }
             else
             {
-                conf = ConfigurationOptions.Parse(options.RedisConnectionString!, ignoreUnknown: true);
+                conf = ConfigurationOptions.Parse(options.RedisConnectionString ?? "localhost:6379", ignoreUnknown: true);
             }
             conf.AbortOnConnectFail = false;
             return ConnectionMultiplexer.Connect(conf);
