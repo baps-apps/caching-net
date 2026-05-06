@@ -124,14 +124,26 @@ Caching.NET.Serialization.JsonCacheSerializer.JsonCacheSerializer() -> void
 Caching.NET.Serialization.JsonCacheSerializer.JsonCacheSerializer(System.Text.Json.JsonSerializerOptions! options) -> void
 Caching.NET.Serialization.JsonCacheSerializer.JsonCacheSerializer(System.Text.Json.Serialization.JsonSerializerContext! context) -> void
 Caching.NET.Serialization.JsonCacheSerializer.Serialize<T>(T value) -> byte[]!
+Caching.NET.Serialization.PayloadEnvelope
+Caching.NET.Serialization.PayloadEnvelopeReadResult
+Caching.NET.Serialization.PayloadEnvelopeReadResult.EnvelopeInvalid = 1 -> Caching.NET.Serialization.PayloadEnvelopeReadResult
+Caching.NET.Serialization.PayloadEnvelopeReadResult.FormatDrift = 2 -> Caching.NET.Serialization.PayloadEnvelopeReadResult
+Caching.NET.Serialization.PayloadEnvelopeReadResult.Ok = 0 -> Caching.NET.Serialization.PayloadEnvelopeReadResult
+Caching.NET.Serialization.PayloadEnvelopeReadResult.SchemaDrift = 3 -> Caching.NET.Serialization.PayloadEnvelopeReadResult
 Caching.NET.Telemetry.CacheInstruments
 const Caching.NET.Configuration.CacheConfigurationKeys.CacheOptions = "CacheOptions" -> string!
+const Caching.NET.Serialization.PayloadEnvelope.FormatIdJson = 1 -> byte
+const Caching.NET.Serialization.PayloadEnvelope.FormatIdMsgPack = 2 -> byte
+const Caching.NET.Serialization.PayloadEnvelope.HeaderSize = 17 -> int
 const Caching.NET.Resilience.ResiliencePipelineNames.RedisDelete = "cache.redis.delete" -> string!
 const Caching.NET.Resilience.ResiliencePipelineNames.RedisRead = "cache.redis.read" -> string!
 const Caching.NET.Resilience.ResiliencePipelineNames.RedisWrite = "cache.redis.write" -> string!
 const Caching.NET.Telemetry.CacheInstruments.ActivitySourceName = "Caching.NET" -> string!
 const Caching.NET.Telemetry.CacheInstruments.MeterName = "Caching.NET" -> string!
 const Caching.NET.Telemetry.CacheInstruments.Version = "2.0.0" -> string!
+static Caching.NET.Serialization.PayloadEnvelope.Magic.get -> System.ReadOnlySpan<byte>
+static Caching.NET.Serialization.PayloadEnvelope.TryRead(System.ReadOnlySpan<byte> wire, byte expectedFormatId, ulong expectedSchemaHash, out System.ReadOnlySpan<byte> payload) -> Caching.NET.Serialization.PayloadEnvelopeReadResult
+static Caching.NET.Serialization.PayloadEnvelope.Write(System.ReadOnlySpan<byte> payload, byte formatId, ulong schemaHash) -> byte[]!
 static Caching.NET.Extensions.CacheServiceCallExtensions.GetOrCreateAsync<T>(this Caching.NET.Abstractions.ICacheService! cache, string! key, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! factory, Caching.NET.Options.CacheCallOptions? callOptions, System.TimeSpan? expiration = null, System.TimeSpan? localExpiration = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T>!
 static Caching.NET.Extensions.CacheServiceCallExtensions.SetAsync<T>(this Caching.NET.Abstractions.ICacheService! cache, string! key, T value, Caching.NET.Options.CacheCallOptions? callOptions, System.TimeSpan? expiration = null, System.TimeSpan? localExpiration = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 static Caching.NET.Extensions.ServiceCollectionExtensions.AddCaching(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
