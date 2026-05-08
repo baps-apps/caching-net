@@ -1,4 +1,3 @@
-using System.Buffers;
 using MessagePack;
 using MessagePack.Resolvers;
 
@@ -31,10 +30,9 @@ public sealed class MessagePackCacheSerializer : ICacheSerializer
     public byte[] Serialize<T>(T value) => MessagePackSerializer.Serialize(value, _options);
 
     /// <inheritdoc />
-    public T? Deserialize<T>(ReadOnlySpan<byte> bytes)
+    public T? Deserialize<T>(ReadOnlyMemory<byte> bytes)
     {
         if (bytes.IsEmpty) return default;
-        var seq = new ReadOnlySequence<byte>(bytes.ToArray());
-        return MessagePackSerializer.Deserialize<T>(seq, _options);
+        return MessagePackSerializer.Deserialize<T>(bytes, _options);
     }
 }

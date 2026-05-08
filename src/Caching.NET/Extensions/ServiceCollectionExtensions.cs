@@ -10,6 +10,7 @@ using StackExchange.Redis;
 using Caching.NET.Abstractions;
 using Caching.NET.Configuration;
 using Caching.NET.Internal;
+using Caching.NET.Keys;
 using Caching.NET.Options;
 using Caching.NET.Services;
 
@@ -64,18 +65,32 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers a lightweight health check for the Caching.NET pipeline.
-    /// This complements, but does not replace, infrastructure-specific checks such as Redis health checks.
+    /// Registers Caching.NET health check(s) on the builder.
+    /// By default registers one <see cref="Health.CachingHealthCheck"/> (readiness).
+    /// When <paramref name="splitLivenessReadiness"/> is true, registers <see cref="Health.CachingLivenessHealthCheck"/> and <see cref="Health.CachingHealthCheck"/> with names <c>{name}-liveness</c> / <c>{name}-readiness</c> and tags <c>liveness</c> / <c>readiness</c>.
     /// </summary>
     public static IHealthChecksBuilder AddCachingHealthChecks(
         this IHealthChecksBuilder builder,
         string name = "caching-net",
         Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus failureStatus =
-            Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy)
+            Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy,
+        bool splitLivenessReadiness = false)
     {
         if (builder is null)
         {
             throw new ArgumentNullException(nameof(builder));
+        }
+
+        if (splitLivenessReadiness)
+        {
+            return builder.AddCheck<Health.CachingLivenessHealthCheck>(
+                    name: $"{name}-liveness",
+                    failureStatus: failureStatus,
+                    tags: new[] { "liveness" })
+                .AddCheck<Health.CachingHealthCheck>(
+                    name: $"{name}-readiness",
+                    failureStatus: failureStatus,
+                    tags: new[] { "readiness" });
         }
 
         return builder.AddCheck<Health.CachingHealthCheck>(
@@ -158,8 +173,10 @@ public static class ServiceCollectionExtensions
         // 7. Register cache infrastructure.
         // When Enabled is false, the cache is OFF at every level:
         //   - No backend (no MemoryCache, no Redis multiplexer, no HybridCache).
-        //   - No serializer, no resilience pipeline, no TLS validator, no health check.
+        //   - No serializer, no resilience pipeline, no TLS validator.
         //   - No options validation (CacheOptionsValidator short-circuits on Enabled=false).
+        // Health checks are registered later (step 10) when WithHealthChecks() was used; the
+        // check returns healthy when caching is disabled without probing backends.
         // RoutingCacheService is still registered so injected ICacheService consumers resolve;
         // every operation short-circuits to the factory (GetOrCreateAsync) or no-ops.
         if (effectiveOptions.Enabled)
@@ -217,15 +234,18 @@ public static class ServiceCollectionExtensions
             // 9. Default Polly resilience pipeline registry (timeout + circuit breaker + retry).
             services.TryAddSingleton<Polly.Registry.ResiliencePipelineRegistry<string>>(sp =>
             {
-                var opts = sp.GetService<IOptions<Resilience.ResiliencePipelineRegistryOptions>>()?.Value
-                           ?? new Resilience.ResiliencePipelineRegistryOptions();
+                var opts = sp.GetService<IOptions<Resilience.CacheResilienceOptions>>()?.Value
+                           ?? new Resilience.CacheResilienceOptions();
                 return Resilience.CacheResiliencePipelineBuilder.BuildDefaultRegistry(
                     timeout: opts.Timeout,
                     failureRatio: opts.FailureRatio,
                     minimumThroughput: opts.MinimumThroughput,
                     samplingDuration: opts.SamplingDuration,
                     breakDuration: opts.BreakDuration,
-                    retryCount: opts.RetryCount);
+                    retryCount: opts.RetryCount,
+                    enableRedisConcurrencyLimiter: opts.EnableRedisConcurrencyLimiter,
+                    redisConcurrencyPermitLimit: opts.RedisConcurrencyPermitLimit,
+                    redisConcurrencyQueueLimit: opts.RedisConcurrencyQueueLimit);
             });
 
         }
@@ -236,10 +256,15 @@ public static class ServiceCollectionExtensions
         if (builder?.RegisterHealthChecks == true)
         {
             services.AddHealthChecks()
-                .AddCachingHealthChecks(name: builder.HealthCheckName);
+                .AddCachingHealthChecks(
+                    name: builder.HealthCheckName,
+                    splitLivenessReadiness: builder.HealthCheckSplit);
         }
 
-        // 11. Always register routing infrastructure so RoutingCacheService can be constructed.
+        // 11. Key factory (override by registering ICacheKeyFactory before AddCaching, or add another registration after).
+        services.TryAddSingleton<ICacheKeyFactory, DefaultCacheKeyFactory>();
+
+        // 12. Always register routing infrastructure so RoutingCacheService can be constructed.
         // These are stateless and zero-cost when the cache short-circuits.
         services.TryAddSingleton<Internal.StripedLockManager>(sp =>
             new Internal.StripedLockManager(sp.GetRequiredService<IOptions<CacheOptions>>().Value.StripeLockCount));
@@ -250,7 +275,7 @@ public static class ServiceCollectionExtensions
             return new Internal.StaleRefreshThrottle(opts.StaleRefreshConcurrency);
         });
 
-        // 12. Always register RoutingCacheService as ICacheService (TryAdd for idempotency).
+        // 13. Always register RoutingCacheService as ICacheService (TryAdd for idempotency).
         // When Enabled is false, RoutingCacheService short-circuits every call.
         services.TryAddSingleton<ICacheService, RoutingCacheService>();
 
@@ -275,13 +300,10 @@ public static class ServiceCollectionExtensions
 
     private static void EnsureCacheSerializerOptions(IServiceCollection services)
     {
-        if (!services.Any(d => d.ServiceType == typeof(Microsoft.Extensions.Options.IConfigureOptions<CacheSerializerOptions>)))
-        {
-            services.AddOptions<CacheSerializerOptions>()
-                .Configure(_ => { })
-                .ValidateDataAnnotations()
-                .ValidateOnStart();
-        }
+        services.AddOptions<CacheSerializerOptions>()
+            .Configure(_ => { })
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
     }
 
     private static void TryAddConnectionMultiplexer(

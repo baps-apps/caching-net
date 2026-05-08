@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using Caching.NET.Internal;
 using Caching.NET.Options;
 using Microsoft.Extensions.Options;
+using StackExchange.Redis;
 
 namespace Caching.NET.Validation;
 
@@ -11,10 +12,20 @@ namespace Caching.NET.Validation;
 /// failure messages. Wire via <c>services.AddSingleton&lt;IValidateOptions&lt;CacheOptions&gt;&gt;()</c>
 /// alongside <c>.ValidateOnStart()</c>.
 /// </summary>
-internal sealed partial class CacheOptionsValidator : IValidateOptions<CacheOptions>
+internal sealed class CacheOptionsValidator : IValidateOptions<CacheOptions>
 {
-    [GeneratedRegex(@"^[a-zA-Z0-9][a-zA-Z0-9._:-]*$", RegexOptions.CultureInvariant)]
-    private static partial Regex KeyPrefixRegex();
+    /// <summary>
+    /// Culture-invariant pattern used to validate <see cref="CacheOptions.KeyPrefix"/> after ':' and length checks.
+    /// </summary>
+    /// <remarks>
+    /// Colon is forbidden in <see cref="CacheOptions.KeyPrefix"/> — routing uses a single ASCII ':' between prefix and user key;
+    /// allowing ':' inside the prefix creates ambiguous physical keys (see audit B6).
+    /// Pattern: <c>^[a-zA-Z0-9][a-zA-Z0-9._-]*$</c>.
+    /// </remarks>
+    private static readonly Regex KeyPrefixRegex = new(
+        @"^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(250));
 
     public ValidateOptionsResult Validate(string? name, CacheOptions o)
     {
@@ -35,9 +46,15 @@ internal sealed partial class CacheOptionsValidator : IValidateOptions<CacheOpti
         {
             failures.Add($"{nameof(CacheOptions.KeyPrefix)} must be <= 64 chars.");
         }
-        else if (!KeyPrefixRegex().IsMatch(o.KeyPrefix))
+        else if (o.KeyPrefix.Contains(':', StringComparison.Ordinal))
         {
-            failures.Add($"{nameof(CacheOptions.KeyPrefix)} must match ^[a-zA-Z0-9][a-zA-Z0-9._:-]*$ (no whitespace, '*' or '?').");
+            failures.Add(
+                $"{nameof(CacheOptions.KeyPrefix)} must not contain ':' (reserved as the delimiter between prefix and user keys).");
+        }
+        else if (!KeyPrefixRegex.IsMatch(o.KeyPrefix))
+        {
+            failures.Add(
+                $"{nameof(CacheOptions.KeyPrefix)} must match ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ (no whitespace, ':' , '*' or '?').");
         }
 
         if ((o.Mode == CacheMode.Redis || o.Mode == CacheMode.Hybrid) && string.IsNullOrWhiteSpace(o.RedisConnectionString))
@@ -45,14 +62,47 @@ internal sealed partial class CacheOptionsValidator : IValidateOptions<CacheOpti
             failures.Add($"{nameof(CacheOptions.RedisConnectionString)} is required for Mode={o.Mode}. (redacted={redactedCs})");
         }
 
+        if ((o.Mode == CacheMode.Redis || o.Mode == CacheMode.Hybrid) && !string.IsNullOrWhiteSpace(o.RedisConnectionString))
+        {
+            try
+            {
+                var parsed = ConfigurationOptions.Parse(o.RedisConnectionString!, ignoreUnknown: true);
+                if (parsed.EndPoints.Count == 0)
+                {
+                    failures.Add($"{nameof(CacheOptions.RedisConnectionString)} did not resolve any Redis endpoints. (redacted={redactedCs})");
+                }
+            }
+            catch (Exception)
+            {
+                failures.Add($"{nameof(CacheOptions.RedisConnectionString)} could not be parsed as a Redis configuration. (redacted={redactedCs})");
+            }
+        }
+
         if (o.MaximumKeyLength is < 64 or > 8192)
         {
             failures.Add($"{nameof(CacheOptions.MaximumKeyLength)} must be in [64, 8192]. (redacted={redactedCs})");
         }
 
+        if (o.MaximumKeyLength is >= 64 and <= 8192
+            && !string.IsNullOrWhiteSpace(o.KeyPrefix)
+            && KeyPrefixRegex.IsMatch(o.KeyPrefix)
+            && o.KeyPrefix.Length <= 64
+            && o.MaximumKeyLength > 0
+            && o.KeyPrefix.Length + 1 + 32 > o.MaximumKeyLength)
+        {
+            failures.Add(
+                $"{nameof(CacheOptions.MaximumKeyLength)} must leave at least 32 characters for user keys after " +
+                $"{nameof(CacheOptions.KeyPrefix)} and the ':' separator (prefix consumes {o.KeyPrefix.Length + 1} of {o.MaximumKeyLength}).");
+        }
+
         if (o.MaximumPayloadBytes is < 1024L or > 100L * 1024 * 1024)
         {
             failures.Add($"{nameof(CacheOptions.MaximumPayloadBytes)} must be in [1024, 104857600].");
+        }
+
+        if (o.PayloadCompressionThresholdBytes is < 256 or > 100 * 1024 * 1024)
+        {
+            failures.Add($"{nameof(CacheOptions.PayloadCompressionThresholdBytes)} must be in [256, 104857600].");
         }
 
         if (o.StripeLockCount is < 16 or > 65536)

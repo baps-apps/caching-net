@@ -27,8 +27,7 @@
     <EnablePackageValidation>true</EnablePackageValidation>
     <!-- IL2026/IL3050 (trim/AOT) suppressed because the v2 ICacheSerializer interface allows reflection-based
          JSON impls; consumers must opt into source-gen for full AOT/trim compatibility (P2 work).
-         RS0026 suppressed for legacy multi-overload methods retained for v1 source compat.
-         RS0016/RS0017 are NOT suppressed: PublicAPI.Unshipped.txt is populated and tracked. -->
+        RS0026 suppressed for legacy multi-overload methods retained for v1 source compat. -->
     <NoWarn>$(NoWarn);RS0026;IL2026;IL3050</NoWarn>
     <GenerateSBOM>true</GenerateSBOM>
   </PropertyGroup>
@@ -46,22 +45,16 @@
     <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
     <PackageReference Include="Polly" />
     <PackageReference Include="Polly.Extensions" />
+    <PackageReference Include="Polly.RateLimiting" />
     <PackageReference Include="System.Diagnostics.DiagnosticSource" />
     <PackageReference Include="MessagePack" />
     <PackageReference Include="System.IO.Hashing" />
-    <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers">
-      <PrivateAssets>all</PrivateAssets>
-    </PackageReference>
     <PackageReference Include="Microsoft.Sbom.Targets">
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
   </ItemGroup>
   <ItemGroup>
-    <AdditionalFiles Include="PublicAPI.Shipped.txt" />
-    <AdditionalFiles Include="PublicAPI.Unshipped.txt" />
-  </ItemGroup>
-  <ItemGroup>
-    <InternalsVisibleTo Include="Caching.NET.Bench" />
+    <InternalsVisibleTo Include="Caching.NET.Benchmark" />
     <InternalsVisibleTo Include="Caching.NET.Tests" />
     <InternalsVisibleTo Include="Caching.NET.Tests.Chaos" />
     <InternalsVisibleTo Include="Caching.NET.Tests.Properties" />

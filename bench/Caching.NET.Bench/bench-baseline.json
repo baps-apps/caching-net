@@ -1,9 +1,0 @@
-{
-  "_note": "Update this file by running: dotnet run -c Release --project bench/Caching.NET.Bench -- --filter '*' --exporters JSON",
-  "Caching.NET.Bench.GetOrCreateBenchmarks.Hit_Hot_Key": { "MeanNs": 200, "AllocatedBytes": 0 },
-  "Caching.NET.Bench.GetOrCreateBenchmarks.Miss_With_Factory": { "MeanNs": 2000, "AllocatedBytes": 400 },
-  "Caching.NET.Bench.SerializerBenchmarks.Json_Serialize-PayloadSize=100": { "MeanNs": 2000, "AllocatedBytes": 800 },
-  "Caching.NET.Bench.SerializerBenchmarks.MessagePack_Serialize-PayloadSize=100": { "MeanNs": 1000, "AllocatedBytes": 300 },
-  "Caching.NET.Bench.BatchBenchmarks.GetMany-N=10": { "MeanNs": 5000, "AllocatedBytes": 1200 },
-  "Caching.NET.Bench.BatchBenchmarks.GetMany-N=100": { "MeanNs": 50000, "AllocatedBytes": 12000 }
-}

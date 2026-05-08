@@ -1,4 +1,5 @@
 using Caching.NET.Extensions;
+using Caching.NET.Keys;
 
 namespace Caching.NET.Sample;
 
@@ -14,11 +15,13 @@ public class Program
         var builder = WebApplication.CreateBuilder(args);
 
         builder.Services.AddOpenApi();
+        // Register custom key factory BEFORE AddCaching so TryAddSingleton keeps this one.
+        builder.Services.AddSingleton<ICacheKeyFactory, SampleCacheKeyFactory>();
 
         // v2 default reference (when not explicitly overridden):
         // - Enabled: true
         // - Mode: InMemory
-        // - KeyPrefix: REQUIRED (must be provided via config or builder)
+        // - KeyPrefix: REQUIRED (must be provided via config or builder); ':' not allowed inside prefix
         // - DefaultExpiration: 00:10:00
         // - TtlJitterPercentage: 0.10
         // - MaximumKeyLength: 512
@@ -57,10 +60,17 @@ public class Program
             .WithRedisOperationTimeout(TimeSpan.FromSeconds(2))
             .WithStaleRefreshConcurrency(256)      // Bound SWR background refresh pressure.
             .WithStrictCertificateValidation()      // Production-safe Redis TLS posture.
+            .WithKeyTransformer(key => key.Trim().ToLowerInvariant())
+            .WithKeyValidator(key => key.Length <= 128)
+            .WithResilience(resilience =>
+            {
+                resilience.Timeout = TimeSpan.FromSeconds(2);
+                resilience.RetryCount = 2;
+            })
 
             // Feature toggles / integrations.
             .WithOpenTelemetry()                    // In v2 this is API-compatible; host OTel wiring does the work.
-            .WithHealthChecks()                     // Adds CachingHealthCheck registration.
+            .WithHealthChecks(splitLivenessReadiness: true)
             .RequireTagSupport());                  // Enforces Hybrid mode for tag invalidation paths.
 
         // Optional: use MessagePack serializer when payload size/CPU profile benefits from binary format.
@@ -83,5 +93,10 @@ public class Program
         app.MapControllers();
 
         app.Run();
+    }
+
+    private sealed class SampleCacheKeyFactory : ICacheKeyFactory
+    {
+        public CacheKeyBuilder For<T>(object id) => CacheKey.For<T>(id).WithSegment("tenant:sample");
     }
 }

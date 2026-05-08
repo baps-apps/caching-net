@@ -20,6 +20,8 @@
 - BenchmarkDotNet perf gate = compare run output JSON against a committed `bench-baseline.json`; fail CI when mean p99 or `Allocated` regresses > 10 %. The baseline is generated once on first green CI run on `main` and updated only via explicit script.
 - Docs target the `docs/` directory plus the repo-root `README.md`. Existing `docs/INTERNALS.md`, `docs/OPERATIONS.md`, `docs/TELEMETRY.md`, `docs/HEALTH-CHECKS.md` get full rewrites where their v1 content is stale.
 
+**Doc / behavior sync (2026-05-06 audit):** Operational docs now describe **`Enabled=false` DI semantics**, **health check** (`CachingHealthCheck`) **multiplexer + PING gating for Redis/Hybrid**, **per-instance probe keys**, **resilience** (transient rules, retry timing, optional concurrency limiter), and **telemetry** (ser/deser histograms, Redis batch remove counting). See [OPERATIONS.md](../../OPERATIONS.md), [HEALTH-CHECKS.md](../../HEALTH-CHECKS.md), [V2.0.0-RELEASE-IMPACT.md](../../V2.0.0-RELEASE-IMPACT.md).
+
 ---
 
 ## File Structure
@@ -43,14 +45,14 @@
 - `tests/Caching.NET.Tests.Properties/StripedLockManagerProperties.cs`
 - `tests/Caching.NET.Tests.Properties/PayloadEnvelopeProperties.cs`
 - `tests/Caching.NET.Tests.Properties/CoalescingProperties.cs`
-- `bench/Caching.NET.Bench/Caching.NET.Bench.csproj` — BenchmarkDotNet console project.
-- `bench/Caching.NET.Bench/Program.cs`
-- `bench/Caching.NET.Bench/GetOrCreateBenchmarks.cs`
-- `bench/Caching.NET.Bench/SerializerBenchmarks.cs`
-- `bench/Caching.NET.Bench/StripedLockBenchmarks.cs`
-- `bench/Caching.NET.Bench/BatchBenchmarks.cs`
-- `bench/Caching.NET.Bench/bench-baseline.json` — perf gate reference (committed; updated via script).
-- `bench/perf-gate.ps1` — comparison script (cross-platform PowerShell Core).
+- `benchmark/Caching.NET.Benchmark/Caching.NET.Benchmark.csproj` — BenchmarkDotNet console project.
+- `benchmark/Caching.NET.Benchmark/Program.cs`
+- `benchmark/Caching.NET.Benchmark/GetOrCreateBenchmarks.cs`
+- `benchmark/Caching.NET.Benchmark/SerializerBenchmarks.cs`
+- `benchmark/Caching.NET.Benchmark/StripedLockBenchmarks.cs`
+- `benchmark/Caching.NET.Benchmark/BatchBenchmarks.cs`
+- `benchmark/Caching.NET.Benchmark/bench-baseline.json` — perf gate reference (committed; updated via script).
+- `benchmark/perf-gate.ps1` — comparison script (cross-platform PowerShell Core).
 - `aot/Caching.NET.AotSmoke/Caching.NET.AotSmoke.csproj` — net10.0 console with `PublishAot=true`.
 - `aot/Caching.NET.AotSmoke/Program.cs`
 - `aot/Caching.NET.AotSmoke/AppJsonContext.cs` — minimal `JsonSerializerContext` for AOT smoke.
@@ -1525,14 +1527,14 @@ git commit -m "chore(p3): add Caching.NET.AotSmoke project — verifies PublishA
 ## Task 9: BenchmarkDotNet project + perf-gate baseline
 
 **Files:**
-- Create: `bench/Caching.NET.Bench/Caching.NET.Bench.csproj`
-- Create: `bench/Caching.NET.Bench/Program.cs`
-- Create: `bench/Caching.NET.Bench/GetOrCreateBenchmarks.cs`
-- Create: `bench/Caching.NET.Bench/SerializerBenchmarks.cs`
-- Create: `bench/Caching.NET.Bench/StripedLockBenchmarks.cs`
-- Create: `bench/Caching.NET.Bench/BatchBenchmarks.cs`
-- Create: `bench/perf-gate.ps1`
-- Create: `bench/Caching.NET.Bench/bench-baseline.json`
+- Create: `benchmark/Caching.NET.Benchmark/Caching.NET.Benchmark.csproj`
+- Create: `benchmark/Caching.NET.Benchmark/Program.cs`
+- Create: `benchmark/Caching.NET.Benchmark/GetOrCreateBenchmarks.cs`
+- Create: `benchmark/Caching.NET.Benchmark/SerializerBenchmarks.cs`
+- Create: `benchmark/Caching.NET.Benchmark/StripedLockBenchmarks.cs`
+- Create: `benchmark/Caching.NET.Benchmark/BatchBenchmarks.cs`
+- Create: `benchmark/perf-gate.ps1`
+- Create: `benchmark/Caching.NET.Benchmark/bench-baseline.json`
 - Modify: `Directory.Packages.props`, `Caching.NET.sln`
 
 - [ ] **Step 1: Add BenchmarkDotNet version**
@@ -1547,7 +1549,7 @@ Edit `Directory.Packages.props` — append:
 - [ ] **Step 2: Create bench csproj**
 
 ```xml
-<!-- bench/Caching.NET.Bench/Caching.NET.Bench.csproj -->
+<!-- benchmark/Caching.NET.Benchmark/Caching.NET.Benchmark.csproj -->
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -1571,7 +1573,7 @@ Edit `Directory.Packages.props` — append:
 - [ ] **Step 3: Program.cs**
 
 ```csharp
-// bench/Caching.NET.Bench/Program.cs
+// benchmark/Caching.NET.Benchmark/Program.cs
 using BenchmarkDotNet.Running;
 
 return BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args).ToExitCode();
@@ -1594,14 +1596,14 @@ internal static class Ext
 - [ ] **Step 4: GetOrCreate benchmarks**
 
 ```csharp
-// bench/Caching.NET.Bench/GetOrCreateBenchmarks.cs
+// benchmark/Caching.NET.Benchmark/GetOrCreateBenchmarks.cs
 using BenchmarkDotNet.Attributes;
 using Caching.NET.Abstractions;
 using Caching.NET.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Caching.NET.Bench;
+namespace Caching.NET.Benchmark;
 
 [MemoryDiagnoser]
 public class GetOrCreateBenchmarks
@@ -1631,11 +1633,11 @@ public class GetOrCreateBenchmarks
 - [ ] **Step 5: Serializer benchmarks**
 
 ```csharp
-// bench/Caching.NET.Bench/SerializerBenchmarks.cs
+// benchmark/Caching.NET.Benchmark/SerializerBenchmarks.cs
 using BenchmarkDotNet.Attributes;
 using Caching.NET.Serialization;
 
-namespace Caching.NET.Bench;
+namespace Caching.NET.Benchmark;
 
 [MemoryDiagnoser]
 public class SerializerBenchmarks
@@ -1663,11 +1665,11 @@ public class SerializerBenchmarks
 - [ ] **Step 6: Striped lock contention benchmark**
 
 ```csharp
-// bench/Caching.NET.Bench/StripedLockBenchmarks.cs
+// benchmark/Caching.NET.Benchmark/StripedLockBenchmarks.cs
 using BenchmarkDotNet.Attributes;
 using Caching.NET.Internal;
 
-namespace Caching.NET.Bench;
+namespace Caching.NET.Benchmark;
 
 [MemoryDiagnoser]
 public class StripedLockBenchmarks
@@ -1698,14 +1700,14 @@ public class StripedLockBenchmarks
 - [ ] **Step 7: Batch benchmark**
 
 ```csharp
-// bench/Caching.NET.Bench/BatchBenchmarks.cs
+// benchmark/Caching.NET.Benchmark/BatchBenchmarks.cs
 using BenchmarkDotNet.Attributes;
 using Caching.NET.Abstractions;
 using Caching.NET.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Caching.NET.Bench;
+namespace Caching.NET.Benchmark;
 
 [MemoryDiagnoser]
 public class BatchBenchmarks
@@ -1736,15 +1738,15 @@ public class BatchBenchmarks
 Run the bench locally to capture an initial baseline:
 
 ```bash
-dotnet run -c Release --project bench/Caching.NET.Bench -- --filter '*' --exporters JSON --artifacts bench/Caching.NET.Bench/BenchmarkDotNet.Artifacts
+dotnet run -c Release --project benchmark/Caching.NET.Benchmark -- --filter '*' --exporters JSON --artifacts benchmark/Caching.NET.Benchmark/BenchmarkDotNet.Artifacts
 ```
 
-Copy the produced JSON's combined report into `bench/Caching.NET.Bench/bench-baseline.json`. Use `BenchmarkDotNet.Artifacts/results/Caching.NET.Bench.GetOrCreateBenchmarks-report.json` (or similar). Concatenate per-benchmark Mean + AllocatedMemory into a single normalized JSON keyed by FullName:
+Copy the produced JSON's combined report into `benchmark/Caching.NET.Benchmark/bench-baseline.json`. Use `BenchmarkDotNet.Artifacts/results/Caching.NET.Benchmark.GetOrCreateBenchmarks-report.json` (or similar). Concatenate per-benchmark Mean + AllocatedMemory into a single normalized JSON keyed by FullName:
 
 ```json
 {
-  "Caching.NET.Bench.GetOrCreateBenchmarks.Hit_Hot_Key": { "MeanNs": 50, "AllocatedBytes": 0 },
-  "Caching.NET.Bench.GetOrCreateBenchmarks.Miss_With_Factory": { "MeanNs": 1200, "AllocatedBytes": 320 }
+  "Caching.NET.Benchmark.GetOrCreateBenchmarks.Hit_Hot_Key": { "MeanNs": 50, "AllocatedBytes": 0 },
+  "Caching.NET.Benchmark.GetOrCreateBenchmarks.Miss_With_Factory": { "MeanNs": 1200, "AllocatedBytes": 320 }
 }
 ```
 
@@ -1753,10 +1755,10 @@ Copy the produced JSON's combined report into `bench/Caching.NET.Bench/bench-bas
 - [ ] **Step 9: perf-gate.ps1**
 
 ```powershell
-# bench/perf-gate.ps1
+# benchmark/perf-gate.ps1
 param(
-  [string]$Baseline = "bench/Caching.NET.Bench/bench-baseline.json",
-  [string]$Current  = "bench/Caching.NET.Bench/BenchmarkDotNet.Artifacts/results/combined.json",
+  [string]$Baseline = "benchmark/Caching.NET.Benchmark/bench-baseline.json",
+  [string]$Current  = "benchmark/Caching.NET.Benchmark/BenchmarkDotNet.Artifacts/results/combined.json",
   [double]$ThresholdPct = 10.0
 )
 
@@ -1777,9 +1779,9 @@ if ($failed) { exit 1 } else { Write-Host "perf-gate: all benchmarks within ${Th
 - [ ] **Step 10: Add to solution + commit**
 
 ```bash
-dotnet sln add bench/Caching.NET.Bench/Caching.NET.Bench.csproj
+dotnet sln add benchmark/Caching.NET.Benchmark/Caching.NET.Benchmark.csproj
 git add -A
-git commit -m "chore(p3): add Caching.NET.Bench (BenchmarkDotNet) and perf-gate.ps1"
+git commit -m "chore(p3): add Caching.NET.Benchmark (BenchmarkDotNet) and perf-gate.ps1"
 ```
 
 ---
@@ -1868,17 +1870,17 @@ function Invoke-Aot {
 
 function Invoke-Bench {
     Step 'bench (BenchmarkDotNet)'
-    dotnet run -c $Configuration --project bench/Caching.NET.Bench -- --filter '*' --exporters JSON --artifacts bench/Caching.NET.Bench/BenchmarkDotNet.Artifacts
+    dotnet run -c $Configuration --project benchmark/Caching.NET.Benchmark -- --filter '*' --exporters JSON --artifacts benchmark/Caching.NET.Benchmark/BenchmarkDotNet.Artifacts
     if ($LASTEXITCODE -ne 0) { throw "bench run failed" }
     & "$repoRoot/scripts/combine-bench-results.ps1"
 }
 
 function Invoke-BenchGate {
     Step 'bench:gate (perf-gate.ps1 vs baseline)'
-    if (-not (Test-Path 'bench/Caching.NET.Bench/BenchmarkDotNet.Artifacts/results/combined.json')) {
+    if (-not (Test-Path 'benchmark/Caching.NET.Benchmark/BenchmarkDotNet.Artifacts/results/combined.json')) {
         Invoke-Bench
     }
-    & "$repoRoot/bench/perf-gate.ps1"
+    & "$repoRoot/benchmark/perf-gate.ps1"
     if ($LASTEXITCODE -ne 0) { throw "perf-gate regression" }
 }
 
@@ -1939,7 +1941,7 @@ scripts/dev.ps1 <command> [-Tfm <tfm>] [-Configuration Release|Debug] [-NoRestor
 # Reads BenchmarkDotNet per-bench *-report-full.json files and emits a single
 # combined.json keyed by FullName → { MeanNs, AllocatedBytes } for perf-gate.ps1.
 param(
-    [string]$ArtifactsDir = "bench/Caching.NET.Bench/BenchmarkDotNet.Artifacts/results"
+    [string]$ArtifactsDir = "benchmark/Caching.NET.Benchmark/BenchmarkDotNet.Artifacts/results"
 )
 $ErrorActionPreference = 'Stop'
 $combined = @{}
@@ -2100,7 +2102,7 @@ Targets: `net8.0`, `net9.0`, `net10.0`. AOT/trim compatible when consumer suppli
 ## Quickstart (zero-config)
 
 ```csharp
-services.AddCaching(b => b.UseInMemory().WithKeyPrefix("orders-svc:v1"));
+services.AddCaching(b => b.UseInMemory().WithKeyPrefix("asm-api-dev"));
 ```
 
 Inject `ICacheService`:
@@ -2119,13 +2121,13 @@ public class OrderService(ICacheService cache)
 
 ```csharp
 // In-memory only (single process)
-services.AddCaching(b => b.UseInMemory().WithKeyPrefix("svc:v1"));
+services.AddCaching(b => b.UseInMemory().WithKeyPrefix("asm-api-dev"));
 
 // Redis distributed
-services.AddCaching(b => b.UseRedis("localhost:6379").WithKeyPrefix("svc:v1"));
+services.AddCaching(b => b.UseRedis("localhost:6379").WithKeyPrefix("asm-api-dev"));
 
 // Hybrid (Microsoft.Extensions.Caching.Hybrid: in-memory L1 + Redis L2)
-services.AddCaching(b => b.UseHybrid("localhost:6379").WithKeyPrefix("svc:v1"));
+services.AddCaching(b => b.UseHybrid("localhost:6379").WithKeyPrefix("asm-api-dev"));
 ```
 
 ## Production config (Amazon-scale)
@@ -2133,7 +2135,7 @@ services.AddCaching(b => b.UseHybrid("localhost:6379").WithKeyPrefix("svc:v1"));
 ```csharp
 services.AddCaching(b => b
     .UseHybrid("rediss://elasticache.amzn.example:6380")
-    .WithKeyPrefix("orders-svc:v1")
+    .WithKeyPrefix("asm-api-prod")
     .WithSerializer(new JsonCacheSerializer(MyJsonContext.Default)) // AOT/trim
     .WithTtlJitter(0.10)
     .WithStripedLocks(2048)
@@ -2203,7 +2205,7 @@ v2.0.0 is a major release with **no backwards-compatible shims**. This guide is 
 
 - Tests that asserted `RemoveAsync(IEnumerable<string>)` calls must update to `RemoveManyAsync`.
 - Tests that injected an `ICacheTelemetry` mock must instead listen on `MeterListener` or `ActivitySource`.
-- Tests that constructed a bare `new CachingBuilder()` (rather than going through `AddCaching`) will hit `InvalidOperationException` on builder methods that need the `IServiceCollection`. Use `AddCaching(s => …)` always.
+- Tests that directly constructed `CachingBuilder` must be updated: construct through `AddCaching(s => …)` only.
 ```
 
 Commit:
@@ -2323,7 +2325,7 @@ Sections: Hot-reload matrix (link to INTERNALS), AWS ElastiCache setup, Kubernet
 // appsettings.json
 {
   "Caching": {
-    "KeyPrefix": "orders-svc:v1",
+    "KeyPrefix": "asm-api-prod",
     "Mode": "Hybrid",
     "RedisConnectionString": "rediss://elasticache.amzn.example:6380",
     "StrictRedisCertificateValidation": true,
@@ -2366,7 +2368,7 @@ spec:
       - name: app
         env:
         - name: Caching__KeyPrefix
-          value: orders-svc:v1
+          value: asm-api-prod
         - name: Caching__Mode
           value: Hybrid
         envFrom:
@@ -2576,7 +2578,7 @@ Use placeholder numbers; engineer running CI updates them after the first green 
 ```markdown
 # Benchmarks
 
-Run on GitHub Actions `ubuntu-latest`, .NET 10. Numbers below are illustrative; the authoritative source is `bench/Caching.NET.Bench/bench-baseline.json`.
+Run on GitHub Actions `ubuntu-latest`, .NET 10. Numbers below are illustrative; the authoritative source is `benchmark/Caching.NET.Benchmark/bench-baseline.json`.
 
 ## GetOrCreateAsync
 

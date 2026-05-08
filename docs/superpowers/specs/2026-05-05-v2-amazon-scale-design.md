@@ -5,6 +5,8 @@
 **Target version:** v2.0.0 (major release; breaking changes from v1.x; single ship)
 **Audience:** Library maintainers, downstream consumers planning v1→v2 migration
 
+**Post-implementation note (2026-05-06):** A follow-up audit (`docs/superpowers/audits/2026-05-06-v2-codebase-audit.md`) drove additional hardening: strict `PayloadEnvelope` length validation, `IBufferWriter<byte>` encode path, `DriftLogSampler` for drift logs, widened Polly transient/retry tuning, optional Redis concurrency limiter, serializer histograms, `StaleEntryTracker` pruning, `RoutingCacheService` `IAsyncDisposable`, Redis **`RemoveManyAsync`** telemetry by deleted count, **`CachingHealthCheck`** multiplexer **`PING`** + per-process probe key, **`CacheOptionsValidator`** Redis parse + prefix/key-length budget, and **CN0001** coverage for logger templates / `KeyValuePair.Create`. See that audit’s **Post-fix status** for the full implemented vs. deferred matrix.
+
 ---
 
 ## 1. Goals & Non-Goals
@@ -130,7 +132,7 @@ public sealed class CacheCallOptions
 ```csharp
 builder
     .UseHybrid()
-    .WithKeyPrefix("orders-svc:v1")              // mandatory; non-empty in v2
+    .WithKeyPrefix("asm-api-dev")                // mandatory; non-empty in v2; ':' forbidden inside prefix
     .WithSerializer<MessagePackCacheSerializer>() // pluggable; default JSON STJ source-gen
     .WithResilience(r => r.CircuitBreaker(...).Timeout(2.Seconds()).Retry(3))
     .WithTtlJitter(0.10)                          // ±10 % default for all entries
@@ -146,7 +148,7 @@ builder
 ```csharp
 var key = CacheKey.For<Order>(orderId).WithVariant("v2").Build();
 // → "Order:12345:v2"
-// Routing layer prepends KeyPrefix → "orders-svc:v1:Order:12345:v2"
+// Routing layer prepends KeyPrefix → "asm-api-dev:Order:12345:v2"
 ```
 
 ### Removed v1 surface
@@ -177,7 +179,7 @@ internal sealed class StripedLockManager
 
     public SemaphoreSlim GetLock(string key)
     {
-        uint h = StableStringHash(key);   // xxHash64 truncated; NOT String.GetHashCode (randomized)
+        uint h = StableStringHash.Compute(key);   // xxHash32 over UTF-8; NOT String.GetHashCode (randomized)
         return _stripes[h & _mask];
     }
 }
@@ -225,7 +227,7 @@ Skips lock entirely; runs factory directly; no read/write to cache.
 
 ### Polly Resilience Pipeline
 
-`Caching.NET.Resilience.CacheResiliencePipelineBuilder` produces named `ResiliencePipeline` per backend:
+Internally, `CacheResiliencePipelineBuilder` (assembly-internal, not public API) produces named Polly `ResiliencePipeline` instances per backend:
 
 ```csharp
 new ResiliencePipelineBuilder()
@@ -263,7 +265,7 @@ public interface ICacheSerializer
 {
     string FormatId { get; }                  // "json", "msgpack", custom
     byte[] Serialize<T>(T value);
-    T? Deserialize<T>(ReadOnlySpan<byte> bytes);
+    T? Deserialize<T>(ReadOnlyMemory<byte> bytes);
 }
 ```
 
@@ -285,11 +287,12 @@ Payload   : N bytes
 ```
 
 - Read errors:
-  - Magic mismatch → WARN log, treat as miss, emit `cache.envelope_invalid`.
-  - FormatId ≠ currently-configured serializer → miss, emit `cache.format_drift`.
-  - SchemaHash mismatch → miss, emit `cache.schema_drift` (DTO changed since cached).
-  - All cases respect `FailOpen`; never throw on envelope errors.
-- Write: ~17 B overhead per entry. Acceptable.
+  - Buffer too short, magic mismatch, or **declared `PayloadLen` ≠ actual trailing bytes** → miss, `EnvelopeInvalid` (strict length; rejects trailing garbage).
+  - FormatId ≠ currently-configured serializer → miss, `FormatDrift`.
+  - SchemaHash mismatch → miss, `SchemaDrift` (DTO changed since cached).
+  - High-volume drift logs are **sampled** per drift kind + key fingerprint; metrics still record every drift classification.
+  - All cases respect `FailOpen`; decoder never throws.
+- Write: ~17 B overhead per entry. `Write` supports `byte[]` or `IBufferWriter<byte>` to avoid an extra full-wire allocation when the caller already buffers.
 
 ### Per-Op Timeouts (Defense in Depth)
 
@@ -421,7 +424,7 @@ public sealed class CacheOptions
 
 Hard fails at host startup:
 
-- `KeyPrefix` non-empty, ≤ 64 chars, regex `^[a-zA-Z0-9][a-zA-Z0-9._:-]*$` (no whitespace, no `*` or `?` to prevent KEYS-pattern injection).
+- `KeyPrefix` non-empty, ≤ 64 chars, **must not contain `:`** (reserved delimiter before user keys), regex `^[a-zA-Z0-9][a-zA-Z0-9._-]*$` (no whitespace, no `*` or `?` to prevent KEYS-pattern injection).
 - `Mode == Redis || Mode == Hybrid` ⇒ `RedisConnectionString` non-empty.
 - `MaximumKeyLength >= 64 && <= 8192`.
 - `MaximumPayloadBytes >= 1024 && <= 100 * 1024 * 1024`.
@@ -451,11 +454,11 @@ All keys produced by `RoutingCacheService` follow:
 {KeyPrefix}:{type-or-domain}:{id}[:{variant}]
 ```
 
-Examples (with `KeyPrefix="orders-svc:v1"`):
+Examples (with `KeyPrefix="asm-api-dev"`):
 
-- `orders-svc:v1:Order:12345`
-- `orders-svc:v1:Order:12345:fulfilled`
-- `orders-svc:v1:_tag:premium-customer` (tag-association keys, internal)
+- `asm-api-dev:Order:12345`
+- `asm-api-dev:Order:12345:fulfilled`
+- `asm-api-dev:_tag:premium-customer` (tag-association keys, internal)
 
 ### `CacheKeyBuilder`
 
@@ -506,14 +509,14 @@ Test projects under `tests/`:
    - `StripedLockManager` determinism: `∀ k1, k2 : k1 == k2 ⇒ GetLock(k1) == GetLock(k2)`.
    - `PayloadEnvelope`: any random bytes either decode cleanly or produce `envelope_invalid` telemetry — never throw.
    - `GetOrCreateAsync` coalescing: under N concurrent waiters with same key, factory invoked exactly once.
-5. **`Caching.NET.Bench`** (BenchmarkDotNet):
+5. **`Caching.NET.Benchmark`** (BenchmarkDotNet):
    - `GetOrCreateAsync` cold/warm by mode.
    - Serializer comparison (JSON vs MessagePack) at 100 B / 10 KB / 1 MB payloads.
    - Striped lock contention at 1 / 10 / 100 / 1000 concurrent threads.
    - Batch ops: GetMany 10 / 100 / 1000 keys.
    - Allocations per op (`[MemoryDiagnoser]`).
 
-   **CI perf gate:** baseline stored in `bench-baseline.json`. CI fails if mean p99 latency or `Allocated` regresses > 10 % vs baseline.
+   **Perf gate:** baseline stored in `benchmark/Caching.NET.Benchmark/bench-baseline.json`. Local `bench:gate` fails if mean latency or `Allocated` regresses > 10 % vs baseline (same machine that produced the baseline).
 
 ### Local Build & Test Tooling
 
@@ -525,7 +528,7 @@ No remote CI service is used. All build, test, AOT smoke, bench, perf-gate, and 
 - `test:chaos` — Polly fault-injection suite.
 - `test:property` — FsCheck property suite.
 - `aot` — `Caching.NET.AotSmoke` publish + run.
-- `bench` — BenchmarkDotNet run, JSON output to `bench/Caching.NET.Bench/BenchmarkDotNet.Artifacts`.
+- `bench` — BenchmarkDotNet run, JSON output to `benchmark/Caching.NET.Benchmark/BenchmarkDotNet.Artifacts`.
 - `bench:gate` — compare current bench output against `bench-baseline.json`; fail on > 10 % regression.
 - `pack` — produce signed nupkg + snupkg into `nupkgs/`.
 - `all` — runs the full local equivalent of the former CI matrix in dependency order.
@@ -565,7 +568,7 @@ Runs on Windows / Linux / macOS via `pwsh`. Developers and reviewers execute the
 
 **SBOM:** `Microsoft.Sbom.Targets` generates SPDX 2.2 alongside `.nupkg`.
 
-**Public API surface lock:** `Microsoft.CodeAnalysis.PublicApiAnalyzers` with `PublicAPI.Shipped.txt` + `PublicAPI.Unshipped.txt`. Any unintended API change fails the build.
+**Public API compatibility:** .NET SDK NuGet package validation (`EnablePackageValidation` on `Caching.NET.csproj`). Unintended breaking API changes relative to the validation baseline fail `dotnet pack` until resolved (additive changes may require updating the baseline or package version policy).
 
 ---
 
@@ -652,7 +655,7 @@ These may land in v2.x minor releases after community feedback.
 3. Testcontainers integration suite green via `scripts/dev.ps1 test:integration`.
 4. Polly chaos suite green via `scripts/dev.ps1 test:chaos`.
 5. BenchmarkDotNet perf gate green via `scripts/dev.ps1 bench:gate` vs `bench-baseline.json`.
-6. `PublicAPI.Shipped.txt` matches generated public surface; no Unshipped diffs.
+6. NuGet package validation passes on `dotnet pack` (`EnablePackageValidation` / baseline aligned with the tagged release).
 7. `MIGRATION-V1-TO-V2.md` complete; reviewed by maintainer.
 8. SBOM generated; source-link verified; package signed.
 9. Smoke deploy of `samples/Caching.NET.Sample` against AWS ElastiCache (TLS) successful.

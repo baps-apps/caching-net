@@ -363,7 +363,7 @@ public static class ServiceCollectionExtensions
         CachingBuilder? builder = null;
         if (configure is not null)
         {
-            builder = new CachingBuilder();
+            builder = new CachingBuilder(services);
             configure(builder);
         }
 

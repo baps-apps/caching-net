@@ -55,6 +55,12 @@ public static class CacheInstruments
     internal static readonly Histogram<double> OperationDuration =
         Meter.CreateHistogram<double>("cache.operation.duration", unit: "ms", description: "Cache operation duration.");
 
+    internal static readonly Histogram<double> SerializeDuration =
+        Meter.CreateHistogram<double>("cache.serialize.duration", unit: "ms", description: "Serializer encode duration.");
+
+    internal static readonly Histogram<double> DeserializeDuration =
+        Meter.CreateHistogram<double>("cache.deserialize.duration", unit: "ms", description: "Serializer decode duration.");
+
     internal static readonly Counter<long> Evictions =
         Meter.CreateCounter<long>("cache.evictions", unit: "{entry}", description: "Cache entry evictions.");
     internal static readonly Counter<long> StaleServed =
@@ -110,6 +116,16 @@ public static class CacheInstruments
         => OperationDuration.Record(milliseconds,
             new KeyValuePair<string, object?>("cache.mode", mode),
             new KeyValuePair<string, object?>("cache.operation", operation));
+
+    /// <summary>Record serializer encode duration in milliseconds (Redis wire path).</summary>
+    public static void RecordSerializeDuration(string cacheFormat, double milliseconds)
+        => SerializeDuration.Record(milliseconds,
+            new KeyValuePair<string, object?>("cache.format", cacheFormat));
+
+    /// <summary>Record serializer decode duration in milliseconds (Redis wire path).</summary>
+    public static void RecordDeserializeDuration(string cacheFormat, double milliseconds)
+        => DeserializeDuration.Record(milliseconds,
+            new KeyValuePair<string, object?>("cache.format", cacheFormat));
 
     /// <summary>Record a cache entry eviction with the reason.</summary>
     public static void RecordEviction(string mode, string evictionReason)

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Caching.NET.Internal;
 using Caching.NET.Options;
 using Caching.NET.Resilience;
@@ -53,6 +54,61 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         _multiplexer = multiplexer;
     }
 
+    private static string SerializerFormatLabel(string formatId) => formatId switch
+    {
+        "json" => "json",
+        "msgpack" => "msgpack",
+        _ => "unknown",
+    };
+
+    private byte[] SerializeTimed<T>(T value)
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            return _serializer.Serialize(value);
+        }
+        finally
+        {
+            CacheInstruments.RecordSerializeDuration(SerializerFormatLabel(_serializer.FormatId), sw.Elapsed.TotalMilliseconds);
+        }
+    }
+
+    private T? DeserializeTimed<T>(ReadOnlyMemory<byte> payload) where T : notnull
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            return _serializer.Deserialize<T>(payload);
+        }
+        finally
+        {
+            CacheInstruments.RecordDeserializeDuration(SerializerFormatLabel(_serializer.FormatId), sw.Elapsed.TotalMilliseconds);
+        }
+    }
+
+    private void LogDriftSampled(string driftKind, string redisKey, Action log)
+    {
+        if (DriftLogSampler.ShouldLog(driftKind, redisKey))
+            log();
+    }
+
+    /// <summary>Maps envelope payload span (from <see cref="PayloadEnvelope.TryRead"/>) to a <see cref="ReadOnlyMemory{T}"/>
+    /// over the same <paramref name="wire"/> array without copying.</summary>
+    private static ReadOnlyMemory<byte> PayloadMemoryFromWire(byte[] wire, ReadOnlySpan<byte> payloadSpan) =>
+        payloadSpan.IsEmpty
+            ? ReadOnlyMemory<byte>.Empty
+            : wire.AsMemory(PayloadEnvelope.HeaderSize, payloadSpan.Length);
+
+    private ReadOnlyMemory<byte> DecodePayload(ReadOnlyMemory<byte> payload, byte envelopeFormatId)
+    {
+        if (!PayloadCompression.IsCompressed(envelopeFormatId))
+            return payload;
+
+        var decompressed = PayloadCompression.DecompressBrotli(payload.Span, _options.Value.MaximumPayloadBytes);
+        return decompressed.AsMemory();
+    }
+
     private static string ClassifyError(Exception ex) => ex switch
     {
         TimeoutRejectedException => "Timeout",
@@ -99,7 +155,19 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                 switch (status)
                 {
                     case PayloadEnvelopeReadResult.Ok:
-                        var value = _serializer.Deserialize<T>(payload);
+                        var payloadMem = PayloadMemoryFromWire(bytes, payload);
+                        ReadOnlyMemory<byte> decodedPayload;
+                        try
+                        {
+                            decodedPayload = DecodePayload(payloadMem, bytes[4]);
+                        }
+                        catch (Exception)
+                        {
+                            CacheInstruments.RecordMiss(Mode, "get_or_create", "EnvelopeInvalid");
+                            CacheInstruments.RecordSchemaDrift(Mode, "envelope_invalid");
+                            break;
+                        }
+                        var value = DeserializeTimed<T>(decodedPayload);
                         if (value != null)
                         {
                             CacheInstruments.RecordHit(Mode, "get_or_create");
@@ -109,17 +177,17 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                         CacheInstruments.RecordMiss(Mode, "get_or_create", "SerializationFailed");
                         break;
                     case PayloadEnvelopeReadResult.EnvelopeInvalid:
-                        _logger.RedisEnvelopeInvalid(FormatKey(key));
+                        LogDriftSampled("envelope_invalid", key, () => _logger.RedisEnvelopeInvalid(FormatKey(key)));
                         CacheInstruments.RecordMiss(Mode, "get_or_create", "EnvelopeInvalid");
                         CacheInstruments.RecordSchemaDrift(Mode, "envelope_invalid");
                         break;
                     case PayloadEnvelopeReadResult.FormatDrift:
-                        _logger.RedisFormatDrift(FormatKey(key));
+                        LogDriftSampled("format_drift", key, () => _logger.RedisFormatDrift(FormatKey(key)));
                         CacheInstruments.RecordMiss(Mode, "get_or_create", "EnvelopeInvalid");
                         CacheInstruments.RecordSchemaDrift(Mode, "format_drift");
                         break;
                     case PayloadEnvelopeReadResult.SchemaDrift:
-                        _logger.RedisSchemaDrift(FormatKey(key));
+                        LogDriftSampled("schema_drift", key, () => _logger.RedisSchemaDrift(FormatKey(key)));
                         CacheInstruments.RecordMiss(Mode, "get_or_create", "EnvelopeInvalid");
                         CacheInstruments.RecordSchemaDrift(Mode, "schema_drift");
                         break;
@@ -165,7 +233,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         byte[] payload;
         try
         {
-            payload = _serializer.Serialize(value);
+            payload = SerializeTimed(value);
         }
         catch (Exception ex)
         {
@@ -182,6 +250,18 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         }
 
         byte formatId = ResolveFormatId(_serializer.FormatId);
+        if (PayloadCompression.ShouldCompress(
+            payload.Length,
+            _options.Value.EnablePayloadCompression,
+            _options.Value.PayloadCompressionThresholdBytes))
+        {
+            var compressed = PayloadCompression.CompressBrotli(payload);
+            if (compressed.Length < payload.Length)
+            {
+                payload = compressed;
+                formatId = PayloadCompression.WithCompression(formatId);
+            }
+        }
         ulong schemaHash = StableTypeHash.Compute<T>();
         byte[] wire = PayloadEnvelope.Write(payload, formatId, schemaHash);
 
@@ -230,6 +310,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
     /// <inheritdoc />
     public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
+        _ = cancellationToken;
         _logger.TagNotSupported(tag);
         return Task.CompletedTask;
     }
@@ -237,6 +318,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
     /// <inheritdoc />
     public Task RemoveByTagAsync(IEnumerable<string> tags, CancellationToken cancellationToken = default)
     {
+        _ = cancellationToken;
         _logger.TagNotSupported("(multiple tags)");
         return Task.CompletedTask;
     }
@@ -266,7 +348,18 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
             var status = PayloadEnvelope.TryRead(bytes, expectedFormat, expectedSchema, out var payload);
             if (status == PayloadEnvelopeReadResult.Ok)
             {
-                var value = _serializer.Deserialize<T>(payload);
+                var payloadMem = PayloadMemoryFromWire(bytes, payload);
+                ReadOnlyMemory<byte> decodedPayload;
+                try
+                {
+                    decodedPayload = DecodePayload(payloadMem, bytes[4]);
+                }
+                catch (Exception)
+                {
+                    CacheInstruments.RecordMiss(Mode, "get", "EnvelopeInvalid");
+                    return default;
+                }
+                var value = DeserializeTimed<T>(decodedPayload);
                 if (value != null)
                 {
                     CacheInstruments.RecordHit(Mode, "get");
@@ -363,7 +456,17 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                     var status = PayloadEnvelope.TryRead(wire, expectedFormat, expectedSchema, out var payload);
                     if (status == PayloadEnvelopeReadResult.Ok)
                     {
-                        dict[keyList[i]] = _serializer.Deserialize<T>(payload);
+                        try
+                        {
+                            var decoded = DecodePayload(PayloadMemoryFromWire(wire, payload), wire[4]);
+                            dict[keyList[i]] = DeserializeTimed<T>(decoded);
+                        }
+                        catch (Exception)
+                        {
+                            dict[keyList[i]] = default;
+                            CacheInstruments.RecordMiss(Mode, "get_many", "EnvelopeInvalid");
+                            CacheInstruments.RecordSchemaDrift(Mode, "envelope_invalid");
+                        }
                     }
                     else
                     {
@@ -427,8 +530,8 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var redisKeys = Array.ConvertAll(keyList, k => (RedisKey)k);
-                await _multiplexer.GetDatabase().KeyDeleteAsync(redisKeys).ConfigureAwait(false);
-                for (int i = 0; i < keyList.Length; i++)
+                var deleted = await _multiplexer.GetDatabase().KeyDeleteAsync(redisKeys).ConfigureAwait(false);
+                for (long i = 0; i < deleted; i++)
                     CacheInstruments.RecordRemove(Mode);
                 return;
             }

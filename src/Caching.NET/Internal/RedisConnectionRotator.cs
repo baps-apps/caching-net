@@ -52,11 +52,10 @@ internal sealed class RedisConnectionRotator : IHostedService, IAsyncDisposable
             _current = null;
             _currentConnString = null;
         }
-        TryDispose(old);
-        return Task.CompletedTask;
+        return DisposeSafelyAsync(old, cancellationToken);
     }
 
-    private void HandleChange(CacheOptions next, string? _)
+    private void HandleChange(CacheOptions next, string? _name)
     {
         if (next.Mode is not (CacheMode.Redis or CacheMode.Hybrid)) return;
         if (string.IsNullOrEmpty(next.RedisConnectionString)) return;
@@ -68,17 +67,41 @@ internal sealed class RedisConnectionRotator : IHostedService, IAsyncDisposable
             var oldMux = _current;
             _current = _multiplexerFactory(next.RedisConnectionString);
             _currentConnString = next.RedisConnectionString;
-            TryDispose(oldMux);
+            _ = DisposeSafelyAsync(oldMux, CancellationToken.None);
         }
     }
 
-    private static void TryDispose(object? obj)
+    private async Task DisposeSafelyAsync(object? obj, CancellationToken cancellationToken)
     {
-        if (obj is IDisposable d) d.Dispose();
-        else if (obj is IAsyncDisposable ad) _ = ad.DisposeAsync().AsTask();
+        if (obj is null) return;
+        try
+        {
+            // Give in-flight operations a brief chance to finish before tearing down old connection.
+            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Continue disposal on shutdown.
+        }
+
+        try
+        {
+            if (obj is IAsyncDisposable ad)
+            {
+                await ad.DisposeAsync().ConfigureAwait(false);
+            }
+            else if (obj is IDisposable d)
+            {
+                d.Dispose();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to dispose rotated Redis multiplexer cleanly.");
+        }
     }
 
-    public void Dispose() => _ = DisposeAsync().AsTask();
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
     public ValueTask DisposeAsync() => new(StopAsync(CancellationToken.None));
 }

@@ -7,7 +7,7 @@ namespace Caching.NET.Tests.Integration;
 public class RedisConnectionDropTests : IAsyncLifetime
 {
     private readonly RedisContainer _container =
-        new RedisBuilder().WithImage("redis:7.2-alpine").Build();
+        new RedisBuilder("redis:7.2-alpine").Build();
 
     public Task InitializeAsync() => _container.StartAsync();
     public Task DisposeAsync() => _container.DisposeAsync().AsTask();

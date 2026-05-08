@@ -15,7 +15,7 @@ public class CacheOptionsValidationTests
         {
             ["CacheOptions:Enabled"] = "true",
             ["CacheOptions:Mode"] = "InMemory",
-            ["CacheOptions:KeyPrefix"] = "svc:v1",
+            ["CacheOptions:KeyPrefix"] = "orders-api",
             ["CacheOptions:DefaultExpiration"] = "00:10:00"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
@@ -27,7 +27,7 @@ public class CacheOptionsValidationTests
         Assert.True(options.Enabled);
         Assert.Equal(CacheMode.InMemory, options.Mode);
         Assert.Equal(TimeSpan.FromMinutes(10), options.DefaultExpiration);
-        Assert.Equal("svc:v1", options.KeyPrefix);
+        Assert.Equal("orders-api", options.KeyPrefix);
     }
 
     [Fact]
@@ -36,7 +36,7 @@ public class CacheOptionsValidationTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "false",
-            ["CacheOptions:KeyPrefix"] = "svc:v1"
+            ["CacheOptions:KeyPrefix"] = "orders-api"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
@@ -55,11 +55,29 @@ public class CacheOptionsValidationTests
         {
             ["CacheOptions:Enabled"] = "true",
             ["CacheOptions:Mode"] = "Redis",
-            ["CacheOptions:KeyPrefix"] = "svc:v1"
+            ["CacheOptions:KeyPrefix"] = "orders-api"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
 
         Assert.Throws<InvalidOperationException>(() => services.AddCaching(configuration));
+    }
+
+    [Fact]
+    public void AddCaching_WithInvalidPayloadCompressionThreshold_Throws()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "true",
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "orders-api",
+            ["CacheOptions:PayloadCompressionThresholdBytes"] = "128"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddCaching(configuration);
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<CacheOptions>>().Value);
     }
 }

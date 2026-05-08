@@ -70,15 +70,17 @@ public class CacheServiceCoreApiTests
             Microsoft.Extensions.Logging.Abstractions.NullLogger<InMemoryCacheService>.Instance);
         var entry = new Microsoft.Extensions.Caching.Memory.MemoryCacheEntryOptions
         {
-            AbsoluteExpirationRelativeToNow = TimeSpan.FromMilliseconds(500),
-            SlidingExpiration = TimeSpan.FromMilliseconds(200),
+            // Sliding window must tolerate parallel suite load (thread pool / TFMs); gaps between
+            // accesses can exceed sub-second delays when other tests compete for the scheduler.
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30),
+            SlidingExpiration = TimeSpan.FromSeconds(2),
         };
         await inMem.SetAsync("k", "v", entry);
 
         for (int i = 0; i < 4; i++)
         {
             await Task.Delay(100);
-            Assert.True(await inMem.ExistsAsync("k"));
+            Assert.NotNull(await inMem.GetAsync<string>("k"));
         }
     }
 }

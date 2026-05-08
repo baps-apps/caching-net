@@ -12,6 +12,8 @@ bin/
 obj/
 out/
 TestResults/
+BenchmarkDotNet.Artifacts/
+**/BenchmarkDotNet.Artifacts/
 
 ## .NET / NuGet
 *.user

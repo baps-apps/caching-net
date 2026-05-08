@@ -22,6 +22,8 @@ public sealed class CacheCallOptions
     /// <summary>
     /// When true, the factory is always executed; the result is then written to the cache and returned.
     /// Use to refresh stale data without removing the key first. Default: false.
+    /// Honoured only by <c>GetOrCreateAsync</c> (including extension overloads that route to it).
+    /// Set operations ignore this flag; use <c>RefreshAsync</c> or a remove-then-set sequence instead.
     /// </summary>
     public bool ForceRefresh { get; init; }
 

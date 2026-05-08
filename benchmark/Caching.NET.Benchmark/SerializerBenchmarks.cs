@@ -1,7 +1,7 @@
 using BenchmarkDotNet.Attributes;
 using Caching.NET.Serialization;
 
-namespace Caching.NET.Bench;
+namespace Caching.NET.Benchmark;
 
 [MemoryDiagnoser]
 public class SerializerBenchmarks

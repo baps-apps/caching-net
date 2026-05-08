@@ -24,14 +24,15 @@ public sealed class CacheInstrumentsTests
     [Fact]
     public void RecordMiss_IncludesMissReasonTag()
     {
+        var uniqueMode = $"TestMiss-{Guid.NewGuid():N}";
         using var listener = MeterListenerHelpers.ForCounterWithTags("cache.misses", out var observed);
 
-        CacheInstruments.RecordMiss("InMemory", "get_or_create", "NotFound");
+        CacheInstruments.RecordMiss(uniqueMode, "get_or_create", "NotFound");
 
         listener.Dispose();
 
-        var (_, tags) = Assert.Single(observed);
-        Assert.Equal("NotFound", tags["cache.miss_reason"]);
+        var match = observed.Single(o => (string?)o.tags.GetValueOrDefault("cache.mode") == uniqueMode);
+        Assert.Equal("NotFound", match.tags["cache.miss_reason"]);
     }
 
     [Fact]

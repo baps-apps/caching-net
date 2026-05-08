@@ -1,7 +1,18 @@
+using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Reports;
 using BenchmarkDotNet.Running;
+using System.IO;
 
-return BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args).ToArray().ToExitCode();
+var artifactsPath = Path.GetFullPath(Path.Combine(
+    AppContext.BaseDirectory,
+    "..",
+    "..",
+    "..",
+    "..",
+    "BenchmarkDotNet.Artifacts"));
+var config = DefaultConfig.Instance.WithArtifactsPath(artifactsPath);
+
+return BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args, config).ToArray().ToExitCode();
 
 internal static class Ext
 {

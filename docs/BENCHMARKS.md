@@ -1,6 +1,6 @@
 # Benchmarks
 
-Run on macOS arm64, .NET 10. Numbers below are illustrative placeholders; the authoritative source is `bench/Caching.NET.Bench/bench-baseline.json`.
+Run on macOS arm64, .NET 10. Numbers below are illustrative placeholders; the authoritative source is `benchmark/Caching.NET.Benchmark/bench-baseline.json`.
 
 To regenerate: `pwsh scripts/dev.ps1 bench`
 
@@ -13,6 +13,8 @@ To regenerate: `pwsh scripts/dev.ps1 bench`
 | Redis    | Hit hot key | ~250 000 | ~400 |
 | Hybrid   | Hit L1 | ~60 | 0 |
 
+Micro-benchmarks do not yet surface `cache.serialize.duration` / `cache.deserialize.duration`; use production metrics or ad-hoc profiling for serializer regressions.
+
 ## Serializer comparison
 
 | Serializer | Payload | Mean (ns) | Allocated (B) |
@@ -23,6 +25,8 @@ To regenerate: `pwsh scripts/dev.ps1 bench`
 
 ## Batch ops (InMemory)
 
+Implementations use **synchronous** `IMemoryCache`/`MemoryCache` access in batch paths (`TryGetValue`, `Set`, `Remove`) — no per-key `await` overhead.
+
 | N | GetMany Mean (µs) | Allocated (B) |
 |---:|------------------:|--------------:|
 | 10 | ~6 | ~1 200 |
@@ -30,6 +34,4 @@ To regenerate: `pwsh scripts/dev.ps1 bench`
 
 ## Perf gate
 
-CI fails when any benchmark's `Mean` or `Allocated` regresses > 10% vs `bench-baseline.json`. Update the baseline only after a deliberate perf change has landed and been reviewed.
-
-Run the gate: `pwsh bench/perf-gate.ps1`
+The local perf gate (`pwsh benchmark/perf-gate.ps1`, or `pwsh scripts/dev.ps1 bench:gate` after a bench run) fails when any benchmark's `Mean` or `Allocated` regresses > 10% vs `bench-baseline.json`. Update the baseline only after a deliberate perf change has landed and been reviewed.

@@ -167,15 +167,17 @@ public class ProductCatalogController : ControllerBase
     /// </summary>
     /// <param name="id">The product identifier (e.g. <c>p-100</c>).</param>
     /// <param name="cache">Cache service injected per-request via <c>[FromServices]</c>.</param>
+    /// <param name="keyFactory">Cache key factory used to compose typed cache keys.</param>
     /// <param name="ct">Request cancellation token.</param>
     /// <returns>The product, or <c>404 Not Found</c> when the identifier does not exist.</returns>
     [HttpGet("products/{id}/with-swr")]
     public async Task<IActionResult> GetWithSwr(
         string id,
         [FromServices] ICacheService cache,
+        [FromServices] ICacheKeyFactory keyFactory,
         CancellationToken ct)
     {
-        var key = CacheKey.For<Product>(id).Build();
+        var key = keyFactory.For<Product>(id).Build();
 
         var product = await cache.GetOrCreateAsync(
             key,
@@ -200,6 +202,7 @@ public class ProductCatalogController : ControllerBase
     /// <param name="Name">Display name of the product.</param>
     /// <param name="Category">Category tag used for Hybrid-mode cache invalidation.</param>
     /// <param name="Price">Retail price in the default currency.</param>
+    [CacheSchema("v2-product-catalog")]
     public record Product(string Id, string Name, string Category, decimal Price);
 }
 

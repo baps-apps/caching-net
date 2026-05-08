@@ -13,6 +13,8 @@
 - Verify P0 baseline: `dotnet test` → all 88 tests pass before starting Task 1.
 - All commit subjects use the form `feat(p1): <area> — <action>` or `fix(p1): …` so the v2.0.0 changelog can grep them.
 
+**Doc / behavior sync (2026-05-06):** Beyond the original P1 instrument set, production code now includes **`cache.serialize.duration` / `cache.deserialize.duration`** (tag `cache.format`), **`PayloadEnvelope.TryRead` strict length** (trailing bytes → invalid), **`Write(..., IBufferWriter<byte>)`**, and **`DriftLogSampler`** for envelope/schema drift **logs**. See [TELEMETRY.md](../../TELEMETRY.md) and [INTERNALS.md](../../INTERNALS.md).
+
 ---
 
 ## File Structure

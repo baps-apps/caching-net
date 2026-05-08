@@ -7,8 +7,9 @@ namespace Caching.NET.Options;
 public sealed class CacheOptions
 {
     /// <summary>
-    /// Required key prefix prepended to every cache key by the routing layer. Must be non-empty
-    /// and match <c>^[a-zA-Z0-9][a-zA-Z0-9._:-]*$</c> (no whitespace, '*' or '?'). Replaces v1's
+    /// Required key prefix prepended to every cache key by the routing layer. Must be non-empty,
+    /// must not contain <c>':'</c> (reserved as the delimiter before the user key segment), and match
+    /// <c>^[a-zA-Z0-9][a-zA-Z0-9._-]*$</c> (no whitespace, '*' or '?'). Replaces v1's
     /// <c>RedisInstanceName</c>: applies uniformly across InMemory/Redis/Hybrid (not just Redis).
     /// </summary>
     public string KeyPrefix { get; set; } = string.Empty;
@@ -59,14 +60,42 @@ public sealed class CacheOptions
     public double TtlJitterPercentage { get; set; } = 0.10;
 
     /// <summary>
-    /// Maximum length of a cache key in characters. Required (default 512).
+    /// Maximum length in characters of the <strong>full physical cache key</strong> after the routing
+    /// layer prepends <see cref="KeyPrefix"/> and its separator (<c>':'</c>). User-supplied keys passed
+    /// to <see cref="Abstractions.ICacheService"/> must therefore leave enough room for
+    /// <c>KeyPrefix.Length + 1</c> in addition to their own segment.
     /// </summary>
     public int MaximumKeyLength { get; set; } = 512;
+
+    /// <summary>
+    /// Optional fluent-only hook: return false to skip caching for a user key segment (after
+    /// <see cref="KeyTransformer"/>). Not bound from configuration.
+    /// </summary>
+    public Func<string, bool>? KeyValidator { get; set; }
+
+    /// <summary>
+    /// Optional fluent-only hook: normalize or rewrite the user key segment before prefixing.
+    /// Not bound from configuration.
+    /// </summary>
+    public Func<string, string>? KeyTransformer { get; set; }
 
     /// <summary>
     /// Maximum size of a cache entry in bytes. Default 1 MiB.
     /// </summary>
     public long MaximumPayloadBytes { get; set; } = 1_048_576;
+
+    /// <summary>
+    /// Enables payload compression for Redis envelope values when the serialized payload
+    /// meets <see cref="PayloadCompressionThresholdBytes"/>. Compression is Brotli and
+    /// is marked via the envelope format-id high bit.
+    /// </summary>
+    public bool EnablePayloadCompression { get; set; }
+
+    /// <summary>
+    /// Minimum serialized payload size (bytes) before compression is attempted.
+    /// Default 16 KiB.
+    /// </summary>
+    public int PayloadCompressionThresholdBytes { get; set; } = 16 * 1024;
 
     /// <summary>
     /// Number of striped lock slots for stampede protection. Rounded up to power of 2. Default 1024.

@@ -2,10 +2,8 @@ using BenchmarkDotNet.Attributes;
 using Caching.NET.Abstractions;
 using Caching.NET.Extensions;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Caching.NET.Bench;
+namespace Caching.NET.Benchmark;
 
 [MemoryDiagnoser]
 public class GetOrCreateBenchmarks
@@ -16,7 +14,7 @@ public class GetOrCreateBenchmarks
     public void Setup()
     {
         var services = new ServiceCollection();
-        services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
+        services.AddLogging();
         services.AddCaching(b => b.UseInMemory().WithKeyPrefix("bench"));
         _inMemory = services.BuildServiceProvider().GetRequiredService<ICacheService>();
         _inMemory.SetAsync("hot", "v").GetAwaiter().GetResult();
@@ -29,7 +27,8 @@ public class GetOrCreateBenchmarks
     [Benchmark]
     public async Task<string> Miss_With_Factory()
     {
-        var key = $"k-{Random.Shared.Next()}";
+        const string key = "miss";
+        await _inMemory.RemoveAsync(key);
         return await _inMemory.GetOrCreateAsync(key, _ => Task.FromResult("v"));
     }
 }

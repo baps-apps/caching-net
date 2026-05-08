@@ -7,7 +7,8 @@
 #
 # Features:
 # - Automatically deletes and republishes if package version already exists
-# - Requires GitHub PAT with 'write:packages' and 'delete:packages' permissions
+# - Creates a git tag and GitHub release after successful publish
+# - Requires GitHub PAT with 'write:packages', 'delete:packages', and 'public_repo' (or 'repo') permissions
 
 param(
     [string]$Version = "",
@@ -72,8 +73,8 @@ if ([string]::IsNullOrEmpty($GitHubPAT)) {
     Write-Host "Usage: pwsh scripts/publish-package.ps1 [VERSION] [GITHUB_PAT]"
     Write-Host "Or set GITHUB_PAT environment variable"
     Write-Host ""
-    Write-Host "Note: Your PAT needs both 'write:packages' and 'delete:packages' permissions"
-    Write-Host "      to automatically overwrite existing package versions."
+    Write-Host "Note: Your PAT needs 'write:packages' and 'delete:packages' to publish/overwrite packages,"
+    Write-Host "      and 'repo' or 'public_repo' to create GitHub releases."
     exit 1
 }
 
@@ -261,6 +262,64 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "Package published successfully!" -ForegroundColor Green
 Write-Host ""
-Write-Host "View your package at: https://github.com/$Namespace/$RepoName/packages"
+
+# Step 6: Create git tag and GitHub release
+Write-Host "Step 6: Creating git tag and GitHub release..." -ForegroundColor Yellow
+$tagName = "v$actualVersion"
+
+# Create and push git tag
+$tagExists = git tag -l $tagName 2>&1
+if (-not [string]::IsNullOrWhiteSpace($tagExists)) {
+    Write-Host "  Tag $tagName already exists, skipping tag creation" -ForegroundColor Yellow
+} else {
+    git tag $tagName
+    if ($LASTEXITCODE -eq 0) {
+        git push origin $tagName
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  Git tag $tagName pushed to origin" -ForegroundColor Green
+        } else {
+            Write-Host "  Warning: Could not push tag $tagName to origin" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  Warning: Could not create git tag $tagName" -ForegroundColor Yellow
+    }
+}
+
+# Create GitHub release (requires 'repo' or 'public_repo' scope on the PAT)
+try {
+    $headers = @{
+        "Authorization"        = "Bearer $GitHubPAT"
+        "Accept"               = "application/vnd.github+json"
+        "X-GitHub-Api-Version" = "2022-11-28"
+    }
+
+    # Check if release already exists
+    $existingReleaseUrl = "https://api.github.com/repos/$Namespace/$RepoName/releases/tags/$tagName"
+    try {
+        Invoke-RestMethod -Uri $existingReleaseUrl -Method Get -Headers $headers -ErrorAction Stop | Out-Null
+        Write-Host "  GitHub release for $tagName already exists, skipping" -ForegroundColor Yellow
+    } catch {
+        $releasePayload = @{
+            tag_name                 = $tagName
+            name                     = $tagName
+            body                     = "Release $tagName of Caching.NET NuGet package."
+            draft                    = $false
+            prerelease               = $false
+            generate_release_notes   = $true
+        } | ConvertTo-Json
+
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Namespace/$RepoName/releases" `
+            -Method Post -Headers $headers -Body $releasePayload -ContentType "application/json" -ErrorAction Stop
+        Write-Host "  GitHub release created: $($release.html_url)" -ForegroundColor Green
+    }
+} catch {
+    Write-Host "  Warning: Could not create GitHub release: $_" -ForegroundColor Yellow
+    Write-Host "  Note: PAT needs 'repo' or 'public_repo' scope to create releases" -ForegroundColor Yellow
+    Write-Host "  Create manually: https://github.com/$Namespace/$RepoName/releases/new?tag=$tagName" -ForegroundColor Yellow
+}
+
+Write-Host ""
+Write-Host "View your package at:  https://github.com/$Namespace/$RepoName/packages"
+Write-Host "View your release at:  https://github.com/$Namespace/$RepoName/releases/tag/$tagName"
 Write-Host ""
 

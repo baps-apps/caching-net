@@ -1,13 +1,17 @@
 #!/usr/bin/env pwsh
 # perf-gate.ps1 — Compare BenchmarkDotNet output against bench-baseline.json
-# Usage: pwsh bench/perf-gate.ps1 [<results-dir>]
+# Usage: pwsh benchmark/perf-gate.ps1 [<results-dir>]
 # Returns exit code 0 if no regression > 10%, 1 otherwise.
 
 param(
-    [string]$ResultsDir = "bench/Caching.NET.Bench/BenchmarkDotNet.Artifacts/results"
+    [string]$ResultsDir = "benchmark/Caching.NET.Benchmark/BenchmarkDotNet.Artifacts/results"
 )
 
-$BaselineFile = "bench/Caching.NET.Bench/bench-baseline.json"
+$RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$BaselineFile = Join-Path $RepoRoot "benchmark/Caching.NET.Benchmark/bench-baseline.json"
+$ResolvedResultsDir =
+    if ([System.IO.Path]::IsPathRooted($ResultsDir)) { $ResultsDir }
+    else { Join-Path $RepoRoot $ResultsDir }
 $threshold = 0.10  # 10% regression threshold
 
 if (-not (Test-Path $BaselineFile)) {
@@ -17,19 +21,17 @@ if (-not (Test-Path $BaselineFile)) {
 
 $baseline = Get-Content $BaselineFile | ConvertFrom-Json
 
-if (-not (Test-Path $ResultsDir)) {
-    Write-Warning "Results directory not found: $ResultsDir — skipping gate."
+if (-not (Test-Path $ResolvedResultsDir)) {
+    Write-Warning "Results directory not found: $ResolvedResultsDir — skipping gate."
     exit 0
 }
 
 function ConvertTo-BaselineKey([string]$bdn) {
-    # BDN FullName: "Namespace.Class.Method(Param: Value, Param2: Value2)"
-    # Baseline key:  "Namespace.Class.Method-Param=Value-Param2=Value2"
     $bdn -replace '\(', '-' -replace ': ', '=' -replace '\)', '' -replace ', ', '-'
 }
 
 $regressions = @()
-$jsonFiles = Get-ChildItem -Path $ResultsDir -Filter "*-report-full.json" -Recurse
+$jsonFiles = Get-ChildItem -Path $ResolvedResultsDir -Filter "*-report-full.json" -Recurse
 
 foreach ($file in $jsonFiles) {
     $data = Get-Content $file.FullName | ConvertFrom-Json

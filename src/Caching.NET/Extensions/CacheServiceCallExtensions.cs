@@ -75,6 +75,7 @@ public static class CacheServiceCallExtensions
     /// <param name="value">The value to store in the cache.</param>
     /// <param name="callOptions">
     /// Optional per-call options (e.g. <see cref="CacheCallOptions.Mode"/>, <see cref="CacheCallOptions.BypassCache"/>).
+    /// <see cref="CacheCallOptions.ForceRefresh"/> is ignored for set operations; use <c>RefreshAsync</c> or remove-then-set.
     /// Pass <c>null</c> to use the application-level defaults.
     /// </param>
     /// <param name="expiration">Optional absolute expiration. Falls back to the configured default when <c>null</c>.</param>

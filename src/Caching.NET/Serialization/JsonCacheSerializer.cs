@@ -40,9 +40,9 @@ public sealed class JsonCacheSerializer : ICacheSerializer
     public byte[] Serialize<T>(T value) => JsonSerializer.SerializeToUtf8Bytes(value, _options);
 
     /// <inheritdoc />
-    public T? Deserialize<T>(ReadOnlySpan<byte> bytes)
+    public T? Deserialize<T>(ReadOnlyMemory<byte> bytes)
     {
         if (bytes.IsEmpty) return default;
-        return JsonSerializer.Deserialize<T>(bytes, _options);
+        return JsonSerializer.Deserialize<T>(bytes.Span, _options);
     }
 }

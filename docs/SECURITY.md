@@ -13,9 +13,9 @@ Connection strings with `password=`, `user=`, and `name=` segments are redacted 
 
 ## PII
 
-- Raw cache keys never appear in metrics tags (the `CN0001` analyzer enforces this).
-- Tracing support is available via OpenTelemetry wiring; sensitive key material remains redacted by default.
-- Cache keys never appear in log messages by default. Toggle `Options.IncludeRawKeyInLogs=true` for dev only.
+- Raw cache keys never appear in metrics tags. Roslyn rule **CN0001** also rejects high-cardinality placeholder names in **`ILogger` message templates** and **`BeginScope(string)`** when the format string is a **compile-time literal** in that call (e.g. `{key}`, `{tenant}`, `{user_id}`), matching the same forbidden set as OTel tag keys.
+- OpenTelemetry **metrics** are the supported production signal; subscribe to `CacheInstruments.MeterName`. The library exposes an `ActivitySource` for future use but **does not emit spans** for cache operations in v2, so there is no automatic trace path that could carry key material. `IncludeKeyHashInTraces` is currently unused.
+- Cache keys never appear in log messages by default (hashed fingerprint). Toggle `Options.IncludeRawKeyInLogs=true` for dev only.
 
 ## Supply chain
 

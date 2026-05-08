@@ -2,6 +2,8 @@
 
 > **Status: COMPLETE — all tasks implemented and verified as of 2026-05-06**
 
+> **Audit follow-up (same branch):** `HybridCacheService.GetAsync` uses a **value-type wrapper** to avoid caching `default(T)` for structs; **`ExistsAsync`** uses **`IDistributedCache`** when available; **`StaleEntryTracker`** now **prunes** on a cadence/size cap; **`RoutingCacheService`** implements **`IAsyncDisposable`**; **`InMemoryCacheService`** batch paths use **sync** `IMemoryCache` loops. See [INTERNALS.md](../../INTERNALS.md) and [MIGRATION-V1-TO-V2.md](../../MIGRATION-V1-TO-V2.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Land all P2 deliverables from `docs/superpowers/specs/2026-05-05-v2-amazon-scale-design.md` §4–§5 + §12: batch APIs (`GetMany/SetMany/RemoveMany`), single-key extras (`GetAsync/RefreshAsync/ExistsAsync`), per-call expiration controls (sliding + jitter + AllowStaleFor), `CacheKeyBuilder`, `MessagePackCacheSerializer`, stale-while-revalidate orchestrator, `RequireTagSupport()` builder gate.
@@ -21,6 +23,8 @@
 - Tag effects on InMemory/Redis are **no-op** unless `RequireTagSupport()` is configured (which startup-validates Hybrid mode).
 - Server-side Redis MGET/MSET pipelining is **deferred to P3**. P2 batch ops are client-side fan-out via `Task.WhenAll`.
 - Stale-while-revalidate is **InMemory + Redis only**. Hybrid is a no-op (HybridCache does not expose stale-window semantics).
+
+**Doc / behavior sync (2026-05-06):** Fluent **`Enable()`**, **`UseDevelopmentDefaults()` / `UseProductionDefaults()`**, **`WithKeyValidator` / `WithKeyTransformer`**; startup validation **`KeyPrefix` + `MaximumKeyLength` user-key budget** (≥32 chars for user segment); see [MIGRATION-V1-TO-V2.md](../../MIGRATION-V1-TO-V2.md).
 
 ---
 

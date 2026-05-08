@@ -8,6 +8,9 @@ namespace Caching.NET.Abstractions;
 /// <para><strong>API stability (enterprise):</strong> This interface is the stable contract for Caching.NET. New capabilities are added via
 /// extension methods (e.g. <c>Caching.NET.Extensions.CacheServiceCallExtensions</c>), per-call options (<c>CacheCallOptions</c>), and configuration
 /// rather than new interface members, to minimize breaking changes. When evolving the library, prefer decorators and options over changing this interface.</para>
+/// <para>All operations return <see cref="System.Threading.Tasks.Task"/> / <see cref="System.Threading.Tasks.Task{TResult}"/>. The
+/// <c>ValueTask</c> migration was evaluated and reverted before v2.0.0 ship: the breaking-change cost across consumers, mocks, and decorators
+/// outweighed the marginal alloc savings on synchronous in-memory hits in mixed Hybrid/Redis production workloads.</para>
 /// </remarks>
 public interface ICacheService
 {

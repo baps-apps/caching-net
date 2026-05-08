@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 
 namespace Caching.NET.Internal;
@@ -20,11 +21,23 @@ internal static class StableStringHash
     {
         ArgumentNullException.ThrowIfNull(input);
         var byteCount = Encoding.UTF8.GetByteCount(input);
-        Span<byte> buffer = byteCount <= 256
-            ? stackalloc byte[256]
-            : new byte[byteCount];
-        var written = Encoding.UTF8.GetBytes(input, buffer);
-        return Compute(buffer[..written]);
+        if (byteCount <= 512)
+        {
+            Span<byte> buffer = stackalloc byte[byteCount];
+            var written = Encoding.UTF8.GetBytes(input, buffer);
+            return Compute(buffer[..written]);
+        }
+
+        byte[] rented = ArrayPool<byte>.Shared.Rent(byteCount);
+        try
+        {
+            var written = Encoding.UTF8.GetBytes(input, rented);
+            return Compute(rented.AsSpan(0, written));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
     public static uint Compute(ReadOnlySpan<byte> data) => unchecked(ComputeCore(data));
@@ -106,10 +119,23 @@ internal static class StableStringHash
     {
         ArgumentNullException.ThrowIfNull(value);
         if (value.Length == 0) return System.IO.Hashing.XxHash64.HashToUInt64(ReadOnlySpan<byte>.Empty);
-        Span<byte> buf = value.Length <= 256
-            ? stackalloc byte[System.Text.Encoding.UTF8.GetMaxByteCount(value.Length)]
-            : new byte[System.Text.Encoding.UTF8.GetByteCount(value)];
-        int written = System.Text.Encoding.UTF8.GetBytes(value, buf);
-        return System.IO.Hashing.XxHash64.HashToUInt64(buf[..written]);
+        var byteCount = Encoding.UTF8.GetByteCount(value);
+        if (byteCount <= 512)
+        {
+            Span<byte> buf = stackalloc byte[byteCount];
+            int written = Encoding.UTF8.GetBytes(value, buf);
+            return System.IO.Hashing.XxHash64.HashToUInt64(buf[..written]);
+        }
+
+        byte[] rented = ArrayPool<byte>.Shared.Rent(byteCount);
+        try
+        {
+            int written = Encoding.UTF8.GetBytes(value, rented);
+            return System.IO.Hashing.XxHash64.HashToUInt64(rented.AsSpan(0, written));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 }

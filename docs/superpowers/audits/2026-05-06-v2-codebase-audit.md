@@ -1,10 +1,17 @@
 # Caching.NET v2 — Post-Release Codebase Audit
 
-**Date:** 2026-05-06
+**Date:** 2026-05-06 (revalidated 2026-05-07)
 **Branch:** `vpatel/v2`
 **Scope:** Deep review of `src/Caching.NET` and `src/Caching.NET.Analyzers` against the v2.0.0 spec ([2026-05-05-v2-amazon-scale-design.md](../specs/2026-05-05-v2-amazon-scale-design.md)). Surfaces bugs in the shipped implementation and improvement opportunities the spec did not cover.
 **Method:** Three parallel deep-read passes (Services + Internal; Resilience + Serialization + Telemetry + Health + Keys; DI + Builder + Options + Validation), cross-checked against shipped behavior and tests.
-**Result:** 6 fixes landed in this branch. 33 backlog items captured below.
+**Result:** Initial pass captured six targeted fixes plus a broader backlog; follow-up work landed many backlog items (see §2). §3 lists **remaining** triage only.
+
+**2026-05-07 revalidation:** All §1 + §2 claims re-verified against current source on `vpatel/v2` (file:line evidence in §6). Two test regressions surfaced and fixed in the same pass:
+
+- `PayloadEnvelope.TryRead` set the out `payload` slice **before** verifying the trailer checksum, so a checksum-mismatch caller still received a non-empty span. Fixed in [src/Caching.NET/Serialization/PayloadEnvelope.cs:113-118](../../../src/Caching.NET/Serialization/PayloadEnvelope.cs#L113-L118) — assignment moved past the `XxHash32` check; failure path leaves `payload = default`.
+- `CacheOptionsValidationTests.AddCaching_WithInvalidPayloadCompressionThreshold_Throws` asserted at `services.AddCaching(...)` time, but `PayloadCompressionThresholdBytes` is enforced by `IValidateOptions<CacheOptions>` (deferred to options resolution), not by an inline registration throw. Updated to build the provider and assert `OptionsValidationException` on `IOptions<CacheOptions>.Value`.
+
+**2026-05-07 P3 revert:** The `ValueTask` migration recorded under §2 P3 was reverted before ship. Cost/benefit re-examined: alloc savings on synchronous in-memory hits did not justify the breaking-change burden across consumer code, mocking frameworks, and decorators in mixed Hybrid/Redis production workloads. `ICacheService` ships as `Task` / `Task<T>`; `InMemoryCacheService` returns `Task.FromResult(...)` on sync hits. `IAsyncDisposable.DisposeAsync` (e.g. `RoutingCacheService`, `RedisConnectionRotator`) and Polly predicate callbacks remain `ValueTask` (interface contracts). `Testcontainers.IAsyncLifetime.DisposeAsync()` retains `.AsTask()` adapters in integration fixtures.
 
 ---
 
@@ -21,12 +28,12 @@
 
 ### Verification
 
-- `dotnet build -c Release` — clean across `net8.0`, `net9.0`, `net10.0`.
-- `Caching.NET.Tests` — 164 / 164 (added `AddCaching_TogglingEnabledWithSameSampleConfig_RoundTrips` which mirrors the sample's Hybrid + tags + health-check setup with no Redis available).
-- `Caching.NET.Tests.Analyzers` — 4 / 4.
-- `Caching.NET.Tests.Properties` — 11 / 11.
-- `Caching.NET.Tests.Chaos` — 4 / 4.
-- Integration suite (`Caching.NET.Tests.Integration`) not exercised — Testcontainers Redis required.
+- `dotnet build -c Release` — clean across `net8.0`, `net9.0`, `net10.0` (revalidated 2026-05-07).
+- `Caching.NET.Tests` — **186 / 186** on each of `net8.0`, `net9.0`, `net10.0` (revalidated 2026-05-07; includes KeyPrefix colon rejection, `Enabled=false` wiring, hybrid value-type miss path, health-check multiplexer behavior, liveness/readiness checks, `ICacheKeyFactory` registration, payload-envelope checksum, payload-compression threshold validation, and other audit regressions).
+- `Caching.NET.Tests.Analyzers` — **9 / 9** (revalidated 2026-05-07).
+- `Caching.NET.Tests.Properties` — **11 / 11** on each of `net8.0`, `net9.0`, `net10.0` (revalidated 2026-05-07).
+- `Caching.NET.Tests.Chaos` — **4 / 4** on each of `net8.0`, `net9.0`, `net10.0` (revalidated 2026-05-07).
+- `Caching.NET.Tests.Integration` — **10 / 10** on `net10.0` when Redis (Testcontainers) is available.
 
 ### Behavioral Notes for `Enabled=false`
 
@@ -38,113 +45,149 @@
 
 ---
 
-## 2. Backlog — Improvements Not Covered by the Spec
+## 2. Follow-up fixes (post-audit; implemented in branch)
+
+The backlog items below from the original audit pass have been **addressed in code** (see consumer docs: [INTERNALS.md](../../INTERNALS.md), [HEALTH-CHECKS.md](../../HEALTH-CHECKS.md), [TELEMETRY.md](../../TELEMETRY.md), [OPERATIONS.md](../../OPERATIONS.md)).
+
+| ID | Resolution |
+|----|------------|
+| **B7** | `CachingHealthCheck` requires `IConnectionMultiplexer` for Redis/Hybrid, checks `IsConnected`, **PINGs** before `GetOrCreateAsync`. |
+| **B8** | Probe key suffix: `Environment.MachineName` + `Environment.ProcessId`. |
+| **B10** | `PayloadEnvelope.TryRead` requires declared length **exactly** `wire.Length - HeaderSize` (trailing bytes → invalid). |
+| **R1** | `IsTransient` includes `SocketException`, `IOException`, `RedisServerException` (`LOADING`/`READONLY`); excludes `OperationCanceledException`. |
+| **R2** | Optional `ConcurrencyLimiter` on Redis pipelines via `CacheResilienceOptions`. |
+| **R3** | `cache.serialize.duration` / `cache.deserialize.duration` histograms (`cache.format` tag). |
+| **R7** | `DriftLogSampler` — at most one drift log per `(driftKind, keyFingerprint)` per minute. |
+| **R8** | Retry: exponential + jitter, **Delay 50 ms**, **MaxDelay 1 s**. |
+| **V1** | Validator enforces prefix + `':'` + **≥32** chars remaining for user keys vs `MaximumKeyLength`. |
+| **V3** | Validator parses `RedisConnectionString` with `ConfigurationOptions.Parse` when present. |
+| **P4** | `RemoveManyAsync` (multiplexer path): `cache.removes` += Redis **actual** delete count. |
+| **P5** | `PayloadEnvelope.Write(..., IBufferWriter<byte>)`. |
+| **A7–A9** | `Enable()`, `UseDevelopmentDefaults()`, `UseProductionDefaults()`, `WithKeyValidator`, `WithKeyTransformer`. |
+| **B1** | `StaleEntryTracker`: periodic prune on registration watermark + hard cap + stale-until trim. |
+| **B2** | `RoutingCacheService`: implements `IAsyncDisposable` / `IDisposable` for background refresh teardown. |
+| **B3** | `HybridCacheService.GetAsync`: value-type path uses `HybridValueBox<T>?` so misses are not cached as `default(T)`. |
+| **B4** | `HybridCacheService.ExistsAsync`: uses `IDistributedCache` when available before heavier paths. |
+| **B9** | `RedisConnectionRotator`: 100 ms drain before disposing rotated multiplexer; disposal exceptions logged. |
+| **A3** | `CardinalityAnalyzer`: extended constant-key detection (e.g. `KeyValuePair.Create`). |
+| **A4** | `CardinalityAnalyzer`: high-cardinality names in **string-literal** `ILogger` templates and `BeginScope(string)` (same forbidden set as metric tags). |
+| **A6** | `CachingBuilder` must be configured via `AddCaching(...)` (no direct constructor path). |
+| **P2** | `InMemoryCacheService` batch paths use synchronous cache operations where applicable. |
+| **P1** | `InMemoryCacheService`: reusable static `PostEvictionCallbackRegistration` for eviction callbacks. |
+| **A10** | `ForceRefresh` documented on `CacheCallOptions` and set-extension overloads (honored only on get paths). |
+| **V2** | `MaximumKeyLength` enforced on full prefixed key after routing; docs/options XML describe prefixed semantics. |
+| **B5** | `StableTypeHash` uses `Type.FullName` (+ optional `[CacheSchema]`) instead of `AssemblyQualifiedName` — stable across package bumps. |
+| **B6** | `KeyPrefix` validation forbids `':'` inside the prefix; regex updated to `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`. |
+| **A1** | `ICacheSerializer.Deserialize<T>(ReadOnlyMemory<byte>)`; `MessagePackCacheSerializer` uses MessagePack’s ROM path (no `ToArray()`); Redis maps envelope payload via `byte[].AsMemory(...)`. |
+| **A2** | **Option B (v2.0.0):** `WithResilience(Action<CacheResilienceOptions>)` — library-owned options only; `CacheResiliencePipelineBuilder` and `BuildDefaultRegistry` → `Polly.Registry.ResiliencePipelineRegistry<string>` are **internal** (not shipped public API). |
+| **R6** | Optional **liveness vs readiness** registration: `CachingLivenessHealthCheck` + `CachingHealthCheck` via `WithHealthChecks(..., splitLivenessReadiness: true)` or `AddCachingHealthChecks(..., splitLivenessReadiness: true)` with tags `liveness` / `readiness`. |
+| **A5** | **`CachingHealthCheck`** / **`CachingLivenessHealthCheck`** are **internal** — register via `WithHealthChecks()` / `AddCachingHealthChecks()` only; not constructible from consuming assemblies. |
+| **A11** | **`ICacheKeyFactory`** + **`DefaultCacheKeyFactory`** registered via `TryAddSingleton` with `AddCaching`; consumers inject for tenant/extra segments or register a custom factory **before** `AddCaching`. |
+| **P3** | **Evaluated and reverted before ship (2026-05-07).** A `ValueTask` migration of `ICacheService` + extensions + service implementations + tests was prototyped on this branch. Reverted because the alloc savings on synchronous in-memory hits did not justify the breaking-change cost across consumer code, mocks, and decorators in mixed Hybrid/Redis workloads. `ICacheService` ships as `Task` / `Task<T>`. |
+| **R4** | `PayloadEnvelope` now appends a payload checksum trailer (`XxHash32`) and validates it on `TryRead`; checksum mismatches are treated as `EnvelopeInvalid` misses. |
+| **R5** | Optional Redis payload compression landed via `CacheOptions.EnablePayloadCompression` + `PayloadCompressionThresholdBytes`; compressed envelopes set format-id high bit and are transparently decompressed on read. |
+| **P5** | **`PayloadEnvelope.Write` → `byte[]`** uses **`GC.AllocateUninitializedArray<byte>`** so the wire buffer is not zero-filled before `Write` overwrites it. |
+| **P6** | **`StableStringHash`** (`Compute` / `Compute64`): UTF-8 buffers **> 512 B** use **`ArrayPool<byte>.Shared`** instead of **`new byte[byteCount]`** (same hash values). |
+
+---
+
+## 3. Backlog — Remaining improvements
 
 Severities: **BUG** (correctness), **IMPORTANT** (design risk / latent bug), **MINOR** (cleanup), **IMPROVEMENT** (nice-to-have).
 
-### 2.1 Correctness & Safety
+### 3.1 Correctness & Safety
+
+*(No open items in this audit as of 2026-05-06. A post-audit re-check discovered new uncommitted findings and tracking now continues in [`2026-05-07-v2-post-uncommitted-reaudit.md`](./2026-05-07-v2-post-uncommitted-reaudit.md).)*
+
+### 3.2 API & Packaging
+
+*(No open items.)*
+
+### 3.3 Performance
+
+*(No open items — P3, P5, and P6 addressed in §2.)*
+
+### 3.4 Resilience & Observability Gaps
 
 | # | Severity | Location | Problem | Suggested Fix |
 |---|----------|----------|---------|---------------|
-| B1 | IMPORTANT | `Internal/StaleEntryTracker.cs` | Unbounded `ConcurrentDictionary`. Entries are pruned only on lazy reads; workloads that register stale metadata for many one-shot keys leak unbounded. | Timer-driven sweep, or piggyback prune when register count crosses a watermark. |
-| B2 | IMPORTANT | `Services/RoutingCacheService.cs` | Singleton is not `IAsyncDisposable`. Background `Task.Run` refreshes may still touch `_redis`/`_inMemory` after host disposal — use-after-dispose risk. | Hold internal CTS, link into background factories, await in-flight on `DisposeAsync`. |
-| B3 | IMPORTANT | `Services/HybridCacheService.cs` (`GetAsync`) | Uses `HybridCache.GetOrCreateAsync` with `default(T)!` factory. For value types this caches `default(T)` (e.g. `0`) on miss, polluting the cache with sentinel values. | Use a non-caching read path or sentinel-aware wrapper. |
-| B4 | IMPORTANT | `Services/HybridCacheService.cs` (`ExistsAsync`) | Probes presence via full `GetAsync<object>` deserialization. | Native exists path, or document the cost. |
-| B5 | IMPORTANT | `Internal/StableTypeHash.cs:14` | Hash uses `AssemblyQualifiedName`, which embeds the assembly version. Every package bump invalidates the entire cache as `cache.schema_drift`. | Hash `Type.FullName` only; expose explicit schema versioning via `[CacheSchema("v3")]` opt-in. |
-| B6 | IMPORTANT | `Services/RoutingCacheService.cs` (`PrependPrefix`) | Single-`:` separator allows keyspace collision: `KeyPrefix="foo"` + key `"bar:x"` collides with `KeyPrefix="foo:bar"` + key `"x"`. | Reject `:` in `KeyPrefix` (validator), or use a non-printable separator. |
-| B7 | BUG | `Health/CachingHealthCheck.cs` | Probe writes a real entry through `RoutingCacheService`. With `FailOpen=true` a dead Redis returns Healthy because routing swallows the failure and runs the factory. False-negative on outage; pollutes prod cache. | Use `CacheCallOptions.BypassCache=true`, or call multiplexer `IsConnected` / `PING` directly when mode is Redis or Hybrid. |
-| B8 | IMPORTANT | `Health/CachingHealthCheck.cs` | Probe key is fixed (`caching-net:health:probe`). Multiple replicas thrash the same key, inflating breaker windows. | Suffix with `Environment.MachineName` or per-process Guid. |
-| B9 | IMPORTANT | `Internal/RedisConnectionRotator.cs:78` | `_ = ad.DisposeAsync().AsTask()` — old multiplexer disposal exception is unobserved, and disposal is not awaited before rotation returns. In-flight commands on the old multiplexer may still be processing. | Configurable drain delay before disposal; observe exceptions. |
-| B10 | MINOR | `Serialization/PayloadEnvelope.cs:59` | Length check uses `>` instead of `!=`. A trailing-garbage entry passes; a truncated entry can silently parse a partial payload. | Tighten to `len != (uint)(wire.Length - HeaderSize)` once we are sure no caller appends framing bytes. |
+*(No open items.)*
 
-### 2.2 API & Packaging
+### 3.5 Validation / docs clarity
 
-| # | Severity | Location | Problem | Suggested Fix |
-|---|----------|----------|---------|---------------|
-| A1 | IMPORTANT | `Serialization/MessagePackCacheSerializer.cs:37` | `bytes.ToArray()` is required because `ICacheSerializer.Deserialize` takes `ReadOnlySpan<byte>` while MessagePack consumes `ReadOnlySequence`/`ReadOnlyMemory`. Hot-path heap allocation per read. | Migrate `ICacheSerializer` to `ReadOnlyMemory<byte>` in v3; pass a pinned-array slice from `PayloadEnvelope`. |
-| A2 | IMPORTANT | `CachingBuilder.cs` (`WithResilience`) | Public surface exposes raw Polly v8 types (`ResiliencePipelineRegistry<string>`, `RetryStrategyOptions`). Locks our public API to a Polly major. | Wrap behind a `CacheResilienceOptions` POCO; map internally. |
-| A3 | IMPORTANT | `Caching.NET.Analyzers/CardinalityAnalyzer.cs` | Only matches `new KeyValuePair<…>("key", …)` literal syntax. Misses `KeyValuePair.Create(...)`, tuple syntax, collection-expression syntax, and variable-bound keys — easy to bypass. | Use `SemanticModel.GetConstantValue` on the first KVP argument. |
-| A4 | IMPORTANT | `Caching.NET.Analyzers/CardinalityAnalyzer.cs` | Only enforces metric tags. Forbidden keys (`key`, `tenant`, `user_id`) leak through `ILogger.BeginScope` and structured-log placeholders. | Extend rule to log scopes / message templates. |
-| A5 | MINOR | `PublicAPI.Shipped.txt` | `Caching.NET.Health.CachingHealthCheck` is shipped public. Users may instantiate directly, bypassing DI. | Mark `internal` in v3 or add factory only. |
-| A6 | MINOR | `CachingBuilder.cs` | Public parameterless ctor (`PublicAPI.Shipped.txt:15`) leaves `_services` null; most fluent methods (`WithSerializer`, `WithResilience`, etc.) throw at runtime. Footgun. | `[EditorBrowsable(Never)]` now; remove in v3. |
-| A7 | IMPROVEMENT | `CachingBuilder.cs` | No `Enable()` companion to `Disable()`. Once `Enabled=false` is in config, no fluent way to re-enable for tests/overrides. | Add `Enable()`. |
-| A8 | IMPROVEMENT | `CachingBuilder.cs` | No environment-aware preset. | Add `UseDevelopmentDefaults()` / `UseProductionDefaults()`. |
-| A9 | IMPROVEMENT | `CachingBuilder.cs` | No custom key validation hook. | `WithKeyValidator(Func<string,bool>)` / `WithKeyTransformer`. |
-| A10 | IMPROVEMENT | `Options/CacheCallOptions.cs` | `ForceRefresh` is silently ignored when applied to `SetAsync` extension overloads. | XML-doc the constraint, or split into two derived options structs. |
-| A11 | IMPROVEMENT | `Keys/CacheKey.cs` | Static factory only. Consumers needing tenant-injected prefixes must wrap. | Provide `ICacheKeyFactory` DI service alongside the static API. |
-
-### 2.3 Performance
-
-| # | Severity | Location | Problem | Suggested Fix |
-|---|----------|----------|---------|---------------|
-| P1 | MINOR | `Services/InMemoryCacheService.cs` (`SetAsync`) | Allocates `MemoryCacheEntryOptions` + `PostEvictionCallbackRegistration` per call. Registration wrapper is stateless and reusable. | Cache static singleton registration. |
-| P2 | MINOR | `Services/InMemoryCacheService.cs` | `GetMany`/`SetMany`/`RemoveMany` await per iteration over a sync `IMemoryCache`. | Tight sync loop with `TryGetValue` / `Set`. |
-| P3 | IMPROVEMENT | `Abstractions/ICacheService.cs` | All methods return `Task<T>` instead of `ValueTask<T>`. InMemory hits are synchronous and allocate a `Task` per call. | v3 surface change to `ValueTask`. |
-| P4 | BUG | `Services/RedisCacheService.cs:430-432` | `RemoveManyAsync` records `N` increments regardless of how many keys actually existed. `KeyDeleteAsync` returns the count of keys actually removed. | Use the return value as the increment. |
-| P5 | MINOR | `Serialization/PayloadEnvelope.cs:32-42` | Always allocates `byte[]`. | `Write(IBufferWriter<byte>, …)` overload using `BinaryPrimitives` span writes. |
-| P6 | MINOR | `Internal/StableStringHash.cs` | `stackalloc byte[256]` even when actual byteCount is smaller; UTF-8 encoding can hit `3 × char-len` (~768 bytes) on long strings — possible deep-stack overflow risk. | Gate stack alloc by `Encoding.UTF8.GetByteCount` or cap at a safer ceiling. |
-
-### 2.4 Resilience & Observability Gaps
-
-| # | Severity | Location | Problem | Suggested Fix |
-|---|----------|----------|---------|---------------|
-| R1 | IMPORTANT | `Resilience/CacheResiliencePipelineBuilder.cs:82-89` | `IsTransient` predicate too narrow. Misses `SocketException`, `IOException`, `RedisServerException` (LOADING/READONLY during failover). Silent fail-open without resilience kicking in. | Add the missing types; explicitly exclude `OperationCanceledException` whose token is the user's CT. |
-| R2 | IMPORTANT | `Resilience/CacheResiliencePipelineBuilder.cs` | No bulkhead / `RateLimiterStrategy`. Under Redis brownout, request threads queue indefinitely. | Add configurable `RateLimiterStrategy`. |
-| R3 | IMPORTANT | `Telemetry/CacheInstruments.cs` | No `cache.serialize.duration` / `cache.deserialize.duration` histograms. Slow serialization is hidden inside `OperationDuration`. | Add two histograms keyed by `cache.format`. |
-| R4 | IMPORTANT | `Serialization/PayloadEnvelope.cs` | No CRC / HMAC. A bit-flipped Redis entry deserializes to a corrupted object silently. | Append xxHash32 of payload after the payload bytes; verify on read. |
-| R5 | IMPROVEMENT | `Serialization/ICacheSerializer.cs` | No compression hook. Large payloads (>16 KiB) waste network and Redis memory. | Optional decorator (`LZ4`/`Brotli`) with FormatId high bit indicating compression. |
-| R6 | IMPROVEMENT | `Health/CachingHealthCheck.cs` | Single check covers Enabled + reachability. Kubernetes typically wants liveness vs readiness split. | Two `IHealthCheck` types or tag-based filter (`caching-readiness`, `caching-liveness`). |
-| R7 | MINOR | `Internal/CacheLogMessages.cs` | Drift logs (1106-1108) are at Warning per-key. High-volume drift floods logs. | Sample (first occurrence per `(typeHash, driftKind)` per minute). |
-| R8 | MINOR | `Resilience/CacheResiliencePipelineBuilder.cs:69-75` | Retry uses `BackoffType=Exponential, UseJitter=true` with default delay (~2 s). Single Redis blip can stall a request 4–12 s — exceeding many caller HTTP budgets. | Set `Delay=TimeSpan.FromMilliseconds(50)`, `MaxDelay=TimeSpan.FromSeconds(1)`. |
-
-### 2.5 Validation Gaps
-
-| # | Severity | Location | Problem | Suggested Fix |
-|---|----------|----------|---------|---------------|
-| V1 | IMPORTANT | `Validation/CacheOptionsValidator.cs` | No `KeyPrefix.Length + 1 < MaximumKeyLength` budget check. A long prefix plus a valid user key always overflows the per-key limit. | Add a combined-budget check; suggest at least 32 chars left for user keys. |
-| V2 | IMPORTANT | `Services/RedisCacheService.cs:451-457` | `MaximumKeyLength` is enforced after `KeyPrefix` is prepended. Spec/docs treat it as a user-key cap; behavior caps prefix + key. | Either rename in docs (`MaximumPrefixedKeyLength`) or check at the routing layer before prepending. |
-| V3 | IMPORTANT | `Validation/CacheOptionsValidator.cs` | `RedisConnectionString` checked only for presence, not validity. Malformed strings fail late at multiplexer connect with a worse error. | `try { ConfigurationOptions.Parse(...) }` with redacted exception surface. |
+*(No open items — `MaximumKeyLength` is documented as a full prefixed-key cap in code and consumer docs.)*
 
 ---
 
-## 3. Suggested Triage
+## 4. Suggested Triage
 
-### Land in v2.1.0 (no API break)
+### v2.0.0 status
 
-- **B1** `StaleEntryTracker` sweep — straight bug; latent leak.
-- **B2** `RoutingCacheService` `IAsyncDisposable` — graceful shutdown story.
-- **B7** Health check Redis bypass — false-positive on outage is a real ops hazard.
-- **B8** Probe key per-instance suffix.
-- **R1** Polly `IsTransient` widening.
-- **R8** Polly retry delay.
-- **V1**, **V2**, **V3** validation tightening.
-
-### Plan for v2.2.0 (small additive surface)
-
-- **A7** `Enable()`, **A8** environment presets, **A9** key validator/transformer.
-- **R2** rate limiter, **R3** ser/deser histograms, **R6** health-check split.
-- **A3**, **A4** analyzer coverage extensions.
-
-### Defer to v3.0.0 (breaking)
-
-- **A1** `ICacheSerializer` switch to `ReadOnlyMemory<byte>`.
-- **A2** Polly type wrapping in public surface.
-- **A5**, **A6** public-surface footgun cleanup.
-- **B5** `StableTypeHash` migration to `FullName` + explicit schema attribute (cache invalidation event — needs a coordinated cutover).
-- **P3** `ValueTask` everywhere.
+- Residual analyzer hardening landed: CN0001 now inspects constant string template arguments (including `const` variables) for logger message templates / `BeginScope(string)` placeholders.
+- No remaining A6 public-surface footgun items tracked in this branch audit.
 
 ### Optional
 
-- **B3**, **B4** Hybrid mode improvements — wait for `Microsoft.Extensions.Caching.Hybrid` API to mature.
-- **R4** envelope CRC, **R5** compression — gated by benchmark evidence.
-- **B6** `KeyPrefix` separator collision — document first; only rework if a real incident materializes.
-- **B10** envelope strict length — defense-in-depth, low practical risk.
+- Benchmark and tune compression thresholds per workload.
 
 ---
 
-## 4. References
+## 5. References
 
 - Spec: [`docs/superpowers/specs/2026-05-05-v2-amazon-scale-design.md`](../specs/2026-05-05-v2-amazon-scale-design.md)
 - v2 plans: [`docs/superpowers/plans/2026-05-05-v2-p0-foundations.md`](../plans/2026-05-05-v2-p0-foundations.md), [`P2`](../plans/2026-05-06-v2-p2-api-expansion.md), [`P3`](../plans/2026-05-06-v2-p3-hardening-ops.md)
-- Public API surface: [`src/Caching.NET/PublicAPI.Shipped.txt`](../../../src/Caching.NET/PublicAPI.Shipped.txt)
+- Public API compatibility: NuGet package validation enabled on [`src/Caching.NET/Caching.NET.csproj`](../../../src/Caching.NET/Caching.NET.csproj) (`EnablePackageValidation`) — breaking API changes must be deliberate when packing/releasing
 - CHANGELOG: [`CHANGELOG.md`](../../../CHANGELOG.md)
+
+**Verification:** Re-run `dotnet build` / `dotnet test` on the target branch before release; integration suite remains environment-dependent (Testcontainers).
+
+---
+
+## 6. 2026-05-07 revalidation evidence
+
+Each §1 + §2 claim re-verified against the current source tree. Status legend: ✅ landed and matches description.
+
+| ID | Status | Evidence |
+| -- | ------ | -------- |
+| §1.1 `RoutingCacheService.ScheduleBackgroundRefresh` | ✅ | [src/Caching.NET/Services/RoutingCacheService.cs:493-545](../../../src/Caching.NET/Services/RoutingCacheService.cs#L493-L545) — structured log + `ClassifyError`, bounded `WaitAsync(lockTimeout)` (line 502), telemetry inc/dec inside `Task.Run` (lines 495, 540). |
+| §1.2 `CacheLogMessages` 1111 / 1112 | ✅ | [src/Caching.NET/Internal/CacheLogMessages.cs:71-77](../../../src/Caching.NET/Internal/CacheLogMessages.cs#L71-L77). |
+| §1.3 `CacheKey.For<T>` invariant culture | ✅ | [src/Caching.NET/Keys/CacheKey.cs:19-20](../../../src/Caching.NET/Keys/CacheKey.cs#L19-L20). |
+| §1.4 Runtime-resolved `AssemblyInformationalVersion` | ✅ | [src/Caching.NET/Telemetry/CacheInstruments.cs:24-42](../../../src/Caching.NET/Telemetry/CacheInstruments.cs#L24-L42). |
+| §1.5 `SetManyAsync` / `RemoveManyAsync` empty-prefix fast paths | ✅ | [src/Caching.NET/Services/RoutingCacheService.cs:446-478](../../../src/Caching.NET/Services/RoutingCacheService.cs#L446-L478). |
+| §1.6 `Enabled=false` skips backend DI | ✅ | [src/Caching.NET/Extensions/ServiceCollectionExtensions.cs:182-280](../../../src/Caching.NET/Extensions/ServiceCollectionExtensions.cs#L182-L280); validator short-circuit [src/Caching.NET/Validation/CacheOptionsValidator.cs:30](../../../src/Caching.NET/Validation/CacheOptionsValidator.cs#L30). |
+| B1 `StaleEntryTracker` prune | ✅ | [src/Caching.NET/Internal/StaleEntryTracker.cs:32-34](../../../src/Caching.NET/Internal/StaleEntryTracker.cs#L32-L34). |
+| B2 `RoutingCacheService` `IAsyncDisposable`/`IDisposable` | ✅ | [src/Caching.NET/Services/RoutingCacheService.cs:599-623](../../../src/Caching.NET/Services/RoutingCacheService.cs#L599-L623). |
+| B3 Hybrid value-type miss path | ✅ | [src/Caching.NET/Services/HybridCacheService.cs:155-171](../../../src/Caching.NET/Services/HybridCacheService.cs#L155-L171). |
+| B4 Hybrid `ExistsAsync` distributed-cache fast path | ✅ | [src/Caching.NET/Services/HybridCacheService.cs:201-206](../../../src/Caching.NET/Services/HybridCacheService.cs#L201-L206). |
+| B5 `StableTypeHash` on `Type.FullName` + `[CacheSchema]` | ✅ | [src/Caching.NET/Internal/StableTypeHash.cs:20-28](../../../src/Caching.NET/Internal/StableTypeHash.cs#L20-L28). |
+| B6 `KeyPrefix` colon ban | ✅ | [src/Caching.NET/Validation/CacheOptionsValidator.cs:21,43-51](../../../src/Caching.NET/Validation/CacheOptionsValidator.cs#L21). |
+| B7 Health probe Redis `PING` | ✅ | [src/Caching.NET/Health/CachingHealthProbe.cs:87](../../../src/Caching.NET/Health/CachingHealthProbe.cs#L87). |
+| B8 Probe key suffix (`MachineName` + `ProcessId`) | ✅ | [src/Caching.NET/Health/CachingHealthProbe.cs:15-16](../../../src/Caching.NET/Health/CachingHealthProbe.cs#L15-L16). |
+| B9 `RedisConnectionRotator` 100ms drain | ✅ | [src/Caching.NET/Internal/RedisConnectionRotator.cs:80](../../../src/Caching.NET/Internal/RedisConnectionRotator.cs#L80). |
+| B10 `PayloadEnvelope.TryRead` rejects trailing bytes | ✅ | [src/Caching.NET/Serialization/PayloadEnvelope.cs:104](../../../src/Caching.NET/Serialization/PayloadEnvelope.cs#L104). |
+| R1 `IsTransient` exception set | ✅ | [src/Caching.NET/Resilience/CacheResiliencePipelineBuilder.cs:101-125](../../../src/Caching.NET/Resilience/CacheResiliencePipelineBuilder.cs#L101-L125). |
+| R2 Optional `ConcurrencyLimiter` | ✅ | [src/Caching.NET/Resilience/CacheResiliencePipelineBuilder.cs:42-49](../../../src/Caching.NET/Resilience/CacheResiliencePipelineBuilder.cs#L42-L49) + [CacheResilienceOptions.cs:31](../../../src/Caching.NET/Resilience/CacheResilienceOptions.cs#L31). |
+| R3 Serialize/deserialize histograms | ✅ | [src/Caching.NET/Telemetry/CacheInstruments.cs:58-62](../../../src/Caching.NET/Telemetry/CacheInstruments.cs#L58-L62). |
+| R4 Envelope `XxHash32` trailer | ✅ (out-param leak fixed) | [src/Caching.NET/Serialization/PayloadEnvelope.cs:73,86,113-118](../../../src/Caching.NET/Serialization/PayloadEnvelope.cs#L113-L118). |
+| R5 Compression threshold + flag | ✅ | [src/Caching.NET/Options/CacheOptions.cs:92,98](../../../src/Caching.NET/Options/CacheOptions.cs#L92). |
+| R6 Liveness/readiness split | ✅ | [src/Caching.NET/Extensions/ServiceCollectionExtensions.cs:84-93](../../../src/Caching.NET/Extensions/ServiceCollectionExtensions.cs#L84-L93) + [Health/CachingLivenessHealthCheck.cs](../../../src/Caching.NET/Health/CachingLivenessHealthCheck.cs). |
+| R7 `DriftLogSampler` per-fingerprint per minute | ✅ | [src/Caching.NET/Internal/DriftLogSampler.cs:12-33](../../../src/Caching.NET/Internal/DriftLogSampler.cs#L12-L33). |
+| R8 Retry 50ms / 1s + jitter | ✅ | [src/Caching.NET/Resilience/CacheResiliencePipelineBuilder.cs:84-94](../../../src/Caching.NET/Resilience/CacheResiliencePipelineBuilder.cs#L84-L94). |
+| V1 Validator ≥32 user-key chars | ✅ | [src/Caching.NET/Validation/CacheOptionsValidator.cs:80-90](../../../src/Caching.NET/Validation/CacheOptionsValidator.cs#L80-L90). |
+| V2 `MaximumKeyLength` on prefixed key | ✅ | [src/Caching.NET/Services/RoutingCacheService.cs:83-89](../../../src/Caching.NET/Services/RoutingCacheService.cs#L83-L89). |
+| V3 Validator parses Redis connection string | ✅ | [src/Caching.NET/Validation/CacheOptionsValidator.cs:59-72](../../../src/Caching.NET/Validation/CacheOptionsValidator.cs#L59-L72). |
+| P1 In-memory eviction-callback reuse | ✅ | [src/Caching.NET/Services/InMemoryCacheService.cs:21-22](../../../src/Caching.NET/Services/InMemoryCacheService.cs#L21-L22). |
+| P2 In-memory batch sync ops | ✅ | [src/Caching.NET/Services/InMemoryCacheService.cs:88-95](../../../src/Caching.NET/Services/InMemoryCacheService.cs#L88-L95). |
+| P3 `ICacheService` `ValueTask` migration | ↩️ reverted 2026-05-07 | [src/Caching.NET/Abstractions/ICacheService.cs](../../../src/Caching.NET/Abstractions/ICacheService.cs) — interface and all implementations remain `Task`/`Task<T>`. See revalidation note below. |
+| P4 `RemoveManyAsync` actual delete count | ✅ | [src/Caching.NET/Services/RedisCacheService.cs:533-535](../../../src/Caching.NET/Services/RedisCacheService.cs#L533-L535). |
+| P5 `IBufferWriter` overload + `AllocateUninitializedArray` | ✅ | [src/Caching.NET/Serialization/PayloadEnvelope.cs:42,48](../../../src/Caching.NET/Serialization/PayloadEnvelope.cs#L42). |
+| P6 `StableStringHash` `ArrayPool` >512B | ✅ | [src/Caching.NET/Internal/StableStringHash.cs:23-40](../../../src/Caching.NET/Internal/StableStringHash.cs#L23-L40). |
+| A1 `ICacheSerializer.Deserialize<T>(ReadOnlyMemory<byte>)` | ✅ | [src/Caching.NET/Serialization/ICacheSerializer.cs:16](../../../src/Caching.NET/Serialization/ICacheSerializer.cs#L16) + [MessagePackCacheSerializer.cs:36](../../../src/Caching.NET/Serialization/MessagePackCacheSerializer.cs#L36). |
+| A2 `WithResilience(...)`; pipeline builder internal | ✅ | [src/Caching.NET/CachingBuilder.cs:190-199](../../../src/Caching.NET/CachingBuilder.cs#L190-L199); [CacheResiliencePipelineBuilder.cs:20](../../../src/Caching.NET/Resilience/CacheResiliencePipelineBuilder.cs#L20). |
+| A3 Analyzer `KeyValuePair.Create` | ✅ | [src/Caching.NET.Analyzers/CardinalityAnalyzer.cs:197-200](../../../src/Caching.NET.Analyzers/CardinalityAnalyzer.cs#L197-L200). |
+| A4 Analyzer ILogger + `BeginScope` | ✅ | [src/Caching.NET.Analyzers/CardinalityAnalyzer.cs:39-42,149-152](../../../src/Caching.NET.Analyzers/CardinalityAnalyzer.cs#L39-L42). |
+| A5 Health-check types internal | ✅ | [src/Caching.NET/Health/CachingHealthCheck.cs:15](../../../src/Caching.NET/Health/CachingHealthCheck.cs#L15) + [Health/CachingLivenessHealthCheck.cs:14](../../../src/Caching.NET/Health/CachingLivenessHealthCheck.cs#L14). |
+| A6 `CachingBuilder` DI-only construction | ✅ | [src/Caching.NET/Extensions/ServiceCollectionExtensions.cs:139](../../../src/Caching.NET/Extensions/ServiceCollectionExtensions.cs#L139). |
+| A7-A9 Builder presets + key hooks | ✅ | [src/Caching.NET/CachingBuilder.cs:246-312](../../../src/Caching.NET/CachingBuilder.cs#L246-L312). |
+| A10 `ForceRefresh` doc | ✅ | [src/Caching.NET/Options/CacheCallOptions.cs:28](../../../src/Caching.NET/Options/CacheCallOptions.cs#L28). |
+| A11 `ICacheKeyFactory` `TryAddSingleton` | ✅ | [src/Caching.NET/Extensions/ServiceCollectionExtensions.cs:265](../../../src/Caching.NET/Extensions/ServiceCollectionExtensions.cs#L265). |

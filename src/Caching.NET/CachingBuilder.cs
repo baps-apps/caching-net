@@ -15,9 +15,6 @@ public sealed class CachingBuilder
 {
     private readonly IServiceCollection? _services;
 
-    /// <summary>Construct without service-collection access (legacy path).</summary>
-    public CachingBuilder() { }
-
     /// <summary>Construct with service-collection access (used by v2 AddCaching overloads).</summary>
     internal CachingBuilder(IServiceCollection services) { _services = services; }
 
@@ -38,6 +35,9 @@ public sealed class CachingBuilder
     internal bool RegisterOpenTelemetry { get; private set; }
     internal bool RegisterHealthChecks { get; private set; }
     internal string HealthCheckName { get; private set; } = "caching-net";
+    internal bool HealthCheckSplit { get; private set; }
+    internal Func<string, bool>? KeyValidator { get; private set; }
+    internal Func<string, string>? KeyTransformer { get; private set; }
 
     /// <summary>Sets cache mode to InMemory.</summary>
     public CachingBuilder UseInMemory()
@@ -178,8 +178,11 @@ public sealed class CachingBuilder
         return this;
     }
 
-    /// <summary>Configure the Polly resilience pipeline knobs (timeout, breaker, retry).</summary>
-    public CachingBuilder WithResilience(Action<ResiliencePipelineRegistryOptions> configure)
+    /// <summary>
+    /// Configure Redis resilience (timeout, circuit breaker, retry, optional concurrency limiter).
+    /// Uses library-defined <see cref="CacheResilienceOptions"/> — Polly is not surfaced on the public API.
+    /// </summary>
+    public CachingBuilder WithResilience(Action<CacheResilienceOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
         if (_services is null)
@@ -202,11 +205,18 @@ public sealed class CachingBuilder
         return this;
     }
 
-    /// <summary>Registers <see cref="Health.CachingHealthCheck"/> with the health check system.</summary>
-    public CachingBuilder WithHealthChecks(string name = "caching-net")
+    /// <summary>
+    /// Registers cache health checks with the ASP.NET Core health check system.
+    /// By default registers a single <see cref="Health.CachingHealthCheck"/> (readiness: PING + probe).
+    /// When <paramref name="splitLivenessReadiness"/> is true, registers
+    /// <see cref="Health.CachingLivenessHealthCheck"/> (connection-level only) and
+    /// <see cref="Health.CachingHealthCheck"/> as <c>{name}-liveness</c> / <c>{name}-readiness</c> with tags <c>liveness</c> / <c>readiness</c>.
+    /// </summary>
+    public CachingBuilder WithHealthChecks(string name = "caching-net", bool splitLivenessReadiness = false)
     {
         RegisterHealthChecks = true;
         HealthCheckName = name;
+        HealthCheckSplit = splitLivenessReadiness;
         return this;
     }
 
@@ -221,6 +231,78 @@ public sealed class CachingBuilder
     public CachingBuilder Disable()
     {
         Enabled = false;
+        return this;
+    }
+
+    /// <summary>
+    /// Re-enables caching when overriding a config file that set <see cref="CacheOptions.Enabled"/> to false
+    /// (fluent wins over bound configuration via <see cref="Extensions.ServiceCollectionExtensions.AddCaching(Microsoft.Extensions.DependencyInjection.IServiceCollection, Microsoft.Extensions.Configuration.IConfiguration, System.Action{CachingBuilder})"/>).
+    /// </summary>
+    public CachingBuilder Enable()
+    {
+        Enabled = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Development-oriented defaults: raw keys in logs for easier local debugging.
+    /// Requires <c>AddCaching(IServiceCollection, ...)</c>; throws if the builder has no service collection.
+    /// </summary>
+    public CachingBuilder UseDevelopmentDefaults()
+    {
+        if (_services is null)
+            throw new InvalidOperationException(
+                "UseDevelopmentDefaults() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.PostConfigure<CacheOptions>(o => o.IncludeRawKeyInLogs = true);
+        return this;
+    }
+
+    /// <summary>
+    /// Production-oriented defaults: hashed keys in logs and strict Redis TLS certificate validation.
+    /// Requires <c>AddCaching(IServiceCollection, ...)</c>; throws if the builder has no service collection.
+    /// </summary>
+    public CachingBuilder UseProductionDefaults()
+    {
+        if (_services is null)
+            throw new InvalidOperationException(
+                "UseProductionDefaults() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.PostConfigure<CacheOptions>(o =>
+        {
+            o.IncludeRawKeyInLogs = false;
+            o.StrictRedisCertificateValidation = true;
+        });
+        return this;
+    }
+
+    /// <summary>
+    /// Optional user-key validation on the segment before <see cref="CacheOptions.KeyPrefix"/> is applied.
+    /// Return false to skip caching for that key (reads miss / writes no-op). Fluent-only; not bound from JSON.
+    /// </summary>
+    public CachingBuilder WithKeyValidator(Func<string, bool> validateKey)
+    {
+        ArgumentNullException.ThrowIfNull(validateKey);
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithKeyValidator(...) requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        KeyValidator = validateKey;
+        return this;
+    }
+
+    /// <summary>
+    /// Optional normalization of the user key segment before prefixing (e.g. trim, lower-case segments).
+    /// Fluent-only; not bound from JSON.
+    /// </summary>
+    public CachingBuilder WithKeyTransformer(Func<string, string> transformKey)
+    {
+        ArgumentNullException.ThrowIfNull(transformKey);
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithKeyTransformer(...) requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        KeyTransformer = transformKey;
         return this;
     }
 
@@ -304,5 +386,9 @@ public sealed class CachingBuilder
             options.RedisOperationTimeout = RedisOperationTimeout.Value;
         if (StrictCertificateValidation)
             options.StrictRedisCertificateValidation = true;
+        if (KeyValidator is not null)
+            options.KeyValidator = KeyValidator;
+        if (KeyTransformer is not null)
+            options.KeyTransformer = KeyTransformer;
     }
 }

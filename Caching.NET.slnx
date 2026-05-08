@@ -7,8 +7,8 @@
   <Folder Name="/aot/">
     <Project Path="aot/Caching.NET.AotSmoke/Caching.NET.AotSmoke.csproj" />
   </Folder>
-  <Folder Name="/bench/">
-    <Project Path="bench/Caching.NET.Bench/Caching.NET.Bench.csproj" />
+  <Folder Name="/benchmark/">
+    <Project Path="benchmark/Caching.NET.Benchmark/Caching.NET.Benchmark.csproj" />
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/Caching.NET.Sample/Caching.NET.Sample.csproj" />

@@ -1,4 +1,5 @@
 // tests/Caching.NET.Tests/Internal/StableTypeHashTests.cs
+using Caching.NET;
 using Caching.NET.Internal;
 using Xunit;
 
@@ -19,12 +20,23 @@ public class StableTypeHashTests
     }
 
     [Fact]
-    public void Compute_uses_assembly_qualified_name()
+    public void Compute_uses_full_name_not_assembly_version()
     {
-        // The goal is stability across runs — assembly-qualified name is the input.
-        var expected = StableStringHash.Compute64(typeof(string).AssemblyQualifiedName!);
+        var expected = StableStringHash.Compute64(typeof(string).FullName!);
         Assert.Equal(expected, StableTypeHash.Compute<string>());
     }
+
+    [Fact]
+    public void Compute_CacheSchemaAttribute_mixes_version_into_hash()
+    {
+        var t = typeof(SchemaAnnotated);
+        var expected = StableStringHash.Compute64(string.Concat(t.FullName!, "\u001F", "v1"));
+        Assert.Equal(expected, StableTypeHash.Compute<SchemaAnnotated>());
+        Assert.NotEqual(StableStringHash.Compute64(t.FullName!), StableTypeHash.Compute<SchemaAnnotated>());
+    }
+
+    [CacheSchema("v1")]
+    private sealed class SchemaAnnotated;
 
     [Fact]
     public void Compute64_for_empty_string_is_deterministic()

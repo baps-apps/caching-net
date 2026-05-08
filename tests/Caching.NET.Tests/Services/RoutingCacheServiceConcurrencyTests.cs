@@ -43,7 +43,7 @@ public class RoutingCacheServiceConcurrencyTests
             .Select(_ => cache.GetOrCreateAsync("coalesce:key", Factory, callOptions, cancellationToken: CancellationToken.None))
             .ToArray();
 
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(tasks.Select(t => t));
 
         Assert.Equal(1, counter);
     }
@@ -79,7 +79,7 @@ public class RoutingCacheServiceConcurrencyTests
                 cancellationToken: CancellationToken.None))
             .ToArray();
 
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(tasks.Select(t => t));
 
         Assert.Equal(5, counter);
     }

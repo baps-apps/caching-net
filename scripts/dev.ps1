@@ -44,7 +44,18 @@ function Invoke-UnitMatrix {
 
 function Invoke-Integration {
     Step 'test:integration (Testcontainers Redis — Docker required)'
-    Invoke-Test 'tests/Caching.NET.Tests.Integration' 'net10.0'
+    $testArgs = @(
+        'test',
+        'tests/Caching.NET.Tests.Integration',
+        '-c', $Configuration,
+        '--no-build',
+        '-f', 'net10.0'
+    )
+    if ($env:CACHING_ENABLE_HANG_DIAGNOSTICS -eq '1') {
+        $testArgs += @('--blame-hang', '--blame-hang-timeout', '60s')
+    }
+    dotnet @testArgs
+    if ($LASTEXITCODE -ne 0) { throw "test failed: tests/Caching.NET.Tests.Integration" }
 }
 
 function Invoke-Chaos {
@@ -66,7 +77,13 @@ function Invoke-Aot {
     if ($LASTEXITCODE -ne 0) { throw "aot publish failed" }
     $publishDir = "aot/Caching.NET.AotSmoke/bin/$Configuration/net10.0/$rid/publish"
     $exe = Get-ChildItem -Path $publishDir -Filter 'Caching.NET.AotSmoke*' |
-        Where-Object { -not $_.Name.EndsWith('.pdb') -and -not $_.Name.EndsWith('.dwarf') } |
+        Where-Object {
+            -not $_.PSIsContainer -and
+            (
+                $_.Name -eq 'Caching.NET.AotSmoke' -or
+                $_.Name -eq 'Caching.NET.AotSmoke.exe'
+            )
+        } |
         Select-Object -First 1
     if (-not $exe) { throw "aot binary not found in $publishDir" }
     & $exe.FullName
@@ -75,18 +92,18 @@ function Invoke-Aot {
 
 function Invoke-Bench {
     Step 'bench (BenchmarkDotNet)'
-    dotnet run -c $Configuration --project bench/Caching.NET.Bench -- --filter '*' --exporters JSON --artifacts bench/Caching.NET.Bench/BenchmarkDotNet.Artifacts
+    dotnet run -c $Configuration --project benchmark/Caching.NET.Benchmark -- --filter '*' --exporters JSON --artifacts benchmark/Caching.NET.Benchmark/BenchmarkDotNet.Artifacts
     if ($LASTEXITCODE -ne 0) { throw "bench run failed" }
     & "$repoRoot/scripts/combine-bench-results.ps1"
 }
 
 function Invoke-BenchGate {
     Step 'bench:gate (perf-gate.ps1 vs baseline)'
-    $combinedPath = 'bench/Caching.NET.Bench/BenchmarkDotNet.Artifacts/results/combined.json'
+    $combinedPath = 'benchmark/Caching.NET.Benchmark/BenchmarkDotNet.Artifacts/results/combined.json'
     if (-not (Test-Path $combinedPath)) {
         Invoke-Bench
     }
-    & "$repoRoot/bench/perf-gate.ps1"
+    & "$repoRoot/benchmark/perf-gate.ps1"
     if ($LASTEXITCODE -ne 0) { throw "perf-gate regression" }
 }
 
@@ -127,7 +144,7 @@ scripts/dev.ps1 <command> [-Tfm <tfm>] [-Configuration Release|Debug] [-NoRestor
 
   build              Restore + build (warnings-as-errors).
   test               Unit tests across [net8.0, net9.0, net10.0].
-  test:integration   Testcontainers Redis suite (Docker required).
+  test:integration   Testcontainers Redis suite (Docker required). Set CACHING_ENABLE_HANG_DIAGNOSTICS=1 to enable --blame-hang.
   test:chaos         Polly fault-injection suite.
   test:property      FsCheck property suite.
   aot                Caching.NET.AotSmoke publish + run on local RID.

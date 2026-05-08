@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Caching.Hybrid;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Caching.NET.Options;
@@ -19,10 +20,14 @@ namespace Caching.NET.Services;
 /// </param>
 /// <param name="options">Bound <see cref="CacheOptions"/> that control expiration defaults and enabled state.</param>
 /// <param name="logger">Logger for recording operational warnings and errors.</param>
+/// <param name="distributedCache">
+/// Optional distributed cache backend used for lightweight existence checks without full deserialization.
+/// </param>
 internal sealed class HybridCacheService(
     HybridCache? cache,
     IOptions<CacheOptions> options,
-    ILogger<HybridCacheService> logger) : Abstractions.ICacheService
+    ILogger<HybridCacheService> logger,
+    IDistributedCache? distributedCache = null) : Abstractions.ICacheService
 {
     private const string Mode = "Hybrid";
     private static readonly TimeSpan DefaultExpiration = TimeSpan.FromMinutes(10);
@@ -147,7 +152,25 @@ internal sealed class HybridCacheService(
         }
         try
         {
-            T value = await cache.GetOrCreateAsync<T>(
+            if (typeof(T).IsValueType && Nullable.GetUnderlyingType(typeof(T)) is null)
+            {
+                HybridValueBox<T>? boxed = await cache.GetOrCreateAsync(
+                    key,
+                    static _ => ValueTask.FromResult<HybridValueBox<T>?>(null),
+                    options: null,
+                    tags: null,
+                    cancellationToken).ConfigureAwait(false);
+                if (boxed is null)
+                {
+                    CacheInstruments.RecordMiss(Mode, "get", "NotFound");
+                    return default;
+                }
+
+                CacheInstruments.RecordHit(Mode, "get");
+                return boxed.Value;
+            }
+
+            T value = await cache.GetOrCreateAsync(
                 key,
                 static _ => ValueTask.FromResult(default(T)!),
                 options: null,
@@ -158,6 +181,7 @@ internal sealed class HybridCacheService(
                 CacheInstruments.RecordMiss(Mode, "get", "NotFound");
                 return default;
             }
+
             CacheInstruments.RecordHit(Mode, "get");
             return value;
         }
@@ -171,6 +195,22 @@ internal sealed class HybridCacheService(
     /// <inheritdoc />
     public async Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
     {
+        if (!options.Value.Enabled || cache == null) return false;
+        if (string.IsNullOrWhiteSpace(key)) return false;
+
+        if (distributedCache is not null)
+        {
+            try
+            {
+                var raw = await distributedCache.GetAsync(key, cancellationToken).ConfigureAwait(false);
+                if (raw is not null) return true;
+            }
+            catch (Exception ex)
+            {
+                CacheInstruments.RecordError(Mode, "exists", ClassifyError(ex));
+            }
+        }
+
         var v = await GetAsync<object>(key, cancellationToken).ConfigureAwait(false);
         return v != null;
     }
@@ -252,4 +292,6 @@ internal sealed class HybridCacheService(
             LocalCacheExpiration = localExpiration ?? expiration ?? DefaultLocalExpiration
         };
     }
+
+    private sealed record HybridValueBox<T>(T Value);
 }

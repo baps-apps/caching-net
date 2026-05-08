@@ -2,6 +2,8 @@
 
 > **v2 note:** The builder API is unchanged. Use `WithKeyPrefix(...)` (not `WithInstanceName`) when configuring the cache mode alongside health checks. See [MIGRATION-V1-TO-V2.md](MIGRATION-V1-TO-V2.md) for the full v2 change list.
 
+> **Encapsulation:** The concrete `IHealthCheck` implementations (`CachingHealthCheck`, `CachingLivenessHealthCheck`) are **assembly-internal** types. Consumers register them only via `WithHealthChecks()` / `AddCachingHealthChecks(...)` — do not reference or construct those types from application code.
+
 Caching.NET includes a built-in health check that verifies the cache pipeline is operational. It integrates with ASP.NET Core's standard health check system.
 
 ## Quick Start
@@ -22,12 +24,13 @@ That's it. Hit `GET /health` and you'll get a status for your cache pipeline.
 ### Registration Flow
 
 ```
-WithHealthChecks()
+WithHealthChecks() / WithHealthChecks(splitLivenessReadiness: true)
   → sets RegisterHealthChecks = true on CachingBuilder
     → ServiceCollectionExtensions calls:
         services.AddHealthChecks()
-            .AddCachingHealthChecks(name: "caching-net")
-              → registers CachingHealthCheck with ASP.NET Core
+            .AddCachingHealthChecks(name: "caching-net", splitLivenessReadiness: …)
+              → registers CachingHealthCheck only (default), or
+                 CachingLivenessHealthCheck + CachingHealthCheck with tags (when split)
 ```
 
 ### Probe Logic
@@ -39,27 +42,34 @@ GET /health
   → CachingHealthCheck.CheckHealthAsync()
     ├─ Caching disabled?
     │    → Healthy("Caching is disabled via configuration.")
+    │       (no backend registration; multiplexer may be absent — still healthy)
     │
     └─ Caching enabled?
-         → GetOrCreateAsync("caching-net:health:probe", () => true, expiration: 5min)
-           ├─ Success → Healthy("Caching.NET is reachable and operational.")
-           └─ Exception → Unhealthy("Caching.NET health probe failed.")
+         ├─ Mode is Redis or Hybrid?
+         │    ├─ IConnectionMultiplexer missing? → Unhealthy("Redis multiplexer is unavailable…")
+         │    ├─ !IsConnected? → Unhealthy("Redis multiplexer is disconnected.")
+         │    └─ await PING
+         │
+         └─ ExistsAsync(probeKey)
+              ├─ true  → Healthy("Caching.NET is reachable and operational.")
+              └─ false → GetOrCreateAsync(probeKey, () => true, expiration: 5min)
+                        ├─ Success → Healthy("Caching.NET is reachable and operational.")
+                        └─ Exception → Unhealthy("Caching.NET health probe failed.")
 ```
 
-**When caching is disabled**: Returns `Healthy` immediately. The cache is intentionally out of the request path, so there's nothing to probe.
+**When caching is disabled**: Returns `Healthy` immediately. No Redis ping or cache write runs (backends are not registered in that configuration).
 
-**When caching is enabled**: Executes a real `GetOrCreateAsync` call with a synthetic key (`caching-net:health:probe`) and a trivial factory (`() => true`). This validates the entire pipeline — DI resolution, serialization, and backend connectivity (Redis, in-memory, or Hybrid).
+**When caching is enabled (InMemory)**: Skips multiplexer checks; the probe exercises `GetOrCreateAsync` through the in-memory stack.
+
+**When caching is enabled (Redis / Hybrid)**: Requires a connected `IConnectionMultiplexer` from DI (normal `AddCaching` path). The check **PINGs Redis** before calling `GetOrCreateAsync`, so a dead or partitioned primary fails the check **before** `FailOpen` could mask Redis errors on the cache path.
+
+**Probe key**: `caching-net:health:probe:{MachineName}:{ProcessId}` — avoids cross-replica contention on a single Redis key.
 
 ### FailOpen Interaction
 
-The health probe respects `FailOpen` semantics:
+For **Redis and Hybrid**, reachability is gated by **multiplexer connection state + PING**, not by whether `GetOrCreateAsync` would fall back when `FailOpen=true`. If Redis is down, the check is typically **Unhealthy** regardless of `FailOpen`.
 
-| `FailOpen` | Redis Down | Health Status | Why |
-|---|---|---|---|
-| `true` (default) | Yes | **Healthy** | Factory runs successfully — requests will still be served (just without cache) |
-| `false` | Yes | **Unhealthy** | Exception propagates — requests would fail too |
-
-This means the health check accurately reflects whether your **application** is healthy, not just whether Redis is up. With `FailOpen=true`, a Redis outage degrades performance but doesn't break functionality — so the health check correctly reports healthy.
+For **InMemory**, the probe only runs through `ICacheService`; `FailOpen` affects backend errors on real keys the same way as in app code, but the synthetic probe rarely hits that path.
 
 ## Configuration Options
 
@@ -120,7 +130,47 @@ This gives you two health checks:
 
 ## Kubernetes Probes
 
-### Liveness + Readiness
+### Built-in liveness + readiness split
+
+Opt in when registering caching:
+
+```csharp
+builder.Services.AddCaching(cache => cache
+    .UseHybrid("localhost:6379")
+    .WithHealthChecks(splitLivenessReadiness: true));   // registers two checks — see below
+```
+
+This registers:
+
+| Check name (default prefix `caching-net`) | Tag | Behavior |
+|-------------------------------------------|-----|----------|
+| `caching-net-liveness` | `liveness` | Disabled cache → Healthy. InMemory → Healthy. Redis/Hybrid → multiplexer present and `IsConnected` only (no PING, no probe write). |
+| `caching-net-readiness` | `readiness` | Same as the single-check path: PING + `GetOrCreateAsync` probe when enabled. |
+
+Map endpoints using tags:
+
+```csharp
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = r => r.Tags.Contains("liveness"),
+});
+
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = r => r.Tags.Contains("readiness") || r.Name == "redis",
+});
+```
+
+Manual registration without the fluent flag:
+
+```csharp
+builder.Services.AddHealthChecks()
+    .AddCachingHealthChecks(splitLivenessReadiness: true);
+```
+
+### Liveness + Readiness (single combined check)
+
+If you use the default **one** `CachingHealthCheck` (readiness-style), you can still split probes at the HTTP layer:
 
 ```csharp
 // Liveness: is the app running?
@@ -156,12 +206,12 @@ readinessProbe:
 | Probe | Includes Cache Check? | Purpose |
 |---|---|---|
 | Liveness | No | Restart if the process is hung |
-| Readiness | Yes | Remove from load balancer if cache/Redis is down (with `FailOpen=false`) |
+| Readiness | Yes | Remove from load balancer when `caching-net` is Unhealthy (Redis/Hybrid includes PING; InMemory probes the local cache path) |
 | Startup | Optional | Gate traffic until initial cache warm-up completes |
 
-**With `FailOpen=true`** (default): Even readiness checks report healthy when Redis is down, because the app can still serve requests via factory fallback. This is usually the right behavior — you don't want pods removed from rotation just because Redis had a blip.
+**With `FailOpen=true`** (default): Application requests may still succeed when Redis errors are swallowed, but **`CachingHealthCheck` still fails when Redis/Hybrid cannot connect or PING** (see above). Combine with a dedicated Redis health check if you need finer-grained signals.
 
-**With `FailOpen=false`**: Readiness checks accurately report unhealthy when Redis is down, which removes the pod from the load balancer. Use this when your app genuinely cannot function without cache.
+**With `FailOpen=false`**: Cache operations can throw on backend failure; align readiness with your SLOs and the Redis probe outcome.
 
 ## Health Check Response
 
@@ -212,10 +262,10 @@ readinessProbe:
 
 ## Implementation Details
 
-- **Probe key**: `caching-net:health:probe` with a 5-minute TTL
-- **Factory**: Returns `true` — minimal allocation, no external calls
+- **Probe key**: `caching-net:health:probe:{MachineName}:{ProcessId}` with a 5-minute TTL
+- **Factory**: Returns `true` — minimal allocation, no external calls beyond Redis PING when applicable
 - **Error logging**: Failures are logged at `Error` level with the probe key
-- **DI dependencies**: `ICacheService`, `IOptions<CacheOptions>`, `ILogger<CachingHealthCheck>`
+- **DI dependencies**: `ICacheService`, `IOptions<CacheOptions>`, `ILogger<CachingHealthCheck>`, optional `IConnectionMultiplexer` (resolved when registered; required for Redis/Hybrid probes)
 - **Registered as**: `IHealthCheck` via `AddCheck<CachingHealthCheck>(...)`
 - **Default failure status**: `HealthStatus.Unhealthy` (configurable)
 
@@ -223,7 +273,8 @@ readinessProbe:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Health always returns Healthy even when Redis is down | `FailOpen=true` (default) — factory runs successfully | Expected behavior. Set `FailOpen=false` if you need strict Redis health gating |
-| Health returns Unhealthy on startup | Redis not yet available | Ensure Redis is up before the app starts, or use `FailOpen=true` |
+| Health still Unhealthy when `Enabled=false` | Unexpected — check you are not filtering a different check | When disabled, description should mention *Caching is disabled via configuration* |
+| Redis down but check Healthy | Unlikely for Redis/Hybrid — multiplexer disconnected path should fail | Verify mode, DI registration, and that you are hitting `CachingHealthCheck` |
+| Health returns Unhealthy on startup | Redis not yet available for Redis/Hybrid | Wait for Redis before marking ready, relax readiness predicate, or fix networking |
 | Health check not appearing at `/health` | Missing `app.MapHealthChecks("/health")` | Add the endpoint mapping after `builder.Build()` |
 | Endpoint returns 404 | `app.MapHealthChecks(...)` missing | Add endpoint mapping after `builder.Build()` |

@@ -53,6 +53,44 @@ public class RedisConnectionRotatorTests
         await rotator.StopAsync(CancellationToken.None);
     }
 
+    [Fact]
+    public async Task StopAsync_Awaits_AsyncDisposableMultiplexer()
+    {
+        var monitor = new TestMonitor(new CacheOptions
+        {
+            Mode = CacheMode.Redis,
+            RedisConnectionString = "host-a:6379",
+            KeyPrefix = "x"
+        });
+        var disposable = new SlowAsyncDisposable();
+        Func<string, object> factory = _ => disposable;
+        var rotator = new RedisConnectionRotator(monitor, factory, NullLogger<RedisConnectionRotator>.Instance);
+
+        await rotator.StartAsync(CancellationToken.None);
+        await rotator.StopAsync(CancellationToken.None);
+
+        Assert.True(disposable.Disposed);
+    }
+
+    [Fact]
+    public async Task Dispose_Awaits_AsyncDisposableMultiplexer()
+    {
+        var monitor = new TestMonitor(new CacheOptions
+        {
+            Mode = CacheMode.Redis,
+            RedisConnectionString = "host-a:6379",
+            KeyPrefix = "x"
+        });
+        var disposable = new SlowAsyncDisposable();
+        Func<string, object> factory = _ => disposable;
+        var rotator = new RedisConnectionRotator(monitor, factory, NullLogger<RedisConnectionRotator>.Instance);
+
+        await rotator.StartAsync(CancellationToken.None);
+        rotator.Dispose();
+
+        Assert.True(disposable.Disposed);
+    }
+
     private sealed class TestMonitor : IOptionsMonitor<CacheOptions>
     {
         private CacheOptions _current;
@@ -71,5 +109,16 @@ public class RedisConnectionRotatorTests
             _listener?.Invoke(_current, null);
         }
         private sealed class Empty : IDisposable { public void Dispose() { } }
+    }
+
+    private sealed class SlowAsyncDisposable : IAsyncDisposable
+    {
+        public bool Disposed { get; private set; }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Task.Delay(10).ConfigureAwait(false);
+            Disposed = true;
+        }
     }
 }

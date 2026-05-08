@@ -1,7 +1,11 @@
+using System.IO;
+using System.Net.Sockets;
+using System.Threading.RateLimiting;
 using Caching.NET.Telemetry;
 using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.CircuitBreaker;
+using Polly.RateLimiting;
 using Polly.Registry;
 using Polly.Retry;
 using Polly.Timeout;
@@ -11,9 +15,9 @@ namespace Caching.NET.Resilience;
 
 /// <summary>
 /// Constructs the default Caching.NET Polly pipeline registry: separate read/write/delete
-/// pipelines so write-path failures don't trip read-path breakers.
+/// pipelines so write-path failures don't trip read-path breakers. Internal — Polly types are not part of the public API.
 /// </summary>
-public static class CacheResiliencePipelineBuilder
+internal static class CacheResiliencePipelineBuilder
 {
     /// <summary>Build a registry with one pipeline per ResiliencePipelineNames entry, using the supplied knobs.</summary>
     public static ResiliencePipelineRegistry<string> BuildDefaultRegistry(
@@ -23,6 +27,9 @@ public static class CacheResiliencePipelineBuilder
         TimeSpan? samplingDuration = null,
         TimeSpan? breakDuration = null,
         int retryCount = 2,
+        bool enableRedisConcurrencyLimiter = false,
+        int redisConcurrencyPermitLimit = 256,
+        int redisConcurrencyQueueLimit = 0,
         ILoggerFactory? loggerFactory = null)
     {
         var registry = new ResiliencePipelineRegistry<string>();
@@ -32,6 +39,16 @@ public static class CacheResiliencePipelineBuilder
             var logger = loggerFactory?.CreateLogger(nameof(CacheResiliencePipelineBuilder));
             registry.TryAddBuilder(pipelineName, (builder, _) =>
             {
+                if (enableRedisConcurrencyLimiter && redisConcurrencyPermitLimit > 0)
+                {
+                    builder.AddConcurrencyLimiter(new ConcurrencyLimiterOptions
+                    {
+                        PermitLimit = redisConcurrencyPermitLimit,
+                        QueueLimit = redisConcurrencyQueueLimit,
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                    });
+                }
+
                 builder
                     .AddTimeout(new TimeoutStrategyOptions
                     {
@@ -71,6 +88,8 @@ public static class CacheResiliencePipelineBuilder
                         MaxRetryAttempts = retryCount,
                         BackoffType = DelayBackoffType.Exponential,
                         UseJitter = true,
+                        Delay = TimeSpan.FromMilliseconds(50),
+                        MaxDelay = TimeSpan.FromSeconds(1),
                         ShouldHandle = static args => ValueTask.FromResult(IsTransient(args.Outcome.Exception))
                     });
                 }
@@ -79,12 +98,29 @@ public static class CacheResiliencePipelineBuilder
         return registry;
     }
 
-    private static bool IsTransient(Exception? ex) => ex switch
+    private static bool IsTransient(Exception? ex) => IsTransient(ex, depth: 0);
+
+    private static bool IsTransient(Exception? ex, int depth)
     {
-        RedisConnectionException => true,
-        RedisTimeoutException => true,
-        TimeoutRejectedException => true,
-        TimeoutException => true,
-        _ => false
-    };
+        if (ex is null || depth > 8) return false;
+        if (ex is OperationCanceledException) return false;
+
+        if (ex is RedisConnectionException or RedisTimeoutException or TimeoutRejectedException or TimeoutException)
+            return true;
+
+        if (ex is SocketException or IOException)
+            return true;
+
+        if (ex is RedisServerException rse && IsTransientRedisServerMessage(rse.Message))
+            return true;
+
+        return ex.InnerException is not null && IsTransient(ex.InnerException, depth + 1);
+    }
+
+    private static bool IsTransientRedisServerMessage(string? message)
+    {
+        if (string.IsNullOrEmpty(message)) return false;
+        return message.Contains("LOADING", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("READONLY", StringComparison.OrdinalIgnoreCase);
+    }
 }

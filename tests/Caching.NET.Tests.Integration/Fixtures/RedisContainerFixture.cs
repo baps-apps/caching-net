@@ -10,7 +10,7 @@ public sealed class RedisContainerFixture : IAsyncLifetime
 
     public RedisContainerFixture()
     {
-        Container = new RedisBuilder().WithImage("redis:7.2-alpine").Build();
+        Container = new RedisBuilder("redis:7.2-alpine").Build();
     }
 
     public Task InitializeAsync() => Container.StartAsync();

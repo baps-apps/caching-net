@@ -1,9 +1,10 @@
 namespace Caching.NET.Resilience;
 
 /// <summary>
-/// Knobs for the default Caching.NET Polly pipeline (timeout + circuit breaker + retry).
+/// Tunable options for Caching.NET Redis resilience (per-op timeout, circuit breaker, retry, optional concurrency cap).
+/// This type is library-owned and does not expose Polly types — Polly is an implementation detail behind <see cref="CachingBuilder.WithResilience"/>.
 /// </summary>
-public sealed class ResiliencePipelineRegistryOptions
+public sealed class CacheResilienceOptions
 {
     /// <summary>Per-op timeout (default 2 s).</summary>
     public TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(2);
@@ -22,4 +23,16 @@ public sealed class ResiliencePipelineRegistryOptions
 
     /// <summary>Number of retry attempts on transient failures (default 2).</summary>
     public int RetryCount { get; set; } = 2;
+
+    /// <summary>
+    /// When true, adds an outermost Polly concurrency limiter to each Redis resilience pipeline
+    /// so a brownout cannot queue unbounded threads (default false).
+    /// </summary>
+    public bool EnableRedisConcurrencyLimiter { get; set; }
+
+    /// <summary>Maximum concurrent executions per pipeline when <see cref="EnableRedisConcurrencyLimiter"/> is true (default 256).</summary>
+    public int RedisConcurrencyPermitLimit { get; set; } = 256;
+
+    /// <summary>Queued executions when the permit pool is saturated (default 0 — fail fast when full).</summary>
+    public int RedisConcurrencyQueueLimit { get; set; }
 }

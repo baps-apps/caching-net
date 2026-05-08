@@ -1,7 +1,7 @@
 using BenchmarkDotNet.Attributes;
 using Caching.NET.Internal;
 
-namespace Caching.NET.Bench;
+namespace Caching.NET.Benchmark;
 
 [MemoryDiagnoser]
 public class StripedLockBenchmarks
@@ -26,7 +26,7 @@ public class StripedLockBenchmarks
             {
                 var sem = _mgr.GetLock("hot");
                 await sem.WaitAsync();
-                try { /* critical section */ }
+                try { }
                 finally { sem.Release(); }
             });
         await Task.WhenAll(tasks);

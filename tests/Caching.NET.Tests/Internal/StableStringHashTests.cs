@@ -7,7 +7,7 @@ public sealed class StableStringHashTests
     [Theory]
     [InlineData("")]
     [InlineData("a")]
-    [InlineData("orders-svc:v1:Order:12345")]
+    [InlineData("orders-api:Order:12345")]
     [InlineData("a very long key that is well past the inline buffer size to exercise the slow path with multi-block hashing input data")]
     public void Compute_ReturnsSameValueForSameInput(string key)
     {

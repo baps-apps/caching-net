@@ -116,7 +116,7 @@ public class CachingBuilderTests
             .WithMaximumKeyLength(512)
             .WithMemorySizeLimit(256)
             .WithFactoryTimeout(TimeSpan.FromSeconds(30))
-            .WithKeyPrefix("test:"));
+            .WithKeyPrefix("test-scope"));
         using var provider = services.BuildServiceProvider();
 
         var options = provider.GetRequiredService<IOptions<CacheOptions>>().Value;
@@ -126,7 +126,7 @@ public class CachingBuilderTests
         Assert.Equal(512, options.MaximumKeyLength);
         Assert.Equal(256, options.MemorySizeLimitMb);
         Assert.Equal(TimeSpan.FromSeconds(30), options.GetFactoryTimeout());
-        Assert.Equal("test:", options.KeyPrefix);
+        Assert.Equal("test-scope", options.KeyPrefix);
     }
 
     [Fact]
@@ -217,6 +217,58 @@ public class CachingBuilderTests
         // the inverse contract: missing config surfaces only when caching is actually on.
         var enabledEx = Record.Exception(() => Build(enabled: true).GetRequiredService<ICacheService>());
         Assert.NotNull(enabledEx);
+    }
+
+    [Fact]
+    public void FluentEnable_Overrides_ConfigDisabled()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "false",
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "app"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration, b => b.Enable().UseInMemory().WithKeyPrefix("app"));
+        using var provider = services.BuildServiceProvider();
+        var options = provider.GetRequiredService<IOptions<CacheOptions>>().Value;
+        Assert.True(options.Enabled);
+    }
+
+    [Fact]
+    public async Task WithKeyValidator_RejectsKey_SkipsCache()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "true",
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "kv"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration, b => b
+            .UseInMemory()
+            .WithKeyPrefix("kv")
+            .WithKeyValidator(k => k != "bad"));
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<ICacheService>();
+
+        int hits = 0;
+        var a = await cache.GetOrCreateAsync("bad", _ => { hits++; return Task.FromResult(1); });
+        var b = await cache.GetOrCreateAsync("bad", _ => { hits++; return Task.FromResult(2); });
+        Assert.Equal(1, a);
+        Assert.Equal(2, b);
+        Assert.Equal(2, hits);
+
+        hits = 0;
+        var c = await cache.GetOrCreateAsync("ok", _ => { hits++; return Task.FromResult(10); });
+        var d = await cache.GetOrCreateAsync("ok", _ => { hits++; return Task.FromResult(99); });
+        Assert.Equal(10, c);
+        Assert.Equal(10, d);
+        Assert.Equal(1, hits);
     }
 
     [Fact]

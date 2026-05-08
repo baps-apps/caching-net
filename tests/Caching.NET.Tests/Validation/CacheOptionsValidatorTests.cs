@@ -11,7 +11,7 @@ public sealed class CacheOptionsValidatorTests
 
     private static CacheOptions ValidBaseline() => new()
     {
-        KeyPrefix = "orders-svc:v1",
+        KeyPrefix = "orders-api",
         Mode = CacheMode.InMemory,
         MaximumKeyLength = 512,
         MaximumPayloadBytes = 1_048_576,
@@ -34,6 +34,7 @@ public sealed class CacheOptionsValidatorTests
     [InlineData("has*wildcard")]
     [InlineData("has?wildcard")]
     [InlineData(":leading-colon")]
+    [InlineData("mid:dle")]
     public void Invalid_KeyPrefix_Fails(string bad)
     {
         var o = ValidBaseline(); o.KeyPrefix = bad;
@@ -42,7 +43,7 @@ public sealed class CacheOptionsValidatorTests
 
     [Theory]
     [InlineData("orders")]
-    [InlineData("orders-svc:v1")]
+    [InlineData("orders-api")]
     [InlineData("o.s.v1_2")]
     public void Valid_KeyPrefix_Succeeds(string ok)
     {
@@ -89,6 +90,32 @@ public sealed class CacheOptionsValidatorTests
     {
         var o = ValidBaseline(); o.TtlJitterPercentage = bad;
         Assert.True(Validate(o).Failed);
+    }
+
+    [Fact]
+    public void KeyPrefix_Plus_UserKeyBudget_TooSmall_Fails()
+    {
+        var o = ValidBaseline();
+        o.KeyPrefix = new string('a', 64);
+        o.MaximumKeyLength = 96;
+        var r = Validate(o);
+        Assert.True(r.Failed);
+        Assert.Contains("32 characters", string.Join(" ", r.Failures!), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RedisConnectionString_Invalid_Parse_Fails()
+    {
+        var o = ValidBaseline();
+        o.Mode = CacheMode.Redis;
+        o.RedisConnectionString = "   ,  ,  ";
+        var r = Validate(o);
+        Assert.True(r.Failed);
+        var msg = string.Join(" ", r.Failures!);
+        Assert.True(
+            msg.Contains("could not be parsed", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("did not resolve any Redis endpoints", StringComparison.OrdinalIgnoreCase),
+            msg);
     }
 
     [Fact]

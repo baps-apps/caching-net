@@ -12,6 +12,8 @@
 
 **Branch:** `vpatel/v2`. All P0 work commits to this branch.
 
+**Doc / behavior sync (2026-05-06 audit follow-up):** Runtime behavior now includes **`Enabled=false` skipping all backends and options validation**, **widened Polly transient classification**, **50 ms–1 s retry backoff**, optional **Redis concurrency limiter** (`ResiliencePipelineRegistryOptions`), **serialize/deserialize histograms**, **strict `PayloadEnvelope` length + `IBufferWriter` write path**, **sampled drift logs**, **Redis `RemoveMany` remove counter = keys deleted**, **health check multiplexer PING + per-process probe key**, **`MaximumKeyLength` prefix budget validation**, and builder APIs **`Enable` / `UseDevelopmentDefaults` / `UseProductionDefaults` / `WithKeyValidator` / `WithKeyTransformer`**. Consumer docs: [README.md](../../../README.md), [INTERNALS.md](../../INTERNALS.md), [TELEMETRY.md](../../TELEMETRY.md), [HEALTH-CHECKS.md](../../HEALTH-CHECKS.md).
+
 ---
 
 ## File Structure
@@ -239,7 +241,7 @@ public sealed class StableStringHashTests
     [Theory]
     [InlineData("")]
     [InlineData("a")]
-    [InlineData("orders-svc:v1:Order:12345")]
+    [InlineData("asm-api-dev:Order:12345")]
     [InlineData("a very long key that is well past the inline buffer size to exercise the slow path with multi-block hashing input data")]
     public void Compute_ReturnsSameValueForSameInput(string key)
     {
@@ -709,7 +711,7 @@ public sealed class CacheOptionsValidatorTests
 
     private static CacheOptions ValidBaseline() => new()
     {
-        KeyPrefix = "orders-svc:v1",
+        KeyPrefix = "asm-api-dev",
         Mode = CacheMode.InMemory,
         MaximumKeyLength = 512,
         MaximumPayloadBytes = 1_048_576,
@@ -740,7 +742,7 @@ public sealed class CacheOptionsValidatorTests
 
     [Theory]
     [InlineData("orders")]
-    [InlineData("orders-svc:v1")]
+    [InlineData("asm-api-dev")]
     [InlineData("o.s.v1_2")]
     public void Valid_KeyPrefix_Succeeds(string ok)
     {
@@ -839,7 +841,7 @@ namespace Caching.NET.Validation;
 
 internal sealed partial class CacheOptionsValidator : IValidateOptions<CacheOptions>
 {
-    [GeneratedRegex(@"^[a-zA-Z0-9][a-zA-Z0-9._:-]*$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", RegexOptions.CultureInvariant)]
     private static partial Regex KeyPrefixRegex();
 
     public ValidateOptionsResult Validate(string? name, CacheOptions o)
@@ -857,7 +859,7 @@ internal sealed partial class CacheOptionsValidator : IValidateOptions<CacheOpti
         }
         else if (!KeyPrefixRegex().IsMatch(o.KeyPrefix))
         {
-            failures.Add($"{nameof(CacheOptions.KeyPrefix)} must match ^[a-zA-Z0-9][a-zA-Z0-9._:-]*$ (no whitespace, '*' or '?').");
+            failures.Add($"{nameof(CacheOptions.KeyPrefix)} must match ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ (no whitespace, ':' , '*' or '?').");
         }
 
         if ((o.Mode == CacheMode.Redis || o.Mode == CacheMode.Hybrid) && string.IsNullOrWhiteSpace(o.RedisConnectionString))
@@ -918,7 +920,7 @@ git add src/Caching.NET/Options/CacheOptions.cs src/Caching.NET/Validation/Cache
 git commit -m "feat!: CacheOptions v2 — KeyPrefix mandatory, RedisInstanceName removed
 
 BREAKING: CacheOptions.RedisInstanceName is gone. Use KeyPrefix.
-BREAKING: KeyPrefix is now required (regex ^[a-zA-Z0-9][a-zA-Z0-9._:-]*$, max 64).
+BREAKING: KeyPrefix is now required (regex ^[a-zA-Z0-9][a-zA-Z0-9._-]*$, no ':' inside prefix, max 64).
 BREAKING: StrictRedisCertificateValidation defaults to true.
 BREAKING: MaximumKeyLength defaults to 512 (was unbounded).
 
@@ -1437,11 +1439,11 @@ public async Task GetOrCreateAsync_PrependsKeyPrefixToInnerCallKey()
                                        It.IsAny<TimeSpan?>(), It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()))
         .Returns(async (string k, Func<CancellationToken, Task<int>> f, TimeSpan? _, TimeSpan? _, CancellationToken ct) =>
         {
-            Assert.Equal("orders-svc:v1:Order:42", k);
+            Assert.Equal("asm-api-dev:Order:42", k);
             return await f(ct);
         });
 
-    var options = Options.Create(new CacheOptions { KeyPrefix = "orders-svc:v1", Mode = CacheMode.InMemory });
+    var options = Options.Create(new CacheOptions { KeyPrefix = "asm-api-dev", Mode = CacheMode.InMemory });
     var monitor = Mock.Of<IOptionsMonitor<CacheOptions>>(m => m.CurrentValue == options.Value);
     var sut = new RoutingCacheService(monitor, NullLogger<RoutingCacheService>.Instance,
         new StripedLockManager(1024), inMemory: inMemory.Object);
@@ -1776,10 +1778,10 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 public void WithKeyPrefix_AssignsKeyPrefix()
 {
     var services = new ServiceCollection();
-    services.AddCaching(b => b.UseInMemory().WithKeyPrefix("orders-svc:v1"));
+    services.AddCaching(b => b.UseInMemory().WithKeyPrefix("asm-api-dev"));
     var sp = services.BuildServiceProvider();
     var opts = sp.GetRequiredService<IOptions<CacheOptions>>().Value;
-    Assert.Equal("orders-svc:v1", opts.KeyPrefix);
+    Assert.Equal("asm-api-dev", opts.KeyPrefix);
 }
 
 [Fact]
@@ -1973,7 +1975,7 @@ Replace any `"RedisInstanceName"` key with `"KeyPrefix"`. Add example:
 {
   "Caching": {
     "Mode": "Hybrid",
-    "KeyPrefix": "sample-svc:v1",
+    "KeyPrefix": "asm-api-dev",
     "RedisConnectionString": "localhost:6379",
     "StrictRedisCertificateValidation": false,
     "FailOpen": true,
@@ -1992,7 +1994,7 @@ Replace any `WithRedisInstanceName` call with `WithKeyPrefix`. Remove any `servi
 ```csharp
 builder.Services.AddCaching(b => b
     .UseHybrid()
-    .WithKeyPrefix("sample-svc:v1"));
+    .WithKeyPrefix("asm-api-dev"));
 
 // Optional: subscribe to Caching.NET telemetry
 // builder.Services.AddOpenTelemetry()

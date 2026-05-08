@@ -76,6 +76,14 @@ internal static partial class CacheLogMessages
         Message = "Background stale refresh skipped for key {Key}: could not acquire stripe lock within {TimeoutMs}ms.")]
     public static partial void StaleRefreshLockTimeout(this ILogger logger, string key, double timeoutMs);
 
+    [LoggerMessage(EventId = 1113, Level = LogLevel.Warning,
+        Message = "Cache key rejected by KeyValidator; skipping cache for {Operation}.")]
+    public static partial void RoutingKeyRejectedByValidator(this ILogger logger, string operation);
+
+    [LoggerMessage(EventId = 1114, Level = LogLevel.Warning,
+        Message = "KeyTransformer produced an empty key; skipping cache for {Operation}.")]
+    public static partial void RoutingKeyRejectedByTransformer(this ILogger logger, string operation);
+
     // ── Error (1200–1299) ─────────────────────────────────────────────────────
 
     [LoggerMessage(EventId = 1200, Level = LogLevel.Error,

@@ -2,7 +2,7 @@
 # Reads BenchmarkDotNet per-bench *-report-full.json files and emits a single
 # combined.json keyed by FullName → { MeanNs, AllocatedBytes } for perf-gate.ps1.
 param(
-    [string]$ArtifactsDir = "bench/Caching.NET.Bench/BenchmarkDotNet.Artifacts/results"
+    [string]$ArtifactsDir = "benchmark/Caching.NET.Benchmark/BenchmarkDotNet.Artifacts/results"
 )
 $ErrorActionPreference = 'Stop'
 $combined = @{}

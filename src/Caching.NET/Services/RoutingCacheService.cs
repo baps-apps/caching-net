@@ -2,6 +2,7 @@ using Caching.NET.Abstractions;
 using Caching.NET.Internal;
 using Caching.NET.Options;
 using Caching.NET.Telemetry;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -12,7 +13,7 @@ namespace Caching.NET.Services;
 /// and applies <see cref="CacheOptions.KeyPrefix"/> to every key. Stampede coalescing is
 /// implemented via a fixed <see cref="StripedLockManager"/> (no per-key allocation, no leak).
 /// </summary>
-internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
+internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService, IAsyncDisposable, IDisposable
 {
     private const string Mode = "Routing";
     private readonly IOptionsMonitor<CacheOptions> _optionsMonitor;
@@ -25,6 +26,10 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     private readonly RedisCacheService? _redis;
     private readonly HybridCacheService? _hybrid;
     private readonly string _keyPrefix;
+    private readonly CancellationTokenSource _shutdown = new();
+    private readonly ConcurrentDictionary<int, Task> _backgroundRefreshes = new();
+    private int _backgroundRefreshId;
+    private int _disposed;
 
     public RoutingCacheService(
         IOptionsMonitor<CacheOptions> optionsMonitor,
@@ -51,6 +56,40 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     private bool IsDisabled => !_optionsMonitor.CurrentValue.Enabled;
 
     private string PrependPrefix(string key) => _keyPrefix.Length == 0 ? key : _keyPrefix + key;
+
+    private bool TryPreparePrefixedKey(string userKey, string operation, out string prefixed)
+    {
+        var segment = userKey;
+        var opts = _optionsMonitor.CurrentValue;
+        if (opts.KeyTransformer is { } xf)
+        {
+            segment = xf(segment);
+            if (string.IsNullOrWhiteSpace(segment))
+            {
+                _logger.RoutingKeyRejectedByTransformer(operation);
+                prefixed = string.Empty;
+                return false;
+            }
+        }
+
+        if (opts.KeyValidator is { } vf && !vf(segment))
+        {
+            _logger.RoutingKeyRejectedByValidator(operation);
+            prefixed = string.Empty;
+            return false;
+        }
+
+        prefixed = PrependPrefix(segment);
+        var max = opts.MaximumKeyLength;
+        if (max > 0 && prefixed.Length > max)
+        {
+            _logger.RedisKeyTooLong(prefixed.Length, max, operation);
+            prefixed = string.Empty;
+            return false;
+        }
+
+        return true;
+    }
 
     private TimeSpan? ApplyJitter(TimeSpan? expiration, double? perCallPercentage)
     {
@@ -108,7 +147,11 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
             return await factory(cancellationToken).ConfigureAwait(false);
         }
 
-        var prefixed = PrependPrefix(key);
+        if (!TryPreparePrefixedKey(key, "get_or_create", out var prefixed))
+        {
+            CacheInstruments.RecordMiss(Mode, "get_or_create", "KeyRejected");
+            return await factory(cancellationToken).ConfigureAwait(false);
+        }
 
         if ((callOptions?.BypassCache ?? false))
         {
@@ -180,23 +223,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
                     // remains readable during the stale window, and register metadata so future
                     // reads can detect the stale condition without a cache miss.
                     if (allowStaleFor is { } swrTtl && !IsHybridMode())
-                    {
-                        var rawAbsExp = callOptions?.AbsoluteExpiration ?? expiration ?? _optionsMonitor.CurrentValue.DefaultExpiration;
-                        var jitteredAbsExp = ApplyJitter(rawAbsExp, callOptions?.JitterPercentage) ?? rawAbsExp;
-                        var extendedTtl = jitteredAbsExp + swrTtl;
-                        bool factoryRan = false;
-                        T result = await service.GetOrCreateAsync(
-                            prefixed,
-                            async ct =>
-                            {
-                                factoryRan = true;
-                                return await factory(ct).ConfigureAwait(false);
-                            },
-                            extendedTtl, localExpiration, innerCt).ConfigureAwait(false);
-                        if (factoryRan)
-                            _staleTracker.Register(prefixed, jitteredAbsExp, swrTtl);
-                        return result;
-                    }
+                        return await GetOrCreateWithStaleWindowAsync(service, prefixed, factory, callOptions, expiration, localExpiration, swrTtl, innerCt).ConfigureAwait(false);
 
                     var jitteredExp = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
                     return await service.GetOrCreateAsync(prefixed, factory, jitteredExp, localExpiration, innerCt).ConfigureAwait(false);
@@ -232,24 +259,10 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         // No-coalesce path: when AllowStaleFor is configured, use extended TTL + register metadata.
         if (allowStaleFor is { } swrNoLock && !IsHybridMode())
         {
-            var rawAbsExpNoLock = callOptions?.AbsoluteExpiration ?? expiration ?? _optionsMonitor.CurrentValue.DefaultExpiration;
-            var jitteredAbsExpNoLock = ApplyJitter(rawAbsExpNoLock, callOptions?.JitterPercentage) ?? rawAbsExpNoLock;
-            var extendedTtlNoLock = jitteredAbsExpNoLock + swrNoLock;
             var noLockCtSwr = ApplyFactoryTimeout(cancellationToken, out var noLockCtsSwr);
             try
             {
-                bool factoryRanNoLock = false;
-                T resultNoLock = await service.GetOrCreateAsync(
-                    prefixed,
-                    async ct =>
-                    {
-                        factoryRanNoLock = true;
-                        return await factory(ct).ConfigureAwait(false);
-                    },
-                    extendedTtlNoLock, localExpiration, noLockCtSwr).ConfigureAwait(false);
-                if (factoryRanNoLock)
-                    _staleTracker.Register(prefixed, jitteredAbsExpNoLock, swrNoLock);
-                return resultNoLock;
+                return await GetOrCreateWithStaleWindowAsync(service, prefixed, factory, callOptions, expiration, localExpiration, swrNoLock, noLockCtSwr).ConfigureAwait(false);
             }
             finally
             {
@@ -292,16 +305,19 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         if (IsDisabled) return Task.CompletedTask;
         if ((callOptions?.BypassCache ?? false)) return Task.CompletedTask;
+        if (!TryPreparePrefixedKey(key, "set", out var prefixed)) return Task.CompletedTask;
         var service = ResolveService(callOptions?.Mode);
         var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-        return SetWithExpirationAsync(service, PrependPrefix(key), value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, cancellationToken);
+        return SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, cancellationToken);
     }
 
     /// <inheritdoc />
     public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
         if (IsDisabled) return Task.CompletedTask;
-        return ResolveService(modeOverride: null).RemoveAsync(PrependPrefix(key), cancellationToken);
+        if (string.IsNullOrWhiteSpace(key)) return Task.CompletedTask;
+        if (!TryPreparePrefixedKey(key, "remove", out var prefixed)) return Task.CompletedTask;
+        return ResolveService(modeOverride: null).RemoveAsync(prefixed, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -327,7 +343,12 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
             CacheInstruments.RecordMiss(Mode, "get", "Disabled");
             return Task.FromResult<T?>(default);
         }
-        return ResolveService(modeOverride: null).GetAsync<T>(PrependPrefix(key), cancellationToken);
+        if (!TryPreparePrefixedKey(key, "get", out var prefixed))
+        {
+            CacheInstruments.RecordMiss(Mode, "get", "KeyRejected");
+            return Task.FromResult<T?>(default);
+        }
+        return ResolveService(modeOverride: null).GetAsync<T>(prefixed, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -335,7 +356,8 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         if (IsDisabled) return Task.FromResult(false);
-        return ResolveService(modeOverride: null).ExistsAsync(PrependPrefix(key), cancellationToken);
+        if (!TryPreparePrefixedKey(key, "exists", out var prefixed)) return Task.FromResult(false);
+        return ResolveService(modeOverride: null).ExistsAsync(prefixed, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -348,8 +370,9 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         if (IsDisabled) return Task.CompletedTask;
+        if (!TryPreparePrefixedKey(key, "refresh", out var prefixed)) return Task.CompletedTask;
         return ResolveService(modeOverride: null)
-            .RefreshAsync(PrependPrefix(key), factory, expiration, localExpiration, cancellationToken);
+            .RefreshAsync(prefixed, factory, expiration, localExpiration, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -363,15 +386,29 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         var keyList = keys.Where(k => !string.IsNullOrWhiteSpace(k)).ToArray();
         if (keyList.Length == 0) return new Dictionary<string, T?>();
 
-        var prefixed = new string[keyList.Length];
-        for (int i = 0; i < keyList.Length; i++) prefixed[i] = PrependPrefix(keyList[i]);
+        var dict = new Dictionary<string, T?>(keyList.Length);
+        var okKeys = new List<string>(keyList.Length);
+        var okPrefixed = new List<string>(keyList.Length);
+        foreach (var k in keyList)
+        {
+            if (TryPreparePrefixedKey(k, "get_many", out var p))
+            {
+                okKeys.Add(k);
+                okPrefixed.Add(p);
+            }
+            else
+            {
+                dict[k] = default;
+            }
+        }
+
+        if (okPrefixed.Count == 0) return dict;
 
         var inner = await ResolveService(modeOverride: null)
-            .GetManyAsync<T>(prefixed, cancellationToken).ConfigureAwait(false);
+            .GetManyAsync<T>(okPrefixed, cancellationToken).ConfigureAwait(false);
 
-        var dict = new Dictionary<string, T?>(keyList.Length);
-        for (int i = 0; i < keyList.Length; i++)
-            dict[keyList[i]] = inner.TryGetValue(prefixed[i], out var v) ? v : default;
+        for (int i = 0; i < okKeys.Count; i++)
+            dict[okKeys[i]] = inner.TryGetValue(okPrefixed[i], out var v) ? v : default;
         return dict;
     }
 
@@ -386,10 +423,13 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         if (IsDisabled || items.Count == 0) return Task.CompletedTask;
         var jitteredExpiration = ApplyJitter(expiration, null);
         var inner = ResolveService(modeOverride: null);
-        if (_keyPrefix.Length == 0)
-            return inner.SetManyAsync(items, jitteredExpiration, localExpiration, cancellationToken);
         var prefixed = new Dictionary<string, T>(items.Count);
-        foreach (var kvp in items) prefixed[PrependPrefix(kvp.Key)] = kvp.Value;
+        foreach (var kvp in items)
+        {
+            if (!TryPreparePrefixedKey(kvp.Key, "set_many", out var p)) continue;
+            prefixed[p] = kvp.Value;
+        }
+        if (prefixed.Count == 0) return Task.CompletedTask;
         return inner.SetManyAsync(prefixed, jitteredExpiration, localExpiration, cancellationToken);
     }
 
@@ -398,12 +438,45 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
     {
         if (IsDisabled || keys is null) return Task.CompletedTask;
         var prefixed = new List<string>();
-        foreach (var k in keys) if (!string.IsNullOrWhiteSpace(k)) prefixed.Add(PrependPrefix(k));
+        foreach (var k in keys)
+        {
+            if (string.IsNullOrWhiteSpace(k)) continue;
+            if (TryPreparePrefixedKey(k, "remove_many", out var p)) prefixed.Add(p);
+        }
         if (prefixed.Count == 0) return Task.CompletedTask;
         return ResolveService(modeOverride: null).RemoveManyAsync(prefixed, cancellationToken);
     }
 
     private bool IsHybridMode() => _startupOptions.Mode == CacheMode.Hybrid;
+
+    private async Task<T> GetOrCreateWithStaleWindowAsync<T>(
+        ICacheService service,
+        string prefixed,
+        Func<CancellationToken, Task<T>> factory,
+        CacheCallOptions? callOptions,
+        TimeSpan? expiration,
+        TimeSpan? localExpiration,
+        TimeSpan staleWindow,
+        CancellationToken cancellationToken) where T : notnull
+    {
+        var rawAbsExp = callOptions?.AbsoluteExpiration ?? expiration ?? _optionsMonitor.CurrentValue.DefaultExpiration;
+        var jitteredAbsExp = ApplyJitter(rawAbsExp, callOptions?.JitterPercentage) ?? rawAbsExp;
+        var extendedTtl = jitteredAbsExp + staleWindow;
+        bool factoryRan = false;
+        T result = await service.GetOrCreateAsync(
+            prefixed,
+            async ct =>
+            {
+                factoryRan = true;
+                return await factory(ct).ConfigureAwait(false);
+            },
+            extendedTtl,
+            localExpiration,
+            cancellationToken).ConfigureAwait(false);
+        if (factoryRan)
+            _staleTracker.Register(prefixed, jitteredAbsExp, staleWindow);
+        return result;
+    }
 
     private void ScheduleBackgroundRefresh<T>(
         string prefixedKey,
@@ -412,9 +485,14 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         TimeSpan? expiration,
         TimeSpan? localExpiration) where T : notnull
     {
+        if (Volatile.Read(ref _disposed) != 0) return;
         if (!_throttle.TryAcquire()) return;
-        _ = Task.Run(async () =>
+        var shutdownToken = _shutdown.Token;
+
+        var refreshId = Interlocked.Increment(ref _backgroundRefreshId);
+        var refreshTask = Task.Run(async () =>
         {
+            if (Volatile.Read(ref _disposed) != 0) return;
             CacheInstruments.AddStaleRefreshInFlight(Mode, +1);
             var lockStripe = _lockManager.GetLock(prefixedKey);
             // Bound the wait so a stuck stripe-holder cannot pin a throttle slot indefinitely.
@@ -422,21 +500,34 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
             bool lockAcquired = false;
             try
             {
-                lockAcquired = await lockStripe.WaitAsync(lockTimeout).ConfigureAwait(false);
+                lockAcquired = await lockStripe.WaitAsync(lockTimeout, shutdownToken).ConfigureAwait(false);
                 if (!lockAcquired)
                 {
                     _logger.StaleRefreshLockTimeout(prefixedKey, lockTimeout.TotalMilliseconds);
                     CacheInstruments.RecordError(Mode, "stale_refresh", "Timeout");
                     return;
                 }
-                var value = await factory(CancellationToken.None).ConfigureAwait(false);
+                var factoryCt = ApplyFactoryTimeout(shutdownToken, out var cts);
+                T value;
+                try
+                {
+                    value = await factory(factoryCt).ConfigureAwait(false);
+                }
+                finally
+                {
+                    cts?.Dispose();
+                }
                 var inner = ResolveService(callOptions?.Mode);
                 var abs = callOptions?.AbsoluteExpiration ?? expiration ?? _optionsMonitor.CurrentValue.DefaultExpiration;
                 var staleFor = callOptions?.AllowStaleFor ?? TimeSpan.Zero;
                 var ttl = abs + staleFor;
-                await inner.SetAsync(prefixedKey, value, ttl, localExpiration, CancellationToken.None).ConfigureAwait(false);
+                await inner.SetAsync(prefixedKey, value, ttl, localExpiration, shutdownToken).ConfigureAwait(false);
                 if (staleFor > TimeSpan.Zero)
                     _staleTracker.Register(prefixedKey, abs, staleFor);
+            }
+            catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+            {
+                // Swallow expected shutdown cancellation.
             }
             catch (Exception ex)
             {
@@ -448,8 +539,10 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
                 if (lockAcquired) lockStripe.Release();
                 _throttle.Release();
                 CacheInstruments.AddStaleRefreshInFlight(Mode, -1);
+                _backgroundRefreshes.TryRemove(refreshId, out _);
             }
         });
+        _backgroundRefreshes[refreshId] = refreshTask;
     }
 
     private static string ClassifyError(Exception ex) => ex switch
@@ -502,6 +595,32 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService
         cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(t);
         return cts.Token;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
+        _shutdown.Cancel();
+        Task[] inflight = _backgroundRefreshes.Values.ToArray();
+        if (inflight.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAll(inflight).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Individual refresh tasks self-log failures; swallow here to keep disposal safe.
+            }
+        }
+
+        _shutdown.Dispose();
+    }
+
+    public void Dispose()
+    {
+        Task.Run(async () => await DisposeAsync().ConfigureAwait(false)).GetAwaiter().GetResult();
     }
 }
 

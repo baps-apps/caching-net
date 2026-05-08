@@ -2,10 +2,8 @@ using BenchmarkDotNet.Attributes;
 using Caching.NET.Abstractions;
 using Caching.NET.Extensions;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Caching.NET.Bench;
+namespace Caching.NET.Benchmark;
 
 [MemoryDiagnoser]
 public class BatchBenchmarks
@@ -20,7 +18,7 @@ public class BatchBenchmarks
     public void Setup()
     {
         var services = new ServiceCollection();
-        services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
+        services.AddLogging();
         services.AddCaching(b => b.UseInMemory().WithKeyPrefix("bench-batch"));
         _cache = services.BuildServiceProvider().GetRequiredService<ICacheService>();
         _keys = Enumerable.Range(0, N).Select(i => $"k{i}").ToArray();

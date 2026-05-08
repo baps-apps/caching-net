@@ -251,5 +251,24 @@ public class RoutingCacheServiceTests
 
         Assert.Contains(values, v => v.tags.Any(t => t.Key == "cache.miss_reason" && (string?)t.Value == "Disabled"));
     }
+
+    [Fact]
+    public async Task RoutingCacheService_Implements_AsyncDisposable()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "true",
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<ICacheService>();
+
+        Assert.IsAssignableFrom<IAsyncDisposable>(cache);
+    }
 }
 

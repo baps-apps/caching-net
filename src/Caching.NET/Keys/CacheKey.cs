@@ -6,6 +6,7 @@ namespace Caching.NET.Keys;
 /// Canonical key-builder factory. Produces keys of the form
 /// <c>{TypeName}:{id}[:{variant}][:{segment}]…</c>. Does NOT prepend the
 /// configured <c>KeyPrefix</c> — the routing layer adds that.
+/// For DI and testable/tenant-specific key building, use <see cref="ICacheKeyFactory"/> (registered by <c>AddCaching</c>).
 /// </summary>
 public static class CacheKey
 {

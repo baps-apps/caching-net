@@ -32,9 +32,9 @@ public sealed class JsonCacheSerializerTests
     }
 
     [Fact]
-    public void Deserialize_EmptySpan_ReturnsDefault()
+    public void Deserialize_EmptyMemory_ReturnsDefault()
     {
         var sut = new JsonCacheSerializer();
-        Assert.Null(sut.Deserialize<SampleDto?>(ReadOnlySpan<byte>.Empty));
+        Assert.Null(sut.Deserialize<SampleDto?>(ReadOnlyMemory<byte>.Empty));
     }
 }

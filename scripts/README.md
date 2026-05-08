@@ -29,7 +29,7 @@ pwsh scripts/dev.ps1 all                   # full pre-tag gate
 
 ### Perf gate
 
-`bench/perf-gate.ps1` compares `BenchmarkDotNet.Artifacts/results/combined.json` against `bench/Caching.NET.Bench/bench-baseline.json`. Benchmarks with > 10% mean or allocation regression fail the gate.
+`benchmark/perf-gate.ps1` compares `BenchmarkDotNet.Artifacts/results/combined.json` against `benchmark/Caching.NET.Benchmark/bench-baseline.json`. Benchmarks with > 10% mean or allocation regression fail the gate.
 
 ### Pre-tag gate (acceptance criterion §15.2)
 
@@ -39,11 +39,11 @@ pwsh scripts/dev.ps1 all                   # full pre-tag gate
 
 ## Package publishing
 
-The publish script builds, packs, and pushes; if the version already exists, it deletes that version and republishes (requires PAT with `delete:packages`).
+The publish script builds, packs, and pushes; if the version already exists, it deletes that version and republishes. After a successful push it creates a **git tag** (`v{Version}`) and a **GitHub release** (unless the tag/release already exists). Requires PAT scopes for packages plus **`repo`** or **`public_repo`** for releases.
 
 Two scripts are provided:
 
-- `publish-package.ps1`: build, pack, and push a version
+- `publish-package.ps1`: build, pack, push, tag, and GitHub release
 - `delete-package.ps1`: delete a specific version from GitHub Packages
 
 ### GitHub PAT
@@ -51,7 +51,8 @@ Two scripts are provided:
 1. Go to `https://github.com/settings/tokens`
 2. Generate new token (classic)
 3. Scopes: `write:packages`, `read:packages`, and `delete:packages` (needed for overwrite)
-4. Set the token as `GITHUB_PAT` when running scripts
+4. For **GitHub releases**: add **`repo`** (full) or at least **`public_repo`** (public repositories only)
+5. Set the token as `GITHUB_PAT` when running scripts
 
 ### Configuration
 
