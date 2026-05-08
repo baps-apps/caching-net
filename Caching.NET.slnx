@@ -4,6 +4,12 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
+  <Folder Name="/aot/">
+    <Project Path="aot/Caching.NET.AotSmoke/Caching.NET.AotSmoke.csproj" />
+  </Folder>
+  <Folder Name="/benchmark/">
+    <Project Path="benchmark/Caching.NET.Benchmark/Caching.NET.Benchmark.csproj" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/Caching.NET.Sample/Caching.NET.Sample.csproj" />
   </Folder>
@@ -11,6 +17,9 @@
     <Project Path="src/Caching.NET/Caching.NET.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Caching.NET.Tests.Chaos/Caching.NET.Tests.Chaos.csproj" />
+    <Project Path="tests/Caching.NET.Tests.Integration/Caching.NET.Tests.Integration.csproj" />
+    <Project Path="tests/Caching.NET.Tests.Properties/Caching.NET.Tests.Properties.csproj" />
     <Project Path="tests/Caching.NET.Tests/Caching.NET.Tests.csproj" />
   </Folder>
 </Solution>

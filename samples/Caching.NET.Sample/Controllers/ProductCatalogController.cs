@@ -1,5 +1,6 @@
 using Caching.NET.Abstractions;
 using Caching.NET.Extensions;
+using Caching.NET.Keys;
 using Caching.NET.Options;
 using Microsoft.AspNetCore.Mvc;
 
@@ -44,7 +45,7 @@ public class ProductCatalogController : ControllerBase
     /// <summary>
     /// Returns the featured product subset, always served from the in-process memory cache
     /// regardless of the application-level cache mode.
-    /// Demonstrates <see cref="CacheCallOptions.OverrideMode"/> to pin a hot path to <see cref="CacheMode.InMemory"/>.
+    /// Demonstrates <see cref="CacheCallOptions.Mode"/> to pin a hot path to <see cref="CacheMode.InMemory"/>.
     /// </summary>
     /// <param name="cache">Cache service injected per-request via <c>[FromServices]</c>.</param>
     /// <param name="cancellationToken">Request cancellation token.</param>
@@ -55,7 +56,7 @@ public class ProductCatalogController : ControllerBase
     {
         var callOptions = new CacheCallOptions
         {
-            OverrideMode = CacheMode.InMemory
+            Mode = CacheMode.InMemory
         };
 
         return cache.GetOrCreateAsync(
@@ -127,7 +128,7 @@ public class ProductCatalogController : ControllerBase
             callOptions: callOptions,
             expiration: TimeSpan.FromMinutes(10),
             localExpiration: TimeSpan.FromMinutes(5),
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken).ConfigureAwait(false);
 
         return Ok(product);
     }
@@ -153,8 +154,89 @@ public class ProductCatalogController : ControllerBase
             return BadRequest("Category is required.");
         }
 
-        await cache.RemoveByTagAsync(category, cancellationToken);
+        await cache.RemoveByTagAsync(category, cancellationToken).ConfigureAwait(false);
         return NoContent();
+    }
+
+    /// <summary>
+    /// Returns a single product using stale-while-revalidate semantics.
+    /// After the absolute expiration the cached value continues to be served for an additional
+    /// <c>AllowStaleFor</c> window while a single background refresh runs.
+    /// Demonstrates <see cref="CacheKey.For{T}(object)"/> for structured key construction and
+    /// <see cref="CacheCallOptions.AllowStaleFor"/> for SWR-style caching.
+    /// </summary>
+    /// <param name="id">The product identifier (e.g. <c>p-100</c>).</param>
+    /// <param name="cache">Cache service injected per-request via <c>[FromServices]</c>.</param>
+    /// <param name="keyFactory">Cache key factory used to compose typed cache keys.</param>
+    /// <param name="ct">Request cancellation token.</param>
+    /// <returns>The product, or <c>404 Not Found</c> when the identifier does not exist.</returns>
+    [HttpGet("products/{id}/with-swr")]
+    public async Task<IActionResult> GetWithSwr(
+        string id,
+        [FromServices] ICacheService cache,
+        [FromServices] ICacheKeyFactory keyFactory,
+        CancellationToken ct)
+    {
+        var key = keyFactory.For<Product>(id).Build();
+
+        var product = await cache.GetOrCreateAsync(
+            key,
+            _ =>
+            {
+                var found = AllProducts.FirstOrDefault(p => p.Id == id);
+                return Task.FromResult(found ?? throw new KeyNotFoundException($"Product '{id}' not found."));
+            },
+            callOptions: new CacheCallOptions
+            {
+                AbsoluteExpiration = TimeSpan.FromMinutes(2),
+                AllowStaleFor      = TimeSpan.FromSeconds(30),
+                JitterPercentage   = 0.05,
+            },
+            cancellationToken: ct).ConfigureAwait(false);
+
+        return Ok(product);
+    }
+
+    /// <summary>
+    /// Validates round-trip Redis connectivity by writing, reading, and removing a probe value
+    /// using a per-call Redis mode override.
+    /// </summary>
+    /// <param name="cache">Cache service injected per-request via <c>[FromServices]</c>.</param>
+    /// <param name="ct">Request cancellation token.</param>
+    /// <returns>Round-trip validation details when Redis is reachable and writable.</returns>
+    [HttpPost("redis/validate")]
+    public async Task<IActionResult> ValidateRedisRoundTrip(
+        [FromServices] ICacheService cache,
+        CancellationToken ct)
+    {
+        var probe = new RedisValidationProbe(
+            Id: Guid.NewGuid().ToString("N"),
+            CreatedUtc: DateTimeOffset.UtcNow);
+        var key = $"redis:validation:{probe.Id}";
+        var redisOnly = new CacheCallOptions { Mode = CacheMode.Redis };
+
+        await cache.SetAsync(
+            key,
+            probe,
+            callOptions: redisOnly,
+            expiration: TimeSpan.FromMinutes(1),
+            cancellationToken: ct).ConfigureAwait(false);
+
+        var cached = await cache.GetOrCreateAsync(
+            key,
+            _ => Task.FromResult(new RedisValidationProbe("unexpected-factory-hit", DateTimeOffset.MinValue)),
+            callOptions: redisOnly,
+            expiration: TimeSpan.FromMinutes(1),
+            cancellationToken: ct).ConfigureAwait(false);
+
+        await cache.RemoveAsync(key, ct).ConfigureAwait(false);
+        var existsAfterDelete = await cache.ExistsAsync(key, ct).ConfigureAwait(false);
+
+        return Ok(new RedisValidationResult(
+            Key: key,
+            ProbeId: probe.Id,
+            RoundTripMatches: string.Equals(cached.Id, probe.Id, StringComparison.Ordinal),
+            Removed: !existsAfterDelete));
     }
 
     /// <summary>Represents a product in the sample catalog.</summary>
@@ -162,6 +244,11 @@ public class ProductCatalogController : ControllerBase
     /// <param name="Name">Display name of the product.</param>
     /// <param name="Category">Category tag used for Hybrid-mode cache invalidation.</param>
     /// <param name="Price">Retail price in the default currency.</param>
+    [CacheSchema("v2-product-catalog")]
     public record Product(string Id, string Name, string Category, decimal Price);
+
+    private sealed record RedisValidationProbe(string Id, DateTimeOffset CreatedUtc);
+
+    private sealed record RedisValidationResult(string Key, string ProbeId, bool RoundTripMatches, bool Removed);
 }
 

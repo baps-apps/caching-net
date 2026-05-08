@@ -1,6 +1,7 @@
 using Caching.NET.Abstractions;
 using Caching.NET.Extensions;
 using Caching.NET.Options;
+using Caching.NET.Tests.Telemetry;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -14,7 +15,9 @@ public class RoutingCacheServiceTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "true",
-            ["CacheOptions:Mode"] = "Hybrid"
+            ["CacheOptions:Mode"] = "Hybrid",
+            ["CacheOptions:KeyPrefix"] = "test",
+            ["CacheOptions:RedisConnectionString"] = "localhost:6379"
         };
 
         var configuration = new ConfigurationBuilder()
@@ -41,7 +44,9 @@ public class RoutingCacheServiceTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "true",
-            ["CacheOptions:Mode"] = "Hybrid"
+            ["CacheOptions:Mode"] = "Hybrid",
+            ["CacheOptions:KeyPrefix"] = "test",
+            ["CacheOptions:RedisConnectionString"] = "localhost:6379"
         };
 
         var configuration = new ConfigurationBuilder()
@@ -57,7 +62,7 @@ public class RoutingCacheServiceTests
 
         var options = new CacheCallOptions
         {
-            OverrideMode = CacheMode.InMemory
+            Mode = CacheMode.InMemory
         };
 
         var first = await cache.GetOrCreateAsync(
@@ -86,7 +91,8 @@ public class RoutingCacheServiceTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "true",
-            ["CacheOptions:Mode"] = "InMemory"
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
@@ -121,7 +127,8 @@ public class RoutingCacheServiceTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "true",
-            ["CacheOptions:Mode"] = "InMemory"
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
@@ -151,7 +158,8 @@ public class RoutingCacheServiceTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "false",
-            ["CacheOptions:Mode"] = "InMemory"
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
@@ -173,7 +181,8 @@ public class RoutingCacheServiceTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "false",
-            ["CacheOptions:Mode"] = "InMemory"
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
@@ -184,9 +193,82 @@ public class RoutingCacheServiceTests
 
         await cache.SetAsync("disabled:set", "value");
         await cache.RemoveAsync("disabled:rem");
-        await cache.RemoveAsync(new[] { "disabled:rem1", "disabled:rem2" });
+        await cache.RemoveManyAsync(new[] { "disabled:rem1", "disabled:rem2" });
         await cache.RemoveByTagAsync("tag");
         await cache.RemoveByTagAsync(new[] { "tag1", "tag2" });
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_records_Bypass_miss_when_BypassCache_is_set()
+    {
+        var (values, listener) = MeterListenerHelpers.Capture<long>("cache.misses", "Routing");
+        using var _ = listener;
+
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "true",
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<ICacheService>();
+
+        await cache.GetOrCreateAsync(
+            "bypass:miss",
+            _ => Task.FromResult("v"),
+            new CacheCallOptions { BypassCache = true },
+            expiration: null,
+            localExpiration: null,
+            CancellationToken.None);
+
+        Assert.Contains(values, v => v.tags.Any(t => t.Key == "cache.miss_reason" && (string?)t.Value == "Bypass"));
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_records_Disabled_miss_when_Enabled_is_false()
+    {
+        var (values, listener) = MeterListenerHelpers.Capture<long>("cache.misses", "Routing");
+        using var _ = listener;
+
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "false",
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<ICacheService>();
+
+        await cache.GetOrCreateAsync("disabled:miss", _ => Task.FromResult("v"));
+
+        Assert.Contains(values, v => v.tags.Any(t => t.Key == "cache.miss_reason" && (string?)t.Value == "Disabled"));
+    }
+
+    [Fact]
+    public async Task RoutingCacheService_Implements_AsyncDisposable()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "true",
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<ICacheService>();
+
+        Assert.IsAssignableFrom<IAsyncDisposable>(cache);
     }
 }
 

@@ -1,32 +1,49 @@
-# Scripts
+# scripts/
 
-Utility scripts for building and publishing the **Caching.NET** NuGet package to GitHub Packages.
-
-**Cross-platform:** Scripts run on Windows, macOS, and Linux using PowerShell Core (`pwsh`).
+Local-only build, test, bench, and pack tooling, plus GitHub Packages publishing utilities. All scripts run on Windows, macOS, and Linux using PowerShell Core (`pwsh`).
 
 ## Prerequisites
 
-**PowerShell Core (pwsh)** must be installed:
+- PowerShell Core 7.4+ (`pwsh`)
+- .NET 10 SDK (with .NET 8 + 9 targeting packs installed via the SDK's multi-target support)
+- Docker (only for `test:integration`)
 
-- **Windows**: [Microsoft Store](https://aka.ms/powershell) or [GitHub](https://github.com/PowerShell/PowerShell/releases)
-- **macOS**: `brew install --cask powershell`
-- **Linux**: [Installation guide](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-linux)
+## dev.ps1 — local CI gate
 
-Verify:
+`scripts/dev.ps1` is the single entrypoint for every local gate. There is no remote CI service — every check runs on the developer's machine.
 
 ```bash
-pwsh --version
+pwsh scripts/dev.ps1 help
+pwsh scripts/dev.ps1 build
+pwsh scripts/dev.ps1 test                  # unit tests, all TFMs
+pwsh scripts/dev.ps1 test -Tfm net10.0     # single TFM iteration
+pwsh scripts/dev.ps1 test:integration      # requires Docker
+pwsh scripts/dev.ps1 test:chaos            # Polly fault-injection suite
+pwsh scripts/dev.ps1 test:property         # FsCheck property suite
+pwsh scripts/dev.ps1 aot                   # PublishAot smoke
+pwsh scripts/dev.ps1 bench                 # run BenchmarkDotNet; write combined.json
+pwsh scripts/dev.ps1 bench:gate            # compare combined.json vs bench-baseline.json
+pwsh scripts/dev.ps1 pack                  # nupkg + snupkg into ./nupkgs/
+pwsh scripts/dev.ps1 all                   # full pre-tag gate
 ```
+
+### Perf gate
+
+`benchmark/perf-gate.ps1` compares `BenchmarkDotNet.Artifacts/results/combined.json` against `benchmark/Caching.NET.Benchmark/bench-baseline.json`. Benchmarks with > 10% mean or allocation regression fail the gate.
+
+### Pre-tag gate (acceptance criterion §15.2)
+
+`scripts/dev.ps1 all` must be green on at least one Windows host AND at least one Linux/macOS host before tagging `v2.0.0`. Capture the run output and attach to the release notes.
 
 ---
 
 ## Package publishing
 
-Publish the Caching.NET NuGet package to GitHub Packages. The publish script builds, packs, and pushes; if the version already exists, it deletes that version and republishes (requires PAT with `delete:packages`).
+The publish script builds, packs, and pushes; if the version already exists, it deletes that version and republishes. After a successful push it creates a **git tag** (`v{Version}`) and a **GitHub release** (unless the tag/release already exists). Requires PAT scopes for packages plus **`repo`** or **`public_repo`** for releases.
 
 Two scripts are provided:
 
-- `publish-package.ps1`: build, pack, and push a version
+- `publish-package.ps1`: build, pack, push, tag, and GitHub release
 - `delete-package.ps1`: delete a specific version from GitHub Packages
 
 ### GitHub PAT
@@ -34,7 +51,8 @@ Two scripts are provided:
 1. Go to `https://github.com/settings/tokens`
 2. Generate new token (classic)
 3. Scopes: `write:packages`, `read:packages`, and `delete:packages` (needed for overwrite)
-4. Set the token as `GITHUB_PAT` when running scripts
+4. For **GitHub releases**: add **`repo`** (full) or at least **`public_repo`** (public repositories only)
+5. Set the token as `GITHUB_PAT` when running scripts
 
 ### Configuration
 

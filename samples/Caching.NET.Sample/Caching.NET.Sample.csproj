@@ -5,12 +5,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Caching.NET.Sample</AssemblyName>
     <RootNamespace>Caching.NET.Sample</RootNamespace>
+    <RestoreAdditionalProjectSources>$(MSBuildThisFileDirectory)..\..\nupkgs</RestoreAdditionalProjectSources>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Caching.NET" />
     <PackageReference Include="CodeStyle.NET" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Caching.NET\Caching.NET.csproj" />
   </ItemGroup>
 </Project>

@@ -13,7 +13,8 @@ public class BoundaryTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "true",
-            ["CacheOptions:Mode"] = "InMemory"
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
@@ -29,7 +30,12 @@ public class BoundaryTests
     [Fact]
     public async Task GetOrCreateAsync_WhitespaceKey_Throws()
     {
-        var config = new Dictionary<string, string?> { ["CacheOptions:Enabled"] = "false" };
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "false",
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
+        };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
         services.AddLogging();
@@ -42,12 +48,13 @@ public class BoundaryTests
     }
 
     [Fact]
-    public async Task RemoveAsync_NullKeys_DoesNotThrow()
+    public async Task RemoveManyAsync_NullKeys_DoesNotThrow()
     {
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "true",
-            ["CacheOptions:Mode"] = "InMemory"
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
@@ -56,13 +63,18 @@ public class BoundaryTests
         using var provider = services.BuildServiceProvider();
         var cache = provider.GetRequiredService<ICacheService>();
 
-        await cache.RemoveAsync((IEnumerable<string>?)null!);
+        await cache.RemoveManyAsync((IEnumerable<string>?)null!);
     }
 
     [Fact]
     public async Task SetAsync_NullKey_Throws()
     {
-        var config = new Dictionary<string, string?> { ["CacheOptions:Enabled"] = "true", ["CacheOptions:Mode"] = "InMemory" };
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "true",
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
+        };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
         services.AddLogging();

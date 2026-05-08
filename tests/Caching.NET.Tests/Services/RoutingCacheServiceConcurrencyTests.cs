@@ -14,7 +14,8 @@ public class RoutingCacheServiceConcurrencyTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "true",
-            ["CacheOptions:Mode"] = "InMemory"
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
         };
 
         var configuration = new ConfigurationBuilder()
@@ -34,7 +35,7 @@ public class RoutingCacheServiceConcurrencyTests
         async Task<string> Factory(CancellationToken _)
         {
             Interlocked.Increment(ref counter);
-            await Task.Delay(20, _);
+            await Task.Delay(20, _).ConfigureAwait(false);
             return "value";
         }
 
@@ -42,7 +43,7 @@ public class RoutingCacheServiceConcurrencyTests
             .Select(_ => cache.GetOrCreateAsync("coalesce:key", Factory, callOptions, cancellationToken: CancellationToken.None))
             .ToArray();
 
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(tasks.Select(t => t));
 
         Assert.Equal(1, counter);
     }
@@ -53,7 +54,8 @@ public class RoutingCacheServiceConcurrencyTests
         var config = new Dictionary<string, string?>
         {
             ["CacheOptions:Enabled"] = "false",
-            ["CacheOptions:Mode"] = "InMemory"
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
@@ -77,7 +79,7 @@ public class RoutingCacheServiceConcurrencyTests
                 cancellationToken: CancellationToken.None))
             .ToArray();
 
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(tasks.Select(t => t));
 
         Assert.Equal(5, counter);
     }

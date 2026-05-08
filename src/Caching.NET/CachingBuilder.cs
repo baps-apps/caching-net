@@ -1,4 +1,8 @@
 using Caching.NET.Options;
+using Caching.NET.Resilience;
+using Caching.NET.Serialization;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using StackExchange.Redis;
 
 namespace Caching.NET;
@@ -9,6 +13,11 @@ namespace Caching.NET;
 /// </summary>
 public sealed class CachingBuilder
 {
+    private readonly IServiceCollection? _services;
+
+    /// <summary>Construct with service-collection access (used by v2 AddCaching overloads).</summary>
+    internal CachingBuilder(IServiceCollection services) { _services = services; }
+
     internal CacheMode? Mode { get; private set; }
     internal bool? Enabled { get; private set; }
     internal string? RedisConnectionString { get; private set; }
@@ -20,10 +29,19 @@ public sealed class CachingBuilder
     internal int? MaximumKeyLength { get; private set; }
     internal int? MemorySizeLimitMb { get; private set; }
     internal TimeSpan? FactoryTimeout { get; private set; }
-    internal bool StrictCertificateValidation { get; private set; }
+    internal int? StripeLockCount { get; private set; }
+    internal TimeSpan? RedisOperationTimeout { get; private set; }
+    /// <summary>
+    /// Fluent intent for <see cref="Caching.NET.Options.CacheOptions.StrictRedisCertificateValidation"/>.
+    /// <c>null</c> = leave config-bound value; otherwise replaces it when <see cref="ApplyTo"/> runs.
+    /// </summary>
+    internal bool? StrictRedisCertificateValidation { get; private set; }
     internal bool RegisterOpenTelemetry { get; private set; }
     internal bool RegisterHealthChecks { get; private set; }
     internal string HealthCheckName { get; private set; } = "caching-net";
+    internal bool HealthCheckSplit { get; private set; }
+    internal Func<string, bool>? KeyValidator { get; private set; }
+    internal Func<string, string>? KeyTransformer { get; private set; }
 
     /// <summary>Sets cache mode to InMemory.</summary>
     public CachingBuilder UseInMemory()
@@ -108,33 +126,119 @@ public sealed class CachingBuilder
         return this;
     }
 
-    /// <summary>Sets the Redis instance name used for key prefixing.</summary>
-    public CachingBuilder WithInstanceName(string name)
+    /// <summary>
+    /// Sets the mandatory key prefix prepended to every cache key by the routing layer.
+    /// Replaces v1's RedisInstanceName; applies uniformly across InMemory, Redis, and Hybrid backends.
+    /// </summary>
+    public CachingBuilder WithKeyPrefix(string keyPrefix)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        InstanceName = name;
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyPrefix);
+        InstanceName = keyPrefix;
         return this;
     }
 
-    /// <summary>Registers <see cref="Telemetry.OpenTelemetryCacheTelemetry"/> as the telemetry provider.</summary>
+    /// <summary>Override the number of striped lock slots (rounded up to power of 2; default 1024).</summary>
+    public CachingBuilder WithStripedLocks(int stripeCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(stripeCount);
+        StripeLockCount = stripeCount;
+        return this;
+    }
+
+    /// <summary>Override the per-op Redis timeout (default 2s).</summary>
+    public CachingBuilder WithRedisOperationTimeout(TimeSpan timeout)
+    {
+        RedisOperationTimeout = timeout;
+        return this;
+    }
+
+    /// <summary>
+    /// Replaces the registered <see cref="ICacheSerializer"/> with the supplied implementation type
+    /// (must have a parameterless constructor or be resolvable from DI).
+    /// </summary>
+    public CachingBuilder WithSerializer<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(
+        System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicConstructors)] TSerializer>()
+        where TSerializer : class, ICacheSerializer
+    {
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithSerializer<T>() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.RemoveAll<ICacheSerializer>();
+        _services.AddSingleton<ICacheSerializer, TSerializer>();
+        return this;
+    }
+
+    /// <summary>Replaces the registered <see cref="ICacheSerializer"/> with the supplied instance.</summary>
+    public CachingBuilder WithSerializer(ICacheSerializer serializer)
+    {
+        ArgumentNullException.ThrowIfNull(serializer);
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithSerializer(...) requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.RemoveAll<ICacheSerializer>();
+        _services.AddSingleton(serializer);
+        return this;
+    }
+
+    /// <summary>
+    /// Configure Redis resilience (timeout, circuit breaker, retry, optional concurrency limiter).
+    /// Uses library-defined <see cref="CacheResilienceOptions"/> — Polly is not surfaced on the public API.
+    /// </summary>
+    public CachingBuilder WithResilience(Action<CacheResilienceOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithResilience(...) requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.Configure(configure);
+        return this;
+    }
+
+    /// <summary>
+    /// In v2, telemetry is always emitted via the static <see cref="Telemetry.CacheInstruments"/>
+    /// (Meter and ActivitySource named "Caching.NET"). Consumers wire OpenTelemetry directly:
+    /// <c>builder.Services.AddOpenTelemetry().WithMetrics(b =&gt; b.AddMeter(CacheInstruments.MeterName))</c>.
+    /// This method is preserved for v1 source compat and is now a no-op.
+    /// </summary>
     public CachingBuilder WithOpenTelemetry()
     {
         RegisterOpenTelemetry = true;
         return this;
     }
 
-    /// <summary>Registers <see cref="Health.CachingHealthCheck"/> with the health check system.</summary>
-    public CachingBuilder WithHealthChecks(string name = "caching-net")
+    /// <summary>
+    /// Registers cache health checks with the ASP.NET Core health check system.
+    /// By default registers a single <see cref="Health.CachingHealthCheck"/> (readiness: PING + probe).
+    /// When <paramref name="splitLivenessReadiness"/> is true, registers
+    /// <see cref="Health.CachingLivenessHealthCheck"/> (connection-level only) and
+    /// <see cref="Health.CachingHealthCheck"/> as <c>{name}-liveness</c> / <c>{name}-readiness</c> with tags <c>liveness</c> / <c>readiness</c>.
+    /// </summary>
+    public CachingBuilder WithHealthChecks(string name = "caching-net", bool splitLivenessReadiness = false)
     {
         RegisterHealthChecks = true;
         HealthCheckName = name;
+        HealthCheckSplit = splitLivenessReadiness;
         return this;
     }
 
-    /// <summary>Enables strict Redis TLS certificate validation.</summary>
+    /// <summary>Enables strict Redis TLS certificate validation (hostname must match the certificate).</summary>
     public CachingBuilder WithStrictCertificateValidation()
     {
-        StrictCertificateValidation = true;
+        StrictRedisCertificateValidation = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Allows TLS connections when the server certificate does not match the Redis host name
+    /// (e.g. custom DNS to AWS ElastiCache). Other validation errors (untrusted chain, etc.) are still rejected.
+    /// Sets <see cref="Caching.NET.Options.CacheOptions.StrictRedisCertificateValidation"/> to <c>false</c>.
+    /// </summary>
+    public CachingBuilder WithPermissiveRedisTls()
+    {
+        StrictRedisCertificateValidation = false;
         return this;
     }
 
@@ -142,6 +246,126 @@ public sealed class CachingBuilder
     public CachingBuilder Disable()
     {
         Enabled = false;
+        return this;
+    }
+
+    /// <summary>
+    /// Re-enables caching when overriding a config file that set <see cref="CacheOptions.Enabled"/> to false
+    /// (fluent wins over bound configuration via <see cref="Extensions.ServiceCollectionExtensions.AddCaching(Microsoft.Extensions.DependencyInjection.IServiceCollection, Microsoft.Extensions.Configuration.IConfiguration, System.Action{CachingBuilder})"/>).
+    /// </summary>
+    public CachingBuilder Enable()
+    {
+        Enabled = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Development-oriented defaults: raw keys in logs for easier local debugging.
+    /// Requires <c>AddCaching(IServiceCollection, ...)</c>; throws if the builder has no service collection.
+    /// </summary>
+    public CachingBuilder UseDevelopmentDefaults()
+    {
+        if (_services is null)
+            throw new InvalidOperationException(
+                "UseDevelopmentDefaults() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.PostConfigure<CacheOptions>(o => o.IncludeRawKeyInLogs = true);
+        return this;
+    }
+
+    /// <summary>
+    /// Production-oriented defaults: hashed keys in logs and strict Redis TLS certificate validation.
+    /// Requires <c>AddCaching(IServiceCollection, ...)</c>; throws if the builder has no service collection.
+    /// </summary>
+    public CachingBuilder UseProductionDefaults()
+    {
+        if (_services is null)
+            throw new InvalidOperationException(
+                "UseProductionDefaults() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.PostConfigure<CacheOptions>(o =>
+        {
+            o.IncludeRawKeyInLogs = false;
+            o.StrictRedisCertificateValidation = true;
+        });
+        return this;
+    }
+
+    /// <summary>
+    /// Optional user-key validation on the segment before <see cref="CacheOptions.KeyPrefix"/> is applied.
+    /// Return false to skip caching for that key (reads miss / writes no-op). Fluent-only; not bound from JSON.
+    /// </summary>
+    public CachingBuilder WithKeyValidator(Func<string, bool> validateKey)
+    {
+        ArgumentNullException.ThrowIfNull(validateKey);
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithKeyValidator(...) requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        KeyValidator = validateKey;
+        return this;
+    }
+
+    /// <summary>
+    /// Optional normalization of the user key segment before prefixing (e.g. trim, lower-case segments).
+    /// Fluent-only; not bound from JSON.
+    /// </summary>
+    public CachingBuilder WithKeyTransformer(Func<string, string> transformKey)
+    {
+        ArgumentNullException.ThrowIfNull(transformKey);
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithKeyTransformer(...) requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        KeyTransformer = transformKey;
+        return this;
+    }
+
+    /// <summary>Apply ±<paramref name="percentage"/> jitter to all entry TTLs (clamped to 0–0.5).</summary>
+    public CachingBuilder WithTtlJitter(double percentage)
+    {
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithTtlJitter() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.PostConfigure<CacheOptions>(o => o.TtlJitterPercentage = Math.Clamp(percentage, 0.0, 0.5));
+        return this;
+    }
+
+    /// <summary>Cap concurrent in-flight stale-while-revalidate background refreshes.</summary>
+    public CachingBuilder WithStaleRefreshConcurrency(int maxConcurrent)
+    {
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithStaleRefreshConcurrency() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.PostConfigure<CacheOptions>(o => o.StaleRefreshConcurrency = maxConcurrent);
+        return this;
+    }
+
+    /// <summary>
+    /// Mark the application as requiring tag support. Startup validation fails
+    /// when <see cref="CacheOptions.Mode"/> is not <see cref="CacheMode.Hybrid"/>.
+    /// </summary>
+    public CachingBuilder RequireTagSupport()
+    {
+        if (_services is null)
+            throw new InvalidOperationException(
+                "RequireTagSupport() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.PostConfigure<CacheOptions>(o => o.RequireTagSupport = true);
+        return this;
+    }
+
+    /// <summary>Use the bundled MessagePack serializer.</summary>
+    public CachingBuilder WithMessagePackSerializer()
+    {
+        if (_services is null)
+            throw new InvalidOperationException(
+                "WithMessagePackSerializer() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
+                "Use the AddCaching(builder => ...) overload.");
+        _services.RemoveAll<Serialization.ICacheSerializer>();
+        _services.AddSingleton<Serialization.ICacheSerializer, Serialization.MessagePackCacheSerializer>();
         return this;
     }
 
@@ -158,11 +382,11 @@ public sealed class CachingBuilder
         if (RedisConnectionString is not null)
             options.RedisConnectionString = RedisConnectionString;
         if (InstanceName is not null)
-            options.RedisInstanceName = InstanceName;
+            options.KeyPrefix = InstanceName;
         if (DefaultExpiration.HasValue)
-            options.DefaultExpiration = DefaultExpiration.Value.ToString();
+            options.DefaultExpiration = DefaultExpiration.Value;
         if (DefaultLocalExpiration.HasValue)
-            options.DefaultLocalExpiration = DefaultLocalExpiration.Value.ToString();
+            options.HybridLocalCacheExpiration = DefaultLocalExpiration.Value;
         if (MaximumPayloadBytes.HasValue)
             options.MaximumPayloadBytes = MaximumPayloadBytes.Value;
         if (MaximumKeyLength.HasValue)
@@ -170,8 +394,16 @@ public sealed class CachingBuilder
         if (MemorySizeLimitMb.HasValue)
             options.MemorySizeLimitMb = MemorySizeLimitMb.Value;
         if (FactoryTimeout.HasValue)
-            options.FactoryTimeout = FactoryTimeout.Value.ToString();
-        if (StrictCertificateValidation)
-            options.StrictRedisCertificateValidation = true;
+            options.FactoryTimeout = FactoryTimeout.Value;
+        if (StripeLockCount.HasValue)
+            options.StripeLockCount = StripeLockCount.Value;
+        if (RedisOperationTimeout.HasValue)
+            options.RedisOperationTimeout = RedisOperationTimeout.Value;
+        if (StrictRedisCertificateValidation.HasValue)
+            options.StrictRedisCertificateValidation = StrictRedisCertificateValidation.Value;
+        if (KeyValidator is not null)
+            options.KeyValidator = KeyValidator;
+        if (KeyTransformer is not null)
+            options.KeyTransformer = KeyTransformer;
     }
 }

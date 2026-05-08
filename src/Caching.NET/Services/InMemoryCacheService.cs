@@ -1,29 +1,31 @@
+using Caching.NET.Internal;
+using Caching.NET.Options;
+using Caching.NET.Telemetry;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Caching.NET.Options;
 
 namespace Caching.NET.Services;
 
 /// <summary>
 /// <see cref="Abstractions.ICacheService"/> implementation backed by <see cref="IMemoryCache"/>.
-/// Uses a single in-process cache tier; tag methods are no-op because <see cref="IMemoryCache"/> does not support tags.
-/// The <c>localExpiration</c> parameter on methods is accepted to match the shared abstraction but is ignored.
+/// Tag methods are no-ops because <see cref="IMemoryCache"/> does not support tags.
 /// </summary>
-/// <param name="cache">The <see cref="IMemoryCache"/> instance to use for in-process caching.</param>
-/// <param name="options">Bound <see cref="CacheOptions"/> that control expiration defaults.</param>
-/// <param name="telemetry">Telemetry sink for recording cache hits, misses, and errors.</param>
-/// <param name="logger">Logger for recording operational warnings and errors.</param>
-public sealed class InMemoryCacheService(
+internal sealed class InMemoryCacheService(
     IMemoryCache cache,
     IOptions<CacheOptions> options,
-    Abstractions.ICacheTelemetry telemetry,
     ILogger<InMemoryCacheService> logger) : Abstractions.ICacheService
 {
-    private static readonly TimeSpan DefaultExpiration = TimeSpan.FromMinutes(10);
+    private const string Mode = "InMemory";
+    private static readonly TimeSpan FallbackExpiration = TimeSpan.FromMinutes(10);
+    private static readonly PostEvictionDelegate s_evictionCallback = OnEvicted;
+    private static readonly PostEvictionCallbackRegistration s_evictionRegistration = new() { EvictionCallback = s_evictionCallback };
+
+    private static void OnEvicted(object key, object? value, EvictionReason reason, object? state) =>
+        CacheInstruments.RecordEviction(Mode, reason.ToString());
 
     /// <inheritdoc />
-    public async Task<T> GetOrCreateAsync<T>(
+    public Task<T> GetOrCreateAsync<T>(
         string key,
         Func<CancellationToken, Task<T>> factory,
         TimeSpan? expiration = null,
@@ -31,18 +33,30 @@ public sealed class InMemoryCacheService(
         CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        _ = localExpiration;
 
         if (cache.TryGetValue(key, out T? cached))
         {
-            telemetry.OnCacheHit(key, "InMemory");
-            return cached!;
+            CacheInstruments.RecordHit(Mode, "get_or_create");
+            return Task.FromResult(cached!);
         }
 
+        return GetOrCreateSlowAsync(key, factory, expiration, cancellationToken);
+    }
+
+    private async Task<T> GetOrCreateSlowAsync<T>(
+        string key,
+        Func<CancellationToken, Task<T>> factory,
+        TimeSpan? expiration,
+        CancellationToken cancellationToken) where T : notnull
+    {
+        CacheInstruments.RecordMiss(Mode, "get_or_create", "NotFound");
         T value = await factory(cancellationToken).ConfigureAwait(false);
-        var expirationSpan = expiration ?? options.Value.GetDefaultExpiration() ?? DefaultExpiration;
-        cache.Set(key, value, new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan });
-        telemetry.OnCacheMiss(key, "InMemory");
-        telemetry.OnCacheSet(key, "InMemory");
+        var expirationSpan = expiration ?? options.Value.GetDefaultExpiration() ?? FallbackExpiration;
+        var entryOpts = new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan };
+        entryOpts.PostEvictionCallbacks.Add(s_evictionRegistration);
+        cache.Set(key, value, entryOpts);
+        CacheInstruments.RecordSet(Mode);
         return value;
     }
 
@@ -50,47 +64,146 @@ public sealed class InMemoryCacheService(
     public Task SetAsync<T>(string key, T value, TimeSpan? expiration = null, TimeSpan? localExpiration = null, CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
-        var expirationSpan = expiration ?? options.Value.GetDefaultExpiration() ?? DefaultExpiration;
-        cache.Set(key, value, new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan });
-        telemetry.OnCacheSet(key, "InMemory");
+        _ = cancellationToken;
+        _ = localExpiration;
+        var expirationSpan = expiration ?? options.Value.GetDefaultExpiration() ?? FallbackExpiration;
+        var entryOpts = new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan };
+        entryOpts.PostEvictionCallbacks.Add(s_evictionRegistration);
+        cache.Set(key, value, entryOpts);
+        CacheInstruments.RecordSet(Mode);
+        return Task.CompletedTask;
+    }
+
+    internal Task SetAsync<T>(string key, T value, MemoryCacheEntryOptions entry, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        _ = cancellationToken;
+        entry.PostEvictionCallbacks.Add(s_evictionRegistration);
+        cache.Set(key, value, entry);
+        CacheInstruments.RecordSet(Mode);
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
     public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
+        _ = cancellationToken;
         if (string.IsNullOrWhiteSpace(key)) return Task.CompletedTask;
         cache.Remove(key);
-        telemetry.OnCacheRemove(key, "InMemory");
+        CacheInstruments.RecordRemove(Mode);
         return Task.CompletedTask;
-    }
-
-    /// <inheritdoc />
-    public async Task RemoveAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
-    {
-        if (keys == null) return;
-        foreach (var key in keys)
-            await RemoveAsync(key, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
-        logger.LogDebug(Caching.NET.Internal.CacheLogEvents.TagNotSupported, "RemoveByTagAsync is not supported in InMemory mode; no-op for tag {Tag}. Use Hybrid mode for tag support.", tag);
-        telemetry.OnCacheRemoveByTag(tag, "InMemory");
+        _ = cancellationToken;
+        logger.TagNotSupported(tag);
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
     public Task RemoveByTagAsync(IEnumerable<string> tags, CancellationToken cancellationToken = default)
     {
-        logger.LogDebug(Caching.NET.Internal.CacheLogEvents.TagNotSupported, "RemoveByTagAsync is not supported in InMemory mode; no-op. Use Hybrid mode for tag support.");
-        foreach (var tag in tags)
+        _ = cancellationToken;
+        logger.TagNotSupported("(multiple tags)");
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        _ = cancellationToken;
+        if (cache.TryGetValue(key, out T? cached))
         {
-            if (!string.IsNullOrWhiteSpace(tag))
+            CacheInstruments.RecordHit(Mode, "get");
+            return Task.FromResult<T?>(cached);
+        }
+        CacheInstruments.RecordMiss(Mode, "get", "NotFound");
+        return Task.FromResult<T?>(default);
+    }
+
+    /// <inheritdoc />
+    public Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        _ = cancellationToken;
+        var present = cache.TryGetValue(key, out _);
+        if (present) CacheInstruments.RecordHit(Mode, "exists");
+        else CacheInstruments.RecordMiss(Mode, "exists", "NotFound");
+        return Task.FromResult(present);
+    }
+
+    /// <inheritdoc />
+    public async Task RefreshAsync<T>(
+        string key,
+        Func<CancellationToken, Task<T>> factory,
+        TimeSpan? expiration = null,
+        TimeSpan? localExpiration = null,
+        CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        var value = await factory(cancellationToken).ConfigureAwait(false);
+        await SetAsync(key, value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyDictionary<string, T?>> GetManyAsync<T>(
+        IEnumerable<string> keys, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        _ = cancellationToken;
+        var dict = new Dictionary<string, T?>();
+        foreach (var k in keys)
+        {
+            if (string.IsNullOrWhiteSpace(k)) continue;
+            if (cache.TryGetValue(k, out T? cached))
             {
-                telemetry.OnCacheRemoveByTag(tag, "InMemory");
+                CacheInstruments.RecordHit(Mode, "get");
+                dict[k] = cached;
             }
+            else
+            {
+                CacheInstruments.RecordMiss(Mode, "get", "NotFound");
+                dict[k] = default;
+            }
+        }
+        return Task.FromResult<IReadOnlyDictionary<string, T?>>(dict);
+    }
+
+    /// <inheritdoc />
+    public Task SetManyAsync<T>(
+        IReadOnlyDictionary<string, T> items,
+        TimeSpan? expiration = null,
+        TimeSpan? localExpiration = null,
+        CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        _ = localExpiration;
+        _ = cancellationToken;
+        var expirationSpan = expiration ?? options.Value.GetDefaultExpiration() ?? FallbackExpiration;
+        foreach (var kvp in items)
+        {
+            if (string.IsNullOrWhiteSpace(kvp.Key)) continue;
+            var entryOpts = new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan };
+            entryOpts.PostEvictionCallbacks.Add(s_evictionRegistration);
+            cache.Set(kvp.Key, kvp.Value, entryOpts);
+            CacheInstruments.RecordSet(Mode);
+        }
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public Task RemoveManyAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
+    {
+        if (keys is null) return Task.CompletedTask;
+        _ = cancellationToken;
+        foreach (var k in keys)
+        {
+            if (string.IsNullOrWhiteSpace(k)) continue;
+            cache.Remove(k);
+            CacheInstruments.RecordRemove(Mode);
         }
         return Task.CompletedTask;
     }

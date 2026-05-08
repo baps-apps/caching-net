@@ -6,6 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Caching.NET is a shared .NET caching NuGet package exposing a single `ICacheService` abstraction with three modes: **InMemory**, **Redis**, and **Hybrid** (in-memory + optional Redis with stampede protection). Consumers reference the NuGet package, not a project reference.
 
+## Repository Layout
+
+- `src/Caching.NET` — main library (NuGet package)
+- `samples/Caching.NET.Sample` — ASP.NET sample app demonstrating DI registration, controllers, telemetry wiring
+- `tests/`:
+  - `Caching.NET.Tests` — unit tests
+  - `Caching.NET.Tests.Properties` — property-based tests (FsCheck-style)
+  - `Caching.NET.Tests.Integration` — **requires Docker** (Testcontainers spins up Redis)
+  - `Caching.NET.Tests.Chaos` — **requires Docker** (Testcontainers; resilience/fault-injection)
+
 ## Build & Test Commands
 
 ```bash
@@ -18,7 +28,7 @@ dotnet pack src/Caching.NET/Caching.NET.csproj -c Release -o nupkgs  # create Nu
 
 ## Key Build Settings
 
-- **Target framework:** .NET 10 (`net10.0`), SDK version pinned in `global.json`
+- **Target frameworks:** `net8.0`, `net9.0`, and `net10.0` (multi-target NuGet package); SDK version pinned in `global.json`
 - **TreatWarningsAsErrors** is enabled globally via `Directory.Build.props` — all warnings must be resolved
 - **Central package management** via `Directory.Packages.props` — add/update package versions there, not in individual `.csproj` files
 - **CodeStyle.NET** analyzer is enabled on both src and test projects
@@ -29,21 +39,24 @@ dotnet pack src/Caching.NET/Caching.NET.csproj -c Release -o nupkgs  # create Nu
 ### DI Registration & Builder API
 
 `ServiceCollectionExtensions` provides four `AddCaching` overloads:
-- `AddCaching()` — zero-config: Hybrid (in-memory only, no Redis), enabled, 10-minute default expiration
+
+- `AddCaching()` — **InMemory** mode + enabled defaults (10-minute expiration). Startup validation still requires a non-empty `KeyPrefix` when `Enabled=true` (`KeyPrefix` must not contain `':'`; routing reserves it as the delimiter after the prefix), so production apps normally use `AddCaching(IConfiguration)` or `AddCaching(s => … WithKeyPrefix(...))`.
 - `AddCaching(IConfiguration)` — reads `CacheOptions` from config section
 - `AddCaching(Action<CachingBuilder>)` — fluent code-first configuration
 - `AddCaching(IConfiguration, Action<CachingBuilder>)` — config base + fluent overrides (fluent wins on conflict)
 
 All overloads delegate to a shared `AddCachingCore` that:
-1. Binds config (if provided), then applies fluent overrides via `PostConfigure`
-2. Registers cache infrastructure based on the resolved `Mode`
-3. **Always** registers `RoutingCacheService` as the `ICacheService` singleton
 
-There is no `NoOpCacheService`. When `Enabled=false`, `RoutingCacheService` short-circuits: `GetOrCreateAsync` runs the factory directly, all other operations return `Task.CompletedTask`.
+1. Binds config (if provided), then applies fluent overrides via `PostConfigure`
+2. When `Enabled=true`, registers cache infrastructure based on the resolved `Mode` (memory cache, Redis/Hybrid services, serializer, Polly registry, TLS validator as applicable)
+3. **Always** registers `RoutingCacheService` as the `ICacheService` singleton
+4. **Always** registers `ICacheKeyFactory` via `TryAddSingleton` (`DefaultCacheKeyFactory` mirrors `CacheKey.For`); register a custom `ICacheKeyFactory` **before** `AddCaching` to replace the default
+
+There is no `NoOpCacheService`. When `Enabled=false`, **no backends are registered** (no `IMemoryCache`, Redis multiplexer, hybrid stack, serializer, or Polly registry), `IValidateOptions<CacheOptions>` skips validation, and `RoutingCacheService` still short-circuits: `GetOrCreateAsync` runs the factory directly, all other operations return completed tasks / defaults. Health checks registered via `WithHealthChecks()` still run and report healthy when caching is disabled.
 
 ### Hot-Reloadable Enabled Flag
 
-`RoutingCacheService` reads `Enabled` from `IOptionsMonitor<CacheOptions>.CurrentValue` on every call. Flipping `Enabled` in appsettings takes effect immediately without restart. Mode and connection strings are startup-only (read from `IOptions<CacheOptions>` at construction time).
+`RoutingCacheService` reads `Enabled` from `IOptionsMonitor<CacheOptions>.CurrentValue` on every call. Flipping `Enabled` to **false** takes effect immediately (calls short-circuit to the factory or no-op). Flipping to **true** only uses real backends if they were registered at startup: if the process started with `Enabled=false`, **no** memory/Redis/hybrid services were registered—restart after enabling so `AddCaching` wires backends. If the host started with `Enabled=true`, toggling `Enabled` off and on at runtime continues to use the existing backends. Mode and connection strings remain startup-only (read from `IOptions<CacheOptions>` at construction time).
 
 ### Service Resolution Flow
 
@@ -51,7 +64,18 @@ There is no `NoOpCacheService`. When `Enabled=false`, `RoutingCacheService` shor
 
 ### CachingBuilder
 
-Fluent API for configuring cache mode (`UseInMemory()`, `UseRedis(conn)`, `UseHybrid()`), expiration, payload limits, telemetry (`WithOpenTelemetry()`), health checks (`WithHealthChecks()`), and explicit disable (`Disable()`). Each method returns the builder for chaining.
+Fluent API. Method groups (see source for full list — adding a knob? extend the matching group):
+
+- **Mode:** `UseInMemory()`, `UseRedis(conn|Action<ConfigurationOptions>)`, `UseHybrid(...)`
+- **Toggle / presets:** `Enable()`, `Disable()`, `UseDevelopmentDefaults()`, `UseProductionDefaults()`
+- **Expiration & payload caps:** `WithDefaultExpiration`, `WithDefaultLocalExpiration`, `WithMaximumPayloadBytes`, `WithMaximumKeyLength`, `WithMemorySizeLimit`, `WithFactoryTimeout`
+- **Stampede / jitter / coalescing:** `WithStripedLocks`, `WithTtlJitter`, `WithStaleRefreshConcurrency`
+- **Keys:** `WithKeyPrefix`, `WithKeyValidator`, `WithKeyTransformer`
+- **Serialization:** `WithSerializer<T>()`, `WithSerializer(ICacheSerializer)`, `WithMessagePackSerializer()`
+- **Resilience / Redis:** `WithResilience(Action<CacheResilienceOptions>)`, `WithRedisOperationTimeout`, `WithStrictCertificateValidation`, `WithPermissiveRedisTls`
+- **Tags / observability:** `RequireTagSupport()`, `WithOpenTelemetry()`, `WithHealthChecks(name, splitLivenessReadiness)`
+
+Use via `AddCaching(Action<CachingBuilder>)`; each method returns `this` for chaining.
 
 ### Extension Methods for Per-Call Options
 
@@ -60,6 +84,7 @@ Fluent API for configuring cache mode (`UseInMemory()`, `UseRedis(conn)`, `UseHy
 ### API Stability Contract
 
 `ICacheService` is the stable public interface. New capabilities are added via:
+
 1. Extension methods (`CacheServiceCallExtensions`)
 2. Per-call options (`CacheCallOptions`)
 3. Configuration (`CacheOptions`)
@@ -69,7 +94,7 @@ Avoid adding new members to `ICacheService` directly.
 
 ### Telemetry
 
-`ICacheTelemetry` abstraction with `NoopCacheTelemetry` (default) and `OpenTelemetryCacheTelemetry` (opt-in via `WithOpenTelemetry()`). Meter/ActivitySource name: `Caching.NET.Cache`.
+Static `CacheInstruments` (`Meter` / `ActivitySource`) — subscribe with `AddMeter(CacheInstruments.MeterName)` / `AddSource(CacheInstruments.ActivitySourceName)`; both names are **`Caching.NET`**. `WithOpenTelemetry()` remains an API-compatibility hook for apps that already call it.
 
 ## Publishing
 

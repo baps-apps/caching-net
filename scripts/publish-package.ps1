@@ -7,7 +7,8 @@
 #
 # Features:
 # - Automatically deletes and republishes if package version already exists
-# - Requires GitHub PAT with 'write:packages' and 'delete:packages' permissions
+# - Creates a git tag and GitHub release after successful publish
+# - Requires GitHub PAT with 'write:packages', 'delete:packages', and 'public_repo' (or 'repo') permissions
 
 param(
     [string]$Version = "",
@@ -72,8 +73,8 @@ if ([string]::IsNullOrEmpty($GitHubPAT)) {
     Write-Host "Usage: pwsh scripts/publish-package.ps1 [VERSION] [GITHUB_PAT]"
     Write-Host "Or set GITHUB_PAT environment variable"
     Write-Host ""
-    Write-Host "Note: Your PAT needs both 'write:packages' and 'delete:packages' permissions"
-    Write-Host "      to automatically overwrite existing package versions."
+    Write-Host "Note: Your PAT needs 'write:packages' and 'delete:packages' to publish/overwrite packages,"
+    Write-Host "      and 'repo' or 'public_repo' to create GitHub releases."
     exit 1
 }
 
@@ -261,6 +262,122 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "Package published successfully!" -ForegroundColor Green
 Write-Host ""
-Write-Host "View your package at: https://github.com/$Namespace/$RepoName/packages"
+
+# Step 6: Create git tag and GitHub release
+Write-Host "Step 6: Creating git tag and GitHub release..." -ForegroundColor Yellow
+$tagName = "v$actualVersion"
+
+function Get-ChangelogSection {
+    param(
+        [string]$Version,
+        [string]$ChangelogPath
+    )
+    if (-not (Test-Path $ChangelogPath)) {
+        return $null
+    }
+
+    # Escape regex metacharacters in version
+    $escapedVersion = [Regex]::Escape($Version)
+    # Match a top-level "## ..." heading containing the version (with or without v-prefix, optional [link]).
+    # Stops at the next top-level "## " heading or EOF.
+    $content = Get-Content $ChangelogPath -Raw
+    $pattern = '(?ms)^##\s+\[?v?' + $escapedVersion + '\]?[^\r\n]*\r?\n(.*?)(?=^##\s|\z)'
+    $match = [Regex]::Match($content, $pattern)
+    if (-not $match.Success) {
+        return $null
+    }
+
+    $section = $match.Groups[1].Value.Trim()
+    if ([string]::IsNullOrWhiteSpace($section)) {
+        return $null
+    }
+    return $section
+}
+
+# Delete existing tag (local + remote) if present, then create and push fresh
+$tagExists = git tag -l $tagName 2>&1
+if (-not [string]::IsNullOrWhiteSpace($tagExists)) {
+    Write-Host "  Tag $tagName already exists, deleting to recreate..." -ForegroundColor Yellow
+    git tag -d $tagName | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  Local tag $tagName deleted" -ForegroundColor Green
+    } else {
+        Write-Host "  Warning: Could not delete local tag $tagName" -ForegroundColor Yellow
+    }
+    git push origin ":refs/tags/$tagName" 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  Remote tag $tagName deleted" -ForegroundColor Green
+    } else {
+        Write-Host "  Warning: Could not delete remote tag $tagName (may not exist on origin)" -ForegroundColor Yellow
+    }
+}
+
+git tag $tagName
+if ($LASTEXITCODE -eq 0) {
+    git push origin $tagName
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  Git tag $tagName pushed to origin" -ForegroundColor Green
+    } else {
+        Write-Host "  Warning: Could not push tag $tagName to origin" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  Warning: Could not create git tag $tagName" -ForegroundColor Yellow
+}
+
+# Create GitHub release (requires 'repo' or 'public_repo' scope on the PAT)
+try {
+    $headers = @{
+        "Authorization"        = "Bearer $GitHubPAT"
+        "Accept"               = "application/vnd.github+json"
+        "X-GitHub-Api-Version" = "2022-11-28"
+    }
+
+    # Delete existing release if present, then recreate
+    $existingReleaseUrl = "https://api.github.com/repos/$Namespace/$RepoName/releases/tags/$tagName"
+    try {
+        $existingRelease = Invoke-RestMethod -Uri $existingReleaseUrl -Method Get -Headers $headers -ErrorAction Stop
+        Write-Host "  GitHub release for $tagName already exists, deleting to recreate..." -ForegroundColor Yellow
+        $deleteUrl = "https://api.github.com/repos/$Namespace/$RepoName/releases/$($existingRelease.id)"
+        try {
+            Invoke-RestMethod -Uri $deleteUrl -Method Delete -Headers $headers -ErrorAction Stop | Out-Null
+            Write-Host "  Existing release deleted" -ForegroundColor Green
+        } catch {
+            Write-Host "  Warning: Could not delete existing release: $_" -ForegroundColor Yellow
+        }
+    } catch {
+        # Release does not exist; nothing to delete
+    }
+
+    $changelogPath = Join-Path $RepoRoot "CHANGELOG.md"
+    $changelogBody = Get-ChangelogSection -Version $actualVersion -ChangelogPath $changelogPath
+    if ($changelogBody) {
+        Write-Host "  Using CHANGELOG.md section for $actualVersion as release body" -ForegroundColor Green
+        $releaseBody = $changelogBody
+    } else {
+        Write-Host "  No CHANGELOG.md section found for $actualVersion, publishing release with empty body" -ForegroundColor Yellow
+        $releaseBody = ""
+    }
+
+    $releasePayload = @{
+        tag_name                 = $tagName
+        name                     = $tagName
+        body                     = $releaseBody
+        draft                    = $false
+        prerelease               = $false
+        generate_release_notes   = $false
+    } | ConvertTo-Json
+
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Namespace/$RepoName/releases" `
+        -Method Post -Headers $headers -Body $releasePayload -ContentType "application/json" -ErrorAction Stop
+    Write-Host "  GitHub release created: $($release.html_url)" -ForegroundColor Green
+} catch {
+    Write-Host "  Warning: Could not create GitHub release: $_" -ForegroundColor Yellow
+    Write-Host "  Note: PAT needs 'repo' or 'public_repo' scope to create releases" -ForegroundColor Yellow
+    Write-Host "  Create manually: https://github.com/$Namespace/$RepoName/releases/new?tag=$tagName" -ForegroundColor Yellow
+}
+
+Write-Host ""
+Write-Host "View your package at:  https://github.com/$Namespace/$RepoName/packages"
+Write-Host "View your release at:  https://github.com/$Namespace/$RepoName/releases/tag/$tagName"
 Write-Host ""
 
