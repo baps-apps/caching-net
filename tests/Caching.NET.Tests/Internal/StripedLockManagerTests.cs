@@ -47,18 +47,20 @@ public sealed class StripedLockManagerTests
         async Task RunAsync()
         {
             var sem = sut.GetLock("hot-key");
-            await sem.WaitAsync().ConfigureAwait(false);
+            await sem.WaitAsync();
             try
             {
                 var current = Interlocked.Increment(ref holding);
                 int prevMax;
-                do { prevMax = maxObserved; if (current <= prevMax)
+                do
+                {
+                    prevMax = maxObserved; if (current <= prevMax)
                     {
                         break;
                     }
                 }
                 while (Interlocked.CompareExchange(ref maxObserved, current, prevMax) != prevMax);
-                await Task.Delay(10).ConfigureAwait(false);
+                await Task.Delay(10);
                 Interlocked.Decrement(ref holding);
             }
             finally { sem.Release(); }

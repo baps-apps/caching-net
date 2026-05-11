@@ -77,7 +77,7 @@ internal sealed class RedisConnectionRotator : IHostedService, IAsyncDisposable
         try
         {
             // Give in-flight operations a brief chance to finish before tearing down old connection.
-            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -88,7 +88,7 @@ internal sealed class RedisConnectionRotator : IHostedService, IAsyncDisposable
         {
             if (obj is IAsyncDisposable ad)
             {
-                await ad.DisposeAsync().ConfigureAwait(false);
+                await ad.DisposeAsync();
             }
             else if (obj is IDisposable d)
             {

@@ -51,7 +51,7 @@ internal sealed class InMemoryCacheService(
         CancellationToken cancellationToken) where T : notnull
     {
         CacheInstruments.RecordMiss(Mode, "get_or_create", "NotFound");
-        T value = await factory(cancellationToken).ConfigureAwait(false);
+        T value = await factory(cancellationToken);
         var expirationSpan = expiration ?? options.Value.GetDefaultExpiration() ?? FallbackExpiration;
         var entryOpts = new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan };
         entryOpts.PostEvictionCallbacks.Add(s_evictionRegistration);
@@ -144,8 +144,8 @@ internal sealed class InMemoryCacheService(
         CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
-        var value = await factory(cancellationToken).ConfigureAwait(false);
-        await SetAsync(key, value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+        var value = await factory(cancellationToken);
+        await SetAsync(key, value, expiration, localExpiration, cancellationToken);
     }
 
     /// <inheritdoc />

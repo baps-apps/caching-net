@@ -972,7 +972,7 @@ In `src/Caching.NET/Services/RedisCacheService.cs`, inject an optional `IConnect
         var keyList = keys.Where(k => !string.IsNullOrWhiteSpace(k)).ToArray();
         if (keyList.Length == 0) return new Dictionary<string, T?>();
 
-        if (_multiplexer is null) return await FanOutGetManyAsync<T>(keyList, cancellationToken).ConfigureAwait(false);
+        if (_multiplexer is null) return await FanOutGetManyAsync<T>(keyList, cancellationToken);
 
         try
         {
@@ -981,8 +981,8 @@ In `src/Caching.NET/Services/RedisCacheService.cs`, inject an optional `IConnect
             for (int i = 0; i < keyList.Length; i++) redisKeys[i] = keyList[i];
 
             StackExchange.Redis.RedisValue[] values = await _readPipeline.ExecuteAsync(
-                async _ => await _multiplexer.GetDatabase().StringGetAsync(redisKeys).ConfigureAwait(false),
-                cts.Token).ConfigureAwait(false);
+                async _ => await _multiplexer.GetDatabase().StringGetAsync(redisKeys),
+                cts.Token);
 
             var dict = new Dictionary<string, T?>(keyList.Length);
             var expectedFormat = ResolveFormatId(_serializer.FormatId);
@@ -1000,7 +1000,7 @@ In `src/Caching.NET/Services/RedisCacheService.cs`, inject an optional `IConnect
         {
             if (_options.Value.ThrowOnFailure && !_options.Value.FailOpen) throw;
             _logger.RedisGetFailed(FormatKey("(many)"), ex);
-            return await FanOutGetManyAsync<T>(keyList, cancellationToken).ConfigureAwait(false);
+            return await FanOutGetManyAsync<T>(keyList, cancellationToken);
         }
     }
 
@@ -1008,7 +1008,7 @@ In `src/Caching.NET/Services/RedisCacheService.cs`, inject an optional `IConnect
     {
         var tasks = new Task<T?>[keys.Length];
         for (int i = 0; i < keys.Length; i++) tasks[i] = GetAsync<T>(keys[i], ct);
-        var values = await Task.WhenAll(tasks).ConfigureAwait(false);
+        var values = await Task.WhenAll(tasks);
         var dict = new Dictionary<string, T?>(keys.Length);
         for (int i = 0; i < keys.Length; i++) dict[keys[i]] = values[i];
         return dict;

@@ -14,7 +14,9 @@ public class RedisConnectionRotatorTests
         var built = 0;
         var monitor = new TestMonitor(new CacheOptions
         {
-            KeyPrefix = "rotate", Mode = CacheMode.Redis, RedisConnectionString = "host-a:6379"
+            KeyPrefix = "rotate",
+            Mode = CacheMode.Redis,
+            RedisConnectionString = "host-a:6379"
         });
 
         Func<string, object> factory = _ => { built++; return new object(); };
@@ -26,7 +28,9 @@ public class RedisConnectionRotatorTests
 
         monitor.Trigger(new CacheOptions
         {
-            KeyPrefix = "rotate", Mode = CacheMode.Redis, RedisConnectionString = "host-b:6379"
+            KeyPrefix = "rotate",
+            Mode = CacheMode.Redis,
+            RedisConnectionString = "host-b:6379"
         });
 
         Assert.Equal(2, built);
@@ -40,7 +44,9 @@ public class RedisConnectionRotatorTests
         var built = 0;
         var monitor = new TestMonitor(new CacheOptions
         {
-            Mode = CacheMode.Redis, RedisConnectionString = "host-a:6379", KeyPrefix = "x"
+            Mode = CacheMode.Redis,
+            RedisConnectionString = "host-a:6379",
+            KeyPrefix = "x"
         });
         Func<string, object> factory = _ => { built++; return new object(); };
         var rotator = new RedisConnectionRotator(monitor, factory, NullLogger<RedisConnectionRotator>.Instance);
@@ -117,7 +123,7 @@ public class RedisConnectionRotatorTests
 
         public async ValueTask DisposeAsync()
         {
-            await Task.Delay(10).ConfigureAwait(false);
+            await Task.Delay(10);
             Disposed = true;
         }
     }

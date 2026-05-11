@@ -18,7 +18,9 @@ public class RedisBatchTests
 
         var items = new Dictionary<string, string>
         {
-            ["a"] = "1", ["b"] = "2", ["c"] = "3",
+            ["a"] = "1",
+            ["b"] = "2",
+            ["c"] = "3",
         };
         await cache.SetManyAsync(items);
         var got = await cache.GetManyAsync<string>(new[] { "a", "b", "c", "missing" });

@@ -47,7 +47,7 @@ internal sealed class HybridCacheService(
         {
             logger.HybridCacheDisabled(FormatKey(key));
             CacheInstruments.RecordMiss(Mode, "get_or_create", "Disabled");
-            return await factory(cancellationToken).ConfigureAwait(false);
+            return await factory(cancellationToken);
         }
 
         try
@@ -57,9 +57,9 @@ internal sealed class HybridCacheService(
             async ValueTask<T> wrapper(CancellationToken ct)
             {
                 factoryRan = true;
-                return await factory(ct).ConfigureAwait(false);
+                return await factory(ct);
             }
-            var value = await cache.GetOrCreateAsync(key, wrapper, entryOptions, tags: null, cancellationToken).ConfigureAwait(false);
+            var value = await cache.GetOrCreateAsync(key, wrapper, entryOptions, tags: null, cancellationToken);
             if (factoryRan)
                 CacheInstruments.RecordMiss(Mode, "get_or_create", "NotFound");
             else
@@ -70,7 +70,7 @@ internal sealed class HybridCacheService(
         {
             logger.HybridGetFailed(FormatKey(key), ex);
             CacheInstruments.RecordError(Mode, "get_or_create", ClassifyError(ex));
-            return await factory(cancellationToken).ConfigureAwait(false);
+            return await factory(cancellationToken);
         }
     }
 
@@ -89,7 +89,7 @@ internal sealed class HybridCacheService(
         try
         {
             var entryOptions = BuildEntryOptions(expiration, localExpiration);
-            await cache.SetAsync(key, value, entryOptions, tags: null, cancellationToken).ConfigureAwait(false);
+            await cache.SetAsync(key, value, entryOptions, tags: null, cancellationToken);
             CacheInstruments.RecordSet(Mode);
         }
         catch (Exception ex)
@@ -106,7 +106,7 @@ internal sealed class HybridCacheService(
         if (!options.Value.Enabled || cache == null) return;
         try
         {
-            await cache.RemoveAsync(key, cancellationToken).ConfigureAwait(false);
+            await cache.RemoveAsync(key, cancellationToken);
             CacheInstruments.RecordRemove(Mode);
         }
         catch (Exception ex)
@@ -123,7 +123,7 @@ internal sealed class HybridCacheService(
         if (!options.Value.Enabled || cache == null) return;
         try
         {
-            await cache.RemoveByTagAsync(tag, cancellationToken).ConfigureAwait(false);
+            await cache.RemoveByTagAsync(tag, cancellationToken);
             CacheInstruments.RecordRemove(Mode, "remove_by_tag");
         }
         catch (Exception ex)
@@ -138,7 +138,7 @@ internal sealed class HybridCacheService(
     {
         if (tags == null) return;
         foreach (var tag in tags)
-            await RemoveByTagAsync(tag, cancellationToken).ConfigureAwait(false);
+            await RemoveByTagAsync(tag, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -159,7 +159,7 @@ internal sealed class HybridCacheService(
                     static _ => ValueTask.FromResult<HybridValueBox<T>?>(null),
                     options: null,
                     tags: null,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken);
                 if (boxed is null)
                 {
                     CacheInstruments.RecordMiss(Mode, "get", "NotFound");
@@ -175,7 +175,7 @@ internal sealed class HybridCacheService(
                 static _ => ValueTask.FromResult(default(T)!),
                 options: null,
                 tags: null,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken);
             if (value is null)
             {
                 CacheInstruments.RecordMiss(Mode, "get", "NotFound");
@@ -202,7 +202,7 @@ internal sealed class HybridCacheService(
         {
             try
             {
-                var raw = await distributedCache.GetAsync(key, cancellationToken).ConfigureAwait(false);
+                var raw = await distributedCache.GetAsync(key, cancellationToken);
                 if (raw is not null) return true;
             }
             catch (Exception ex)
@@ -211,7 +211,7 @@ internal sealed class HybridCacheService(
             }
         }
 
-        var v = await GetAsync<object>(key, cancellationToken).ConfigureAwait(false);
+        var v = await GetAsync<object>(key, cancellationToken);
         return v != null;
     }
 
@@ -228,8 +228,8 @@ internal sealed class HybridCacheService(
         try
         {
             var entry = BuildEntryOptions(expiration, localExpiration);
-            T value = await factory(cancellationToken).ConfigureAwait(false);
-            await cache.SetAsync(key, value, entry, tags: null, cancellationToken).ConfigureAwait(false);
+            T value = await factory(cancellationToken);
+            await cache.SetAsync(key, value, entry, tags: null, cancellationToken);
             CacheInstruments.RecordSet(Mode);
         }
         catch (Exception ex)
@@ -248,7 +248,7 @@ internal sealed class HybridCacheService(
         foreach (var k in keys)
         {
             if (string.IsNullOrWhiteSpace(k)) continue;
-            dict[k] = await GetAsync<T>(k, cancellationToken).ConfigureAwait(false);
+            dict[k] = await GetAsync<T>(k, cancellationToken);
         }
         return dict;
     }
@@ -262,7 +262,7 @@ internal sealed class HybridCacheService(
     {
         ArgumentNullException.ThrowIfNull(items);
         foreach (var kvp in items)
-            await SetAsync(kvp.Key, kvp.Value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+            await SetAsync(kvp.Key, kvp.Value, expiration, localExpiration, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -271,7 +271,7 @@ internal sealed class HybridCacheService(
         if (keys is null) return;
         foreach (var k in keys)
             if (!string.IsNullOrWhiteSpace(k))
-                await RemoveAsync(k, cancellationToken).ConfigureAwait(false);
+                await RemoveAsync(k, cancellationToken);
     }
 
     private string FormatKey(string key)

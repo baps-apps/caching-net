@@ -35,7 +35,7 @@ public class RoutingCacheServiceConcurrencyTests
         async Task<string> Factory(CancellationToken _)
         {
             Interlocked.Increment(ref counter);
-            await Task.Delay(20, _).ConfigureAwait(false);
+            await Task.Delay(20, _);
             return "value";
         }
 

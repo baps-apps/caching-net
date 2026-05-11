@@ -138,15 +138,15 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         if (ExceedsKeyLimit(key, nameof(GetOrCreateAsync)))
         {
             CacheInstruments.RecordMiss(Mode, "get_or_create");
-            return await factory(cancellationToken).ConfigureAwait(false);
+            return await factory(cancellationToken);
         }
 
         try
         {
             using var cts = CreateOpCts(cancellationToken);
             byte[]? bytes = await _readPipeline.ExecuteAsync(
-                async ct => await _cache.GetAsync(key, ct).ConfigureAwait(false),
-                cts.Token).ConfigureAwait(false);
+                async ct => await _cache.GetAsync(key, ct),
+                cts.Token);
             if (bytes is { Length: > 0 })
             {
                 var expectedFormat = ResolveFormatId(_serializer.FormatId);
@@ -200,14 +200,14 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                 throw;
             _logger.RedisGetFailed(FormatKey(key), ex);
             CacheInstruments.RecordError(Mode, "get_or_create", ClassifyError(ex));
-            return await factory(cancellationToken).ConfigureAwait(false);
+            return await factory(cancellationToken);
         }
 
-        T result = await factory(cancellationToken).ConfigureAwait(false);
+        T result = await factory(cancellationToken);
         CacheInstruments.RecordMiss(Mode, "get_or_create");
         try
         {
-            await SetAsync(key, result, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+            await SetAsync(key, result, expiration, localExpiration, cancellationToken);
         }
         catch (Exception ex) when (_options.Value.FailOpen)
         {
@@ -274,8 +274,8 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                 SlidingExpiration = sliding,
             };
             await _writePipeline.ExecuteAsync(
-                async ct => await _cache.SetAsync(key, wire, entryOptions, ct).ConfigureAwait(false),
-                cts.Token).ConfigureAwait(false);
+                async ct => await _cache.SetAsync(key, wire, entryOptions, ct),
+                cts.Token);
             CacheInstruments.RecordSet(Mode);
             CacheInstruments.RecordPayloadBytes(Mode, "set", payload.Length);
         }
@@ -295,8 +295,8 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         {
             using var cts = CreateOpCts(cancellationToken);
             await _deletePipeline.ExecuteAsync(
-                async ct => await _cache.RemoveAsync(key, ct).ConfigureAwait(false),
-                cts.Token).ConfigureAwait(false);
+                async ct => await _cache.RemoveAsync(key, ct),
+                cts.Token);
             CacheInstruments.RecordRemove(Mode);
         }
         catch (Exception ex)
@@ -336,8 +336,8 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         {
             using var cts = CreateOpCts(cancellationToken);
             byte[]? bytes = await _readPipeline.ExecuteAsync(
-                async ct => await _cache.GetAsync(key, ct).ConfigureAwait(false),
-                cts.Token).ConfigureAwait(false);
+                async ct => await _cache.GetAsync(key, ct),
+                cts.Token);
             if (bytes is null or { Length: 0 })
             {
                 CacheInstruments.RecordMiss(Mode, "get", "NotFound");
@@ -390,8 +390,8 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         {
             using var cts = CreateOpCts(cancellationToken);
             var bytes = await _readPipeline.ExecuteAsync(
-                async ct => await _cache.GetAsync(key, ct).ConfigureAwait(false),
-                cts.Token).ConfigureAwait(false);
+                async ct => await _cache.GetAsync(key, ct),
+                cts.Token);
             var present = bytes is { Length: > 0 };
             if (present) CacheInstruments.RecordHit(Mode, "exists");
             else CacheInstruments.RecordMiss(Mode, "exists", "NotFound");
@@ -415,8 +415,8 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
-        var value = await factory(cancellationToken).ConfigureAwait(false);
-        await SetAsync(key, value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+        var value = await factory(cancellationToken);
+        await SetAsync(key, value, expiration, localExpiration, cancellationToken);
     }
 
     // Field name used by Microsoft.Extensions.Caching.StackExchangeRedis to store payload bytes.
@@ -444,7 +444,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                 for (int i = 0; i < keyList.Length; i++)
                     hashTasks[i] = batch.HashGetAsync(keyList[i], _dataField);
                 batch.Execute();
-                RedisValue[] rawValues = await Task.WhenAll(hashTasks).ConfigureAwait(false);
+                RedisValue[] rawValues = await Task.WhenAll(hashTasks);
 
                 var dict = new Dictionary<string, T?>(keyList.Length);
                 var expectedFormat = ResolveFormatId(_serializer.FormatId);
@@ -490,14 +490,14 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
             }
         }
 
-        return await FanOutGetManyAsync<T>(keyList, cancellationToken).ConfigureAwait(false);
+        return await FanOutGetManyAsync<T>(keyList, cancellationToken);
     }
 
     private async Task<Dictionary<string, T?>> FanOutGetManyAsync<T>(string[] keys, CancellationToken ct) where T : notnull
     {
         var tasks = new Task<T?>[keys.Length];
         for (int i = 0; i < keys.Length; i++) tasks[i] = GetAsync<T>(keys[i], ct);
-        var values = await Task.WhenAll(tasks).ConfigureAwait(false);
+        var values = await Task.WhenAll(tasks);
         var dict = new Dictionary<string, T?>(keys.Length);
         for (int i = 0; i < keys.Length; i++) dict[keys[i]] = values[i];
         return dict;
@@ -514,7 +514,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         var tasks = new List<Task>(items.Count);
         foreach (var kvp in items)
             tasks.Add(SetAsync(kvp.Key, kvp.Value, expiration, localExpiration, cancellationToken));
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        await Task.WhenAll(tasks);
     }
 
     /// <inheritdoc />
@@ -530,7 +530,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var redisKeys = Array.ConvertAll(keyList, k => (RedisKey)k);
-                var deleted = await _multiplexer.GetDatabase().KeyDeleteAsync(redisKeys).ConfigureAwait(false);
+                var deleted = await _multiplexer.GetDatabase().KeyDeleteAsync(redisKeys);
                 for (long i = 0; i < deleted; i++)
                     CacheInstruments.RecordRemove(Mode);
                 return;
@@ -548,7 +548,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         var tasks = new List<Task>(keyList.Length);
         foreach (var k in keyList)
             tasks.Add(RemoveAsync(k, cancellationToken));
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        await Task.WhenAll(tasks);
     }
 
     private bool ExceedsKeyLimit(string key, string operation)

@@ -27,8 +27,8 @@ public sealed class CacheResiliencePipelineBuilderTests
         await Assert.ThrowsAsync<TimeoutRejectedException>(async () =>
             await pipeline.ExecuteAsync(static async ct =>
             {
-                await Task.Delay(500, ct).ConfigureAwait(false);
-            }).ConfigureAwait(false));
+                await Task.Delay(500, ct);
+            }));
     }
 
     [Fact]
@@ -50,6 +50,6 @@ public sealed class CacheResiliencePipelineBuilderTests
         }
 
         await Assert.ThrowsAsync<BrokenCircuitException>(async () =>
-            await pipeline.ExecuteAsync(static _ => ValueTask.CompletedTask).ConfigureAwait(false));
+            await pipeline.ExecuteAsync(static _ => ValueTask.CompletedTask));
     }
 }

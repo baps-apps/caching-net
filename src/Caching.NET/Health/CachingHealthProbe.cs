@@ -89,10 +89,10 @@ internal static class CachingHealthProbe
         {
             if (options.Value.Mode is CacheMode.Redis or CacheMode.Hybrid && multiplexer is not null)
             {
-                _ = await multiplexer.GetDatabase().PingAsync().ConfigureAwait(false);
+                _ = await multiplexer.GetDatabase().PingAsync();
             }
 
-            var probeExists = await cacheService.ExistsAsync(ProbeKey, cancellationToken).ConfigureAwait(false);
+            var probeExists = await cacheService.ExistsAsync(ProbeKey, cancellationToken);
             if (!probeExists)
             {
                 await cacheService.GetOrCreateAsync(
@@ -100,7 +100,7 @@ internal static class CachingHealthProbe
                     static _ => Task.FromResult(true),
                     expiration: TimeSpan.FromMinutes(5),
                     localExpiration: null,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken);
             }
 
             return HealthCheckResult.Healthy("Caching.NET is reachable and operational.");

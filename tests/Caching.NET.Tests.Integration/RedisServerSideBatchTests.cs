@@ -29,7 +29,9 @@ public class RedisServerSideBatchTests
 
         await cache.SetManyAsync(new Dictionary<string, string>
         {
-            ["a"] = "alpha", ["b"] = "beta", ["c"] = "gamma",
+            ["a"] = "alpha",
+            ["b"] = "beta",
+            ["c"] = "gamma",
         });
         var got = await cache.GetManyAsync<string>(new[] { "a", "b", "c", "missing" });
 

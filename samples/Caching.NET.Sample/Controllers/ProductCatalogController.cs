@@ -128,7 +128,7 @@ public class ProductCatalogController : ControllerBase
             callOptions: callOptions,
             expiration: TimeSpan.FromMinutes(10),
             localExpiration: TimeSpan.FromMinutes(5),
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+            cancellationToken: cancellationToken);
 
         return Ok(product);
     }
@@ -154,7 +154,7 @@ public class ProductCatalogController : ControllerBase
             return BadRequest("Category is required.");
         }
 
-        await cache.RemoveByTagAsync(category, cancellationToken).ConfigureAwait(false);
+        await cache.RemoveByTagAsync(category, cancellationToken);
         return NoContent();
     }
 
@@ -189,10 +189,10 @@ public class ProductCatalogController : ControllerBase
             callOptions: new CacheCallOptions
             {
                 AbsoluteExpiration = TimeSpan.FromMinutes(2),
-                AllowStaleFor      = TimeSpan.FromSeconds(30),
-                JitterPercentage   = 0.05,
+                AllowStaleFor = TimeSpan.FromSeconds(30),
+                JitterPercentage = 0.05,
             },
-            cancellationToken: ct).ConfigureAwait(false);
+            cancellationToken: ct);
 
         return Ok(product);
     }
@@ -220,17 +220,17 @@ public class ProductCatalogController : ControllerBase
             probe,
             callOptions: redisOnly,
             expiration: TimeSpan.FromMinutes(1),
-            cancellationToken: ct).ConfigureAwait(false);
+            cancellationToken: ct);
 
         var cached = await cache.GetOrCreateAsync(
             key,
             _ => Task.FromResult(new RedisValidationProbe("unexpected-factory-hit", DateTimeOffset.MinValue)),
             callOptions: redisOnly,
             expiration: TimeSpan.FromMinutes(1),
-            cancellationToken: ct).ConfigureAwait(false);
+            cancellationToken: ct);
 
-        await cache.RemoveAsync(key, ct).ConfigureAwait(false);
-        var existsAfterDelete = await cache.ExistsAsync(key, ct).ConfigureAwait(false);
+        await cache.RemoveAsync(key, ct);
+        var existsAfterDelete = await cache.ExistsAsync(key, ct);
 
         return Ok(new RedisValidationResult(
             Key: key,

@@ -763,8 +763,8 @@ In `src/Caching.NET/Services/RedisCacheService.cs`, change `SetAsync<T>` (around
             using var cts = CreateOpCts(cancellationToken);
             var entryOptions = new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan };
             await _writePipeline.ExecuteAsync(
-                async ct => await _cache.SetAsync(key, wire, entryOptions, ct).ConfigureAwait(false),
-                cts.Token).ConfigureAwait(false);
+                async ct => await _cache.SetAsync(key, wire, entryOptions, ct),
+                cts.Token);
             CacheInstruments.RecordSet(Mode);
             CacheInstruments.RecordPayloadBytes(Mode, "set", payload.Length);
         }
@@ -1113,13 +1113,13 @@ Edit `src/Caching.NET/Services/RoutingCacheService.cs`. In the `GetOrCreateAsync
         if (!_optionsMonitor.CurrentValue.Enabled)
         {
             CacheInstruments.RecordMiss(_resolvedMode.ToString(), "get_or_create", "Disabled");
-            return await factory(cancellationToken).ConfigureAwait(false);
+            return await factory(cancellationToken);
         }
 
         if (callOptions?.BypassCache == true)
         {
             CacheInstruments.RecordMiss(_resolvedMode.ToString(), "get_or_create", "Bypass");
-            return await factory(cancellationToken).ConfigureAwait(false);
+            return await factory(cancellationToken);
         }
 ```
 

@@ -363,8 +363,8 @@ Append to `src/Caching.NET/Services/InMemoryCacheService.cs`:
         CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
-        var value = await factory(cancellationToken).ConfigureAwait(false);
-        await SetAsync(key, value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+        var value = await factory(cancellationToken);
+        await SetAsync(key, value, expiration, localExpiration, cancellationToken);
     }
 ```
 
@@ -386,8 +386,8 @@ Append to `src/Caching.NET/Services/RedisCacheService.cs`:
         {
             using var cts = CreateOpCts(cancellationToken);
             byte[]? bytes = await _readPipeline.ExecuteAsync(
-                async ct => await _cache.GetAsync(key, ct).ConfigureAwait(false),
-                cts.Token).ConfigureAwait(false);
+                async ct => await _cache.GetAsync(key, ct),
+                cts.Token);
             if (bytes is null or { Length: 0 })
             {
                 CacheInstruments.RecordMiss(Mode, "get", "NotFound");
@@ -429,8 +429,8 @@ Append to `src/Caching.NET/Services/RedisCacheService.cs`:
         {
             using var cts = CreateOpCts(cancellationToken);
             var bytes = await _readPipeline.ExecuteAsync(
-                async ct => await _cache.GetAsync(key, ct).ConfigureAwait(false),
-                cts.Token).ConfigureAwait(false);
+                async ct => await _cache.GetAsync(key, ct),
+                cts.Token);
             var present = bytes is { Length: > 0 };
             if (present) CacheInstruments.RecordHit(Mode, "exists");
             else CacheInstruments.RecordMiss(Mode, "exists", "NotFound");
@@ -454,8 +454,8 @@ Append to `src/Caching.NET/Services/RedisCacheService.cs`:
         CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
-        var value = await factory(cancellationToken).ConfigureAwait(false);
-        await SetAsync(key, value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+        var value = await factory(cancellationToken);
+        await SetAsync(key, value, expiration, localExpiration, cancellationToken);
     }
 ```
 
@@ -482,7 +482,7 @@ Append to `src/Caching.NET/Services/HybridCacheService.cs`:
                 static _ => ValueTask.FromResult(default(T)!),
                 options: null,
                 tags: null,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken);
             if (value is null)
             {
                 CacheInstruments.RecordMiss(Mode, "get", "NotFound");
@@ -502,7 +502,7 @@ Append to `src/Caching.NET/Services/HybridCacheService.cs`:
     /// <inheritdoc />
     public async Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
     {
-        var v = await GetAsync<object>(key, cancellationToken).ConfigureAwait(false);
+        var v = await GetAsync<object>(key, cancellationToken);
         return v != null;
     }
 
@@ -519,8 +519,8 @@ Append to `src/Caching.NET/Services/HybridCacheService.cs`:
         try
         {
             var entry = BuildEntryOptions(expiration, localExpiration);
-            T value = await factory(cancellationToken).ConfigureAwait(false);
-            await cache.SetAsync(key, value, entry, tags: null, cancellationToken).ConfigureAwait(false);
+            T value = await factory(cancellationToken);
+            await cache.SetAsync(key, value, entry, tags: null, cancellationToken);
             CacheInstruments.RecordSet(Mode);
         }
         catch (Exception ex)
@@ -741,7 +741,7 @@ Append:
         foreach (var k in keys)
         {
             if (string.IsNullOrWhiteSpace(k)) continue;
-            dict[k] = await GetAsync<T>(k, cancellationToken).ConfigureAwait(false);
+            dict[k] = await GetAsync<T>(k, cancellationToken);
         }
         return dict;
     }
@@ -756,7 +756,7 @@ Append:
         ArgumentNullException.ThrowIfNull(items);
         foreach (var kvp in items)
         {
-            await SetAsync(kvp.Key, kvp.Value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+            await SetAsync(kvp.Key, kvp.Value, expiration, localExpiration, cancellationToken);
         }
     }
 
@@ -767,7 +767,7 @@ Append:
         foreach (var k in keys)
         {
             if (!string.IsNullOrWhiteSpace(k))
-                await RemoveAsync(k, cancellationToken).ConfigureAwait(false);
+                await RemoveAsync(k, cancellationToken);
         }
     }
 ```
@@ -790,7 +790,7 @@ Append:
         var tasks = new Task<T?>[keyList.Length];
         for (int i = 0; i < keyList.Length; i++)
             tasks[i] = GetAsync<T>(keyList[i], cancellationToken);
-        var values = await Task.WhenAll(tasks).ConfigureAwait(false);
+        var values = await Task.WhenAll(tasks);
 
         var dict = new Dictionary<string, T?>(keyList.Length);
         for (int i = 0; i < keyList.Length; i++) dict[keyList[i]] = values[i];
@@ -808,7 +808,7 @@ Append:
         var tasks = new List<Task>(items.Count);
         foreach (var kvp in items)
             tasks.Add(SetAsync(kvp.Key, kvp.Value, expiration, localExpiration, cancellationToken));
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        await Task.WhenAll(tasks);
     }
 
     /// <inheritdoc />
@@ -819,7 +819,7 @@ Append:
         foreach (var k in keys)
             if (!string.IsNullOrWhiteSpace(k))
                 tasks.Add(RemoveAsync(k, cancellationToken));
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        await Task.WhenAll(tasks);
     }
 ```
 
@@ -839,7 +839,7 @@ Append:
         foreach (var k in keys)
         {
             if (string.IsNullOrWhiteSpace(k)) continue;
-            dict[k] = await GetAsync<T>(k, cancellationToken).ConfigureAwait(false);
+            dict[k] = await GetAsync<T>(k, cancellationToken);
         }
         return dict;
     }
@@ -853,7 +853,7 @@ Append:
     {
         ArgumentNullException.ThrowIfNull(items);
         foreach (var kvp in items)
-            await SetAsync(kvp.Key, kvp.Value, expiration, localExpiration, cancellationToken).ConfigureAwait(false);
+            await SetAsync(kvp.Key, kvp.Value, expiration, localExpiration, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -862,7 +862,7 @@ Append:
         if (keys is null) return;
         foreach (var k in keys)
             if (!string.IsNullOrWhiteSpace(k))
-                await RemoveAsync(k, cancellationToken).ConfigureAwait(false);
+                await RemoveAsync(k, cancellationToken);
     }
 ```
 
@@ -888,7 +888,7 @@ Append:
         for (int i = 0; i < keyList.Length; i++) prefixed[i] = PrependPrefix(keyList[i]);
 
         var inner = await ResolveService(modeOverride: null)
-            .GetManyAsync<T>(prefixed, cancellationToken).ConfigureAwait(false);
+            .GetManyAsync<T>(prefixed, cancellationToken);
 
         var dict = new Dictionary<string, T?>(keyList.Length);
         for (int i = 0; i < keyList.Length; i++)
@@ -1157,8 +1157,8 @@ The `RedisCacheService.SetAsync` overload that takes `(key, value, expiration, s
                 SlidingExpiration = sliding,
             };
             await _writePipeline.ExecuteAsync(
-                async ct => await _cache.SetAsync(key, wire, entryOptions, ct).ConfigureAwait(false),
-                cts.Token).ConfigureAwait(false);
+                async ct => await _cache.SetAsync(key, wire, entryOptions, ct),
+                cts.Token);
             CacheInstruments.RecordSet(Mode);
             CacheInstruments.RecordPayloadBytes(Mode, "set", payload.Length);
         }
@@ -1741,7 +1741,7 @@ Inject `StaleEntryTracker` and `StaleRefreshThrottle` into the constructor (add 
             {
                 // Inside stale window: return cached value, schedule refresh
                 var stale = await ResolveService(callOptions?.Mode)
-                    .GetAsync<T>(prefixed, cancellationToken).ConfigureAwait(false);
+                    .GetAsync<T>(prefixed, cancellationToken);
                 if (stale is not null)
                 {
                     CacheInstruments.RecordStaleServed(Mode, "get_or_create");
@@ -1772,15 +1772,15 @@ Where `ScheduleBackgroundRefresh` is:
         _ = Task.Run(async () =>
         {
             var stripe = _lockManager.GetLock(prefixedKey);
-            await stripe.WaitAsync().ConfigureAwait(false);
+            await stripe.WaitAsync();
             try
             {
-                var value = await factory(CancellationToken.None).ConfigureAwait(false);
+                var value = await factory(CancellationToken.None);
                 var inner = ResolveService(callOptions?.Mode);
                 var abs = callOptions?.AbsoluteExpiration ?? expiration ?? _optionsMonitor.CurrentValue.DefaultExpiration;
                 var staleFor = callOptions?.AllowStaleFor ?? TimeSpan.Zero;
                 var ttl = abs + staleFor;
-                await inner.SetAsync(prefixedKey, value, ttl, localExpiration, CancellationToken.None).ConfigureAwait(false);
+                await inner.SetAsync(prefixedKey, value, ttl, localExpiration, CancellationToken.None);
                 _staleTracker.Register(prefixedKey, abs, staleFor);
             }
             catch
@@ -1804,7 +1804,7 @@ For SwR-aware writes, modify the `SetAsync(callOptions)` and the inside-lock Get
         {
             var abs = callOptions.AbsoluteExpiration ?? expiration ?? _optionsMonitor.CurrentValue.DefaultExpiration;
             var ttl = abs + swrSet;
-            await service.SetAsync(prefixed, value, ttl, localExpiration, cancellationToken).ConfigureAwait(false);
+            await service.SetAsync(prefixed, value, ttl, localExpiration, cancellationToken);
             _staleTracker.Register(prefixed, abs, swrSet);
             CacheInstruments.RecordSet(Mode);
             return;

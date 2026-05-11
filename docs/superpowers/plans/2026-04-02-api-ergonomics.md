@@ -649,7 +649,7 @@ At the top of `GetOrCreateAsync(... CacheCallOptions? callOptions ...)`, add:
 ```csharp
         if (IsDisabled)
         {
-            return await factory(cancellationToken).ConfigureAwait(false);
+            return await factory(cancellationToken);
         }
 ```
 
@@ -786,7 +786,7 @@ In `src/Caching.NET/Services/RoutingCacheService.cs`, update the disabled check 
         if (IsDisabled)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
-            return await factory(cancellationToken).ConfigureAwait(false);
+            return await factory(cancellationToken);
         }
 ```
 

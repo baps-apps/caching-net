@@ -144,13 +144,13 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         if (IsDisabled)
         {
             CacheInstruments.RecordMiss(Mode, "get_or_create", "Disabled");
-            return await factory(cancellationToken).ConfigureAwait(false);
+            return await factory(cancellationToken);
         }
 
         if (!TryPreparePrefixedKey(key, "get_or_create", out var prefixed))
         {
             CacheInstruments.RecordMiss(Mode, "get_or_create", "KeyRejected");
-            return await factory(cancellationToken).ConfigureAwait(false);
+            return await factory(cancellationToken);
         }
 
         if ((callOptions?.BypassCache ?? false))
@@ -159,7 +159,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
             var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
             try
             {
-                return await factory(ct).ConfigureAwait(false);
+                return await factory(ct);
             }
             finally
             {
@@ -178,7 +178,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
             var nowTicks = DateTime.UtcNow.Ticks;
             if (nowTicks > staleMeta.AbsExpiresAtUtcTicks && nowTicks <= staleMeta.StaleUntilUtcTicks)
             {
-                var stale = await service.GetAsync<T>(prefixed, cancellationToken).ConfigureAwait(false);
+                var stale = await service.GetAsync<T>(prefixed, cancellationToken);
                 if (stale is not null)
                 {
                     CacheInstruments.RecordStaleServed(Mode, "get_or_create");
@@ -196,7 +196,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         if ((callOptions?.CoalesceConcurrent ?? true))
         {
             var semaphore = _lockManager.GetLock(prefixed);
-            await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await semaphore.WaitAsync(cancellationToken);
             try
             {
                 if ((callOptions?.ForceRefresh ?? false))
@@ -204,9 +204,9 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
                     var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
                     try
                     {
-                        T value = await factory(ct).ConfigureAwait(false);
+                        T value = await factory(ct);
                         var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-                        await SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, ct).ConfigureAwait(false);
+                        await SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, ct);
                         CacheInstruments.RecordSet(Mode);
                         return value;
                     }
@@ -223,10 +223,10 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
                     // remains readable during the stale window, and register metadata so future
                     // reads can detect the stale condition without a cache miss.
                     if (allowStaleFor is { } swrTtl && !IsHybridMode())
-                        return await GetOrCreateWithStaleWindowAsync(service, prefixed, factory, callOptions, expiration, localExpiration, swrTtl, innerCt).ConfigureAwait(false);
+                        return await GetOrCreateWithStaleWindowAsync(service, prefixed, factory, callOptions, expiration, localExpiration, swrTtl, innerCt);
 
                     var jitteredExp = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-                    return await service.GetOrCreateAsync(prefixed, factory, jitteredExp, localExpiration, innerCt).ConfigureAwait(false);
+                    return await service.GetOrCreateAsync(prefixed, factory, jitteredExp, localExpiration, innerCt);
                 }
                 finally
                 {
@@ -244,9 +244,9 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
             var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
             try
             {
-                T value = await factory(ct).ConfigureAwait(false);
+                T value = await factory(ct);
                 var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-                await SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, ct).ConfigureAwait(false);
+                await SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, ct);
                 CacheInstruments.RecordSet(Mode);
                 return value;
             }
@@ -262,7 +262,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
             var noLockCtSwr = ApplyFactoryTimeout(cancellationToken, out var noLockCtsSwr);
             try
             {
-                return await GetOrCreateWithStaleWindowAsync(service, prefixed, factory, callOptions, expiration, localExpiration, swrNoLock, noLockCtSwr).ConfigureAwait(false);
+                return await GetOrCreateWithStaleWindowAsync(service, prefixed, factory, callOptions, expiration, localExpiration, swrNoLock, noLockCtSwr);
             }
             finally
             {
@@ -274,7 +274,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         try
         {
             var jitteredExp = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-            return await service.GetOrCreateAsync(prefixed, factory, jitteredExp, localExpiration, noLockCt).ConfigureAwait(false);
+            return await service.GetOrCreateAsync(prefixed, factory, jitteredExp, localExpiration, noLockCt);
         }
         finally
         {
@@ -405,7 +405,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         if (okPrefixed.Count == 0) return dict;
 
         var inner = await ResolveService(modeOverride: null)
-            .GetManyAsync<T>(okPrefixed, cancellationToken).ConfigureAwait(false);
+            .GetManyAsync<T>(okPrefixed, cancellationToken);
 
         for (int i = 0; i < okKeys.Count; i++)
             dict[okKeys[i]] = inner.TryGetValue(okPrefixed[i], out var v) ? v : default;
@@ -468,11 +468,11 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
             async ct =>
             {
                 factoryRan = true;
-                return await factory(ct).ConfigureAwait(false);
+                return await factory(ct);
             },
             extendedTtl,
             localExpiration,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken);
         if (factoryRan)
             _staleTracker.Register(prefixed, jitteredAbsExp, staleWindow);
         return result;
@@ -500,7 +500,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
             bool lockAcquired = false;
             try
             {
-                lockAcquired = await lockStripe.WaitAsync(lockTimeout, shutdownToken).ConfigureAwait(false);
+                lockAcquired = await lockStripe.WaitAsync(lockTimeout, shutdownToken);
                 if (!lockAcquired)
                 {
                     _logger.StaleRefreshLockTimeout(prefixedKey, lockTimeout.TotalMilliseconds);
@@ -511,7 +511,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
                 T value;
                 try
                 {
-                    value = await factory(factoryCt).ConfigureAwait(false);
+                    value = await factory(factoryCt);
                 }
                 finally
                 {
@@ -521,7 +521,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
                 var abs = callOptions?.AbsoluteExpiration ?? expiration ?? _optionsMonitor.CurrentValue.DefaultExpiration;
                 var staleFor = callOptions?.AllowStaleFor ?? TimeSpan.Zero;
                 var ttl = abs + staleFor;
-                await inner.SetAsync(prefixedKey, value, ttl, localExpiration, shutdownToken).ConfigureAwait(false);
+                await inner.SetAsync(prefixedKey, value, ttl, localExpiration, shutdownToken);
                 if (staleFor > TimeSpan.Zero)
                     _staleTracker.Register(prefixedKey, abs, staleFor);
             }
@@ -607,7 +607,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         {
             try
             {
-                await Task.WhenAll(inflight).ConfigureAwait(false);
+                await Task.WhenAll(inflight);
             }
             catch
             {
@@ -620,7 +620,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
 
     public void Dispose()
     {
-        Task.Run(async () => await DisposeAsync().ConfigureAwait(false)).GetAwaiter().GetResult();
+        Task.Run(async () => await DisposeAsync()).GetAwaiter().GetResult();
     }
 }
 
