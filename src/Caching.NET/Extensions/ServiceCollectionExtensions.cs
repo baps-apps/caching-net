@@ -30,6 +30,13 @@ public static class ServiceCollectionExtensions
     /// Registers Caching.NET with sensible defaults: InMemory mode, enabled, 10-minute expiration.
     /// No configuration section required.
     /// </summary>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Minimal registration — InMemory, enabled, 10-minute TTL. Production apps usually need a KeyPrefix,
+    /// // so prefer the configuration or fluent overload.
+    /// services.AddCaching();
+    /// ]]></code>
+    /// </example>
     public static IServiceCollection AddCaching(this IServiceCollection services)
     {
         return AddCachingCore(services, configuration: null, configure: null);
@@ -39,6 +46,20 @@ public static class ServiceCollectionExtensions
     /// Registers Caching.NET using the <c>CacheOptions</c> configuration section.
     /// When <c>Enabled</c> is false, <see cref="ICacheService"/> is still registered but short-circuits to factories.
     /// </summary>
+    /// <example>
+    /// <code><![CDATA[
+    /// // appsettings.json:
+    /// // {
+    /// //   "CacheOptions": {
+    /// //     "Enabled": true,
+    /// //     "Mode": "Hybrid",
+    /// //     "KeyPrefix": "svc-prod",
+    /// //     "RedisConnectionString": "rediss://elasticache:6380"
+    /// //   }
+    /// // }
+    /// services.AddCaching(builder.Configuration);
+    /// ]]></code>
+    /// </example>
     public static IServiceCollection AddCaching(this IServiceCollection services, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -48,6 +69,16 @@ public static class ServiceCollectionExtensions
     /// <summary>
     /// Registers Caching.NET using a fluent builder for code-first configuration.
     /// </summary>
+    /// <example>
+    /// <code><![CDATA[
+    /// services.AddCaching(b => b
+    ///     .UseHybrid("rediss://elasticache:6380")
+    ///     .WithKeyPrefix("svc-prod")
+    ///     .UseProductionDefaults()
+    ///     .WithTtlJitter(0.10)
+    ///     .WithHealthChecks());
+    /// ]]></code>
+    /// </example>
     public static IServiceCollection AddCaching(this IServiceCollection services, Action<CachingBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
@@ -58,6 +89,14 @@ public static class ServiceCollectionExtensions
     /// Registers Caching.NET using a configuration section as the base, with fluent builder overrides applied on top.
     /// Fluent settings take precedence over config-file values.
     /// </summary>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Bind everything from appsettings then layer code-only knobs (KeyValidator/KeyTransformer, custom serializer).
+    /// services.AddCaching(builder.Configuration, b => b
+    ///     .WithSerializer(new JsonCacheSerializer(MyJsonContext.Default)) // AOT-safe
+    ///     .WithKeyValidator(k => !k.StartsWith("Anon:")));
+    /// ]]></code>
+    /// </example>
     public static IServiceCollection AddCaching(this IServiceCollection services, IConfiguration configuration, Action<CachingBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -70,6 +109,15 @@ public static class ServiceCollectionExtensions
     /// By default registers one <see cref="Health.CachingHealthCheck"/> (readiness).
     /// When <paramref name="splitLivenessReadiness"/> is true, registers <see cref="Health.CachingLivenessHealthCheck"/> and <see cref="Health.CachingHealthCheck"/> with names <c>{name}-liveness</c> / <c>{name}-readiness</c> and tags <c>liveness</c> / <c>readiness</c>.
     /// </summary>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Wire via builder: services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod").WithHealthChecks(...));
+    ///
+    /// // Or wire directly onto an existing IHealthChecksBuilder:
+    /// services.AddHealthChecks()
+    ///     .AddCachingHealthChecks(name: "caching-net", splitLivenessReadiness: true);
+    /// ]]></code>
+    /// </example>
     public static IHealthChecksBuilder AddCachingHealthChecks(
         this IHealthChecksBuilder builder,
         string name = "caching-net",
@@ -103,6 +151,12 @@ public static class ServiceCollectionExtensions
     /// Validates that <see cref="ICacheService"/> can be resolved.
     /// Call this after building the service provider to fail fast on DI misconfiguration.
     /// </summary>
+    /// <example>
+    /// <code><![CDATA[
+    /// var app = builder.Build();
+    /// app.Services.ValidateCacheRegistration(); // throws on startup if cache wiring is broken
+    /// ]]></code>
+    /// </example>
     public static IServiceProvider ValidateCacheRegistration(this IServiceProvider serviceProvider)
     {
         _ = serviceProvider.GetRequiredService<ICacheService>();

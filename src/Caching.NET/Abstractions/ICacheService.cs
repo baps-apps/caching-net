@@ -12,6 +12,20 @@ namespace Caching.NET.Abstractions;
 /// <c>ValueTask</c> migration was evaluated and reverted before v2.0.0 ship: the breaking-change cost across consumers, mocks, and decorators
 /// outweighed the marginal alloc savings on synchronous in-memory hits in mixed Hybrid/Redis production workloads.</para>
 /// </remarks>
+/// <example>
+/// Constructor injection in a controller or service:
+/// <code><![CDATA[
+/// public class OrderService(ICacheService cache)
+/// {
+///     public Task<Order> GetAsync(int id, CancellationToken ct) =>
+///         cache.GetOrCreateAsync(
+///             $"Order:{id}",
+///             token => LoadOrderFromDbAsync(id, token),
+///             expiration: TimeSpan.FromMinutes(5),
+///             cancellationToken: ct);
+/// }
+/// ]]></code>
+/// </example>
 public interface ICacheService
 {
     /// <summary>
@@ -33,6 +47,24 @@ public interface ICacheService
     /// This parameter is only meaningful for hybrid implementations; other implementations ignore it.
     /// </param>
     /// <param name="cancellationToken">Token used to cancel the factory call or underlying cache operations.</param>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Cache an order for 5 minutes; factory runs only on miss, concurrent callers coalesce.
+    /// var order = await cache.GetOrCreateAsync(
+    ///     $"Order:{orderId}",
+    ///     ct => _db.LoadOrderAsync(orderId, ct),
+    ///     expiration: TimeSpan.FromMinutes(5),
+    ///     cancellationToken: ct);
+    ///
+    /// // Hybrid: shorter L1 TTL (per-instance), longer L2 TTL (shared Redis).
+    /// var product = await cache.GetOrCreateAsync(
+    ///     $"Product:{sku}",
+    ///     ct => _catalog.GetAsync(sku, ct),
+    ///     expiration: TimeSpan.FromMinutes(5),
+    ///     localExpiration: TimeSpan.FromSeconds(30),
+    ///     cancellationToken: ct);
+    /// ]]></code>
+    /// </example>
     Task<T> GetOrCreateAsync<T>(
         string key,
         Func<CancellationToken, Task<T>> factory,
@@ -55,6 +87,17 @@ public interface ICacheService
     /// This parameter is only meaningful for hybrid implementations; other implementations ignore it.
     /// </param>
     /// <param name="cancellationToken">Token used to cancel the underlying cache operation.</param>
+    /// <example>
+    /// <code><![CDATA[
+    /// // After a write-through, prime the cache so the next read is a hit.
+    /// await _db.SaveOrderAsync(order, ct);
+    /// await cache.SetAsync(
+    ///     $"Order:{order.Id}",
+    ///     order,
+    ///     expiration: TimeSpan.FromMinutes(5),
+    ///     cancellationToken: ct);
+    /// ]]></code>
+    /// </example>
     Task SetAsync<T>(
         string key,
         T value,
@@ -68,6 +111,13 @@ public interface ICacheService
     /// </summary>
     /// <param name="key">The cache key to remove.</param>
     /// <param name="cancellationToken">Token used to cancel the underlying cache operation.</param>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Invalidate after a destructive write.
+    /// await _db.DeleteOrderAsync(orderId, ct);
+    /// await cache.RemoveAsync($"Order:{orderId}", ct);
+    /// ]]></code>
+    /// </example>
     Task RemoveAsync(string key, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -76,6 +126,19 @@ public interface ICacheService
     /// </summary>
     /// <param name="tag">The tag identifying a group of cache entries.</param>
     /// <param name="cancellationToken">Token used to cancel the underlying cache operation.</param>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Hybrid mode only. Tag entries on write, invalidate the whole group on update.
+    /// using Caching.NET.Extensions;
+    /// using Caching.NET.Options;
+    ///
+    /// var opts = new CacheCallOptions { Tags = new[] { $"category:{categoryId}" } };
+    /// await cache.SetAsync($"Product:{sku}", product, opts, TimeSpan.FromMinutes(5), cancellationToken: ct);
+    ///
+    /// // Later, on category edit:
+    /// await cache.RemoveByTagAsync($"category:{categoryId}", ct);
+    /// ]]></code>
+    /// </example>
     Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -84,12 +147,28 @@ public interface ICacheService
     /// </summary>
     /// <param name="tags">The collection of tags identifying groups of cache entries.</param>
     /// <param name="cancellationToken">Token used to cancel the underlying cache operations.</param>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Bulk invalidation across multiple tag groups.
+    /// await cache.RemoveByTagAsync(new[] { $"user:{userId}", $"tenant:{tenantId}" }, ct);
+    /// ]]></code>
+    /// </example>
     Task RemoveByTagAsync(IEnumerable<string> tags, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Reads a value from the cache without invoking a factory. Returns <c>default(T)</c>
     /// when the key is absent. Implementations must not throw on miss.
     /// </summary>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Cheap probe; no factory ever runs.
+    /// var cached = await cache.GetAsync<Order>($"Order:{orderId}", ct);
+    /// if (cached is null)
+    /// {
+    ///     // miss — caller decides whether to load
+    /// }
+    /// ]]></code>
+    /// </example>
     Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull;
 
     /// <summary>
@@ -97,6 +176,15 @@ public interface ICacheService
     /// Implementations should use the cheapest existence check available
     /// (e.g. Redis EXISTS; IMemoryCache TryGetValue).
     /// </summary>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Idempotency check — only enqueue work for keys not already in flight.
+    /// if (!await cache.ExistsAsync($"Job:{jobId}", ct))
+    /// {
+    ///     await EnqueueAsync(jobId, ct);
+    /// }
+    /// ]]></code>
+    /// </example>
     Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -104,6 +192,16 @@ public interface ICacheService
     /// overwriting any existing entry. Use to refresh stale data without removing the
     /// key first.
     /// </summary>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Scheduled background refresh of a hot key — no read-then-miss race.
+    /// await cache.RefreshAsync(
+    ///     "Leaderboard:Top10",
+    ///     ct => ComputeTop10Async(ct),
+    ///     expiration: TimeSpan.FromMinutes(1),
+    ///     cancellationToken: ct);
+    /// ]]></code>
+    /// </example>
     Task RefreshAsync<T>(
         string key,
         Func<CancellationToken, Task<T>> factory,
@@ -115,6 +213,23 @@ public interface ICacheService
     /// Reads multiple values from the cache. The returned dictionary contains an entry
     /// for every key in <paramref name="keys"/> — missing keys map to <c>default(T)</c>.
     /// </summary>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Batch lookup; load only the misses from the source.
+    /// var keys = orderIds.Select(id => $"Order:{id}").ToArray();
+    /// var hits = await cache.GetManyAsync<Order>(keys, ct);
+    ///
+    /// var missing = orderIds.Where(id => hits[$"Order:{id}"] is null).ToList();
+    /// if (missing.Count > 0)
+    /// {
+    ///     var loaded = await _db.LoadOrdersAsync(missing, ct);
+    ///     await cache.SetManyAsync(
+    ///         loaded.ToDictionary(o => $"Order:{o.Id}"),
+    ///         expiration: TimeSpan.FromMinutes(5),
+    ///         cancellationToken: ct);
+    /// }
+    /// ]]></code>
+    /// </example>
     Task<IReadOnlyDictionary<string, T?>> GetManyAsync<T>(
         IEnumerable<string> keys,
         CancellationToken cancellationToken = default) where T : notnull;
@@ -122,6 +237,13 @@ public interface ICacheService
     /// <summary>
     /// Writes multiple values to the cache. All entries share the same expiration arguments.
     /// </summary>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Warm the cache after a bulk DB read.
+    /// var items = products.ToDictionary(p => $"Product:{p.Sku}");
+    /// await cache.SetManyAsync(items, expiration: TimeSpan.FromMinutes(10), cancellationToken: ct);
+    /// ]]></code>
+    /// </example>
     Task SetManyAsync<T>(
         IReadOnlyDictionary<string, T> items,
         TimeSpan? expiration = null,
@@ -131,5 +253,11 @@ public interface ICacheService
     /// <summary>
     /// Removes multiple keys. <c>null</c>/empty/whitespace keys are skipped.
     /// </summary>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Invalidate a batch after a multi-row write.
+    /// await cache.RemoveManyAsync(orderIds.Select(id => $"Order:{id}"), ct);
+    /// ]]></code>
+    /// </example>
     Task RemoveManyAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default);
 }

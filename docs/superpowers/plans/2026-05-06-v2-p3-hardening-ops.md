@@ -2132,7 +2132,7 @@ services.AddCaching(b => b.UseRedis("localhost:6379").WithKeyPrefix("asm-api-dev
 services.AddCaching(b => b.UseHybrid("localhost:6379").WithKeyPrefix("asm-api-dev"));
 ```
 
-## Production config (Amazon-scale)
+## Production config (high throughput scale)
 
 ```csharp
 services.AddCaching(b => b

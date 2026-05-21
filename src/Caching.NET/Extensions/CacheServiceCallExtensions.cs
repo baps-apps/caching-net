@@ -34,6 +34,36 @@ public static class CacheServiceCallExtensions
     /// </param>
     /// <param name="cancellationToken">Token used to cancel the factory or underlying cache operation.</param>
     /// <returns>The cached value if present; otherwise the value produced by <paramref name="factory"/>.</returns>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Force refresh after a write.
+    /// var opts = new CacheCallOptions { ForceRefresh = true };
+    /// var fresh = await cache.GetOrCreateAsync(
+    ///     $"User:{userId}:Profile",
+    ///     ct => LoadProfileAsync(userId, ct),
+    ///     opts,
+    ///     expiration: TimeSpan.FromMinutes(5),
+    ///     cancellationToken: ct);
+    ///
+    /// // Override Hybrid app to InMemory for one entry (large object, per-instance state).
+    /// var localOnly = new CacheCallOptions { Mode = CacheMode.InMemory };
+    /// var local = await cache.GetOrCreateAsync(
+    ///     $"User:{userId}:Profile",
+    ///     ct => LoadProfileAsync(userId, ct),
+    ///     localOnly,
+    ///     expiration: TimeSpan.FromMinutes(5),
+    ///     cancellationToken: ct);
+    ///
+    /// // Tolerate stale data while one background refresh runs (InMemory/Redis).
+    /// var swr = new CacheCallOptions { AllowStaleFor = TimeSpan.FromSeconds(30) };
+    /// var top10 = await cache.GetOrCreateAsync(
+    ///     "Leaderboard:Top10",
+    ///     ct => ComputeAsync(ct),
+    ///     swr,
+    ///     expiration: TimeSpan.FromMinutes(1),
+    ///     cancellationToken: ct);
+    /// ]]></code>
+    /// </example>
     public static Task<T> GetOrCreateAsync<T>(
         this ICacheService cache,
         string key,
@@ -83,6 +113,21 @@ public static class CacheServiceCallExtensions
     /// Optional local (in-memory) expiration for Hybrid mode. Ignored by non-Hybrid implementations.
     /// </param>
     /// <param name="cancellationToken">Token used to cancel the underlying cache operation.</param>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Write with Hybrid tags for bulk invalidation.
+    /// var opts = new CacheCallOptions { Tags = new[] { $"category:{categoryId}" } };
+    /// await cache.SetAsync(
+    ///     $"Product:{id}",
+    ///     product,
+    ///     opts,
+    ///     expiration: TimeSpan.FromMinutes(5),
+    ///     cancellationToken: ct);
+    ///
+    /// // Later — invalidate every entry tagged with this category.
+    /// await cache.RemoveByTagAsync($"category:{categoryId}", ct);
+    /// ]]></code>
+    /// </example>
     public static Task SetAsync<T>(
         this ICacheService cache,
         string key,

@@ -134,7 +134,7 @@ Alternate: fluent API:
 services.AddCaching(b => b.UseHybrid("localhost:6379").WithKeyPrefix("asm-api-dev"));
 ```
 
-## Production config (Amazon-scale)
+## Production config (high throughput scale)
 
 ```csharp
 services.AddCaching(configuration);
@@ -233,8 +233,315 @@ When `CacheOptions.Enabled` is false after options merge, **no cache backends ar
 | Advanced / fluent-only hooks | `KeyTransformer` (fluent-only) | Not specified | Normalize keys (case, format, partitions). | Better hit ratio and consistent keying. |
 | Advanced / fluent-only hooks | `RequireTagSupport` (set by builder API) | `false` | Enforce tag-capable mode at startup. | Fails fast if mode does not support required tag behavior. |
 
+## Feature Matrix
+
+Discovery table. Pick a feature, jump to its builder method / per-call knob / recipe.
+
+| Feature | Modes | Builder API | Per-call (`CacheCallOptions`) | Recipe |
+| --- | --- | --- | --- | --- |
+| Get-or-create with factory | All | — | — | [#get-or-create](#get-or-create) |
+| Force refresh | All | — | `ForceRefresh = true` | [#force-refresh](#force-refresh) |
+| Bypass cache | All | — | `BypassCache = true` | [#bypass-cache](#bypass-cache) |
+| Per-call mode override | All | — | `Mode = CacheMode.InMemory` | [#per-call-mode-override](#per-call-mode-override) |
+| Per-call expiration | All | `WithDefaultExpiration` | `AbsoluteExpiration` | [#per-call-expiration](#per-call-expiration) |
+| Sliding expiration | InMemory, Redis | — | `SlidingExpiration` | [#sliding-expiration](#sliding-expiration) |
+| Stale-while-revalidate | InMemory, Redis | — | `AllowStaleFor` | [#stale-while-revalidate](#stale-while-revalidate) |
+| Stampede coalescing | All | `WithStripedLocks` | `CoalesceConcurrent = false` (opt-out) | [#stampede-coalescing](#stampede-coalescing) — see [features/stampede.md](docs/features/stampede.md) |
+| TTL jitter | All | `WithTtlJitter` | `JitterPercentage` | [#ttl-jitter](#ttl-jitter) |
+| Tag invalidation | Hybrid | `RequireTagSupport` | `Tags` | [#tag-invalidation](#tag-invalidation) — see [features/hybrid.md](docs/features/hybrid.md) |
+| Factory timeout | All | `WithFactoryTimeout` | `FactoryTimeout` | [#factory-timeout](#factory-timeout) |
+| Payload size cap | All | `WithMaximumPayloadBytes` | — | [#payload-size-cap](#payload-size-cap) |
+| In-memory size cap | InMemory, Hybrid | `WithMemorySizeLimit` | — | [#in-memory-size-cap](#in-memory-size-cap) |
+| Hybrid L1 TTL | Hybrid | `WithDefaultLocalExpiration` | — | [features/hybrid.md](docs/features/hybrid.md) |
+| Key namespace prefix | All | `WithKeyPrefix` | — | [#key-prefix](#key-prefix) |
+| Key validation | All | `WithKeyValidator` | — | [#key-validation](#key-validation) |
+| Key normalization | All | `WithKeyTransformer` | — | [#key-normalization](#key-normalization) |
+| Custom serializer | Redis, Hybrid | `WithSerializer<T>()` / `WithMessagePackSerializer` | — | [#custom-serializer](#custom-serializer) |
+| Polly resilience | Redis, Hybrid | `WithResilience` | — | [#polly-resilience](#polly-resilience) |
+| Redis op timeout | Redis, Hybrid | `WithRedisOperationTimeout` | — | [#redis-operation-timeout](#redis-operation-timeout) |
+| Strict TLS | Redis, Hybrid | `WithStrictCertificateValidation` | — | [#strict-tls](#strict-tls) |
+| Permissive TLS (custom DNS) | Redis, Hybrid | `WithPermissiveRedisTls` | — | [#permissive-tls](#permissive-tls) |
+| Health checks | All | `WithHealthChecks` | — | [#health-checks](#health-checks) — see [HEALTH-CHECKS.md](docs/HEALTH-CHECKS.md) |
+| OTel telemetry | All | (auto via `CacheInstruments`) | — | [features/telemetry.md](docs/features/telemetry.md) |
+| Stale refresh throttle | All | `WithStaleRefreshConcurrency` | — | [features/stampede.md](docs/features/stampede.md) |
+| Ops kill-switch | All | `Disable` / `Enable` (or `Enabled` config) | — | [#ops-kill-switch](#ops-kill-switch) |
+| Dev presets | All | `UseDevelopmentDefaults` | — | [#presets](#presets) |
+| Prod presets | All | `UseProductionDefaults` | — | [#presets](#presets) |
+
+## Cookbook
+
+Three-line recipes. **When** = use case, **Code** = copy-paste, **Why** = mechanism.
+
+### Get-or-create
+
+**When:** Cache the result of an expensive backend call.
+
+```csharp
+var order = await cache.GetOrCreateAsync(
+    $"Order:{id}",
+    ct => LoadOrderAsync(id, ct),
+    expiration: TimeSpan.FromMinutes(5));
+```
+
+**Why:** Factory runs only on miss; concurrent callers coalesce on the striped lock.
+
+### Force refresh
+
+**When:** Invalidate-and-replace a key (e.g. after a write).
+
+```csharp
+var opts = new CacheCallOptions { ForceRefresh = true };
+var fresh = await cache.GetOrCreateAsync("User:42:Profile", ct => LoadProfileAsync(ct), opts);
+```
+
+**Why:** Skips the cache read; runs factory; writes result back. Honoured only by `GetOrCreateAsync`.
+
+### Bypass cache
+
+**When:** One-off probe, admin endpoint, or sensitive call that should never be cached.
+
+```csharp
+var opts = new CacheCallOptions { BypassCache = true };
+var value = await cache.GetOrCreateAsync("Diag:LiveProbe", ct => ProbeAsync(ct), opts);
+```
+
+**Why:** Factory runs, result is returned without read or write.
+
+### Per-call mode override
+
+**When:** App is Hybrid but one entry should stay process-local (large object, per-instance state).
+
+```csharp
+var opts = new CacheCallOptions { Mode = CacheMode.InMemory };
+var local = await cache.GetOrCreateAsync($"User:{id}:Profile", ct => LoadProfileAsync(ct), opts);
+```
+
+**Why:** Routes to `InMemoryCacheService`; skips Redis. Apply consistently to all reads/writes for that key.
+
+### Per-call expiration
+
+**When:** Most entries use the default TTL but a specific key needs a longer/shorter one.
+
+```csharp
+var value = await cache.GetOrCreateAsync(
+    "Config:Snapshot",
+    ct => LoadConfigAsync(ct),
+    expiration: TimeSpan.FromHours(1));
+```
+
+**Why:** Overrides `DefaultExpiration` for this call only.
+
+### Sliding expiration
+
+**When:** Session-style entries that should stay hot as long as accessed.
+
+```csharp
+var opts = new CacheCallOptions { SlidingExpiration = TimeSpan.FromMinutes(15) };
+var session = await cache.GetOrCreateAsync($"Session:{id}", ct => LoadSessionAsync(ct), opts);
+```
+
+**Why:** TTL resets on each access. InMemory + Redis only — Hybrid ignores.
+
+### Stale-while-revalidate
+
+**When:** Tolerate slightly-stale data to absorb backend latency on expiry.
+
+```csharp
+var opts = new CacheCallOptions { AllowStaleFor = TimeSpan.FromSeconds(30) };
+var top10 = await cache.GetOrCreateAsync("Leaderboard:Top10", ct => ComputeAsync(ct), opts);
+```
+
+**Why:** After absolute expiry, stale value serves up to 30s while one background refresh runs. InMemory + Redis only.
+
+### Stampede coalescing
+
+**When:** Hot keys + expensive factory. Active by default — only knob is opt-out.
+
+```csharp
+var opts = new CacheCallOptions { CoalesceConcurrent = false };
+var v = await cache.GetOrCreateAsync(key, ct => CheapIdempotentAsync(ct), opts);
+```
+
+**Why:** Default coalescing serializes factory through striped lock. Opt out only when factory is cheap and concurrent runs are acceptable. Deep dive: [features/stampede.md](docs/features/stampede.md).
+
+### TTL jitter
+
+**When:** Avoid synchronized expirations after a deploy or batch warm-up.
+
+```csharp
+services.AddCaching(b => b.UseHybrid("rediss://...").WithKeyPrefix("svc-prod").WithTtlJitter(0.20));
+```
+
+**Why:** ±20% random spread per entry. Clamped to 0–0.5. Per-call override via `JitterPercentage`.
+
+### Tag invalidation
+
+**When:** Bulk-invalidate every entry related to a domain object (e.g. all entries for a category).
+
+```csharp
+var opts = new CacheCallOptions { Tags = new[] { $"category:{categoryId}" } };
+await cache.SetAsync($"Product:{id}", product, opts, expiration: TimeSpan.FromMinutes(5));
+await cache.RemoveByTagAsync($"category:{categoryId}");
+```
+
+**Why:** Hybrid only. Call `RequireTagSupport()` at startup to fail fast on misconfig. Deep dive: [features/hybrid.md](docs/features/hybrid.md).
+
+### Factory timeout
+
+**When:** A slow downstream should not hold the lock or starve callers.
+
+```csharp
+var opts = new CacheCallOptions { FactoryTimeout = TimeSpan.FromSeconds(2) };
+var v = await cache.GetOrCreateAsync("ExternalApi:Result", ct => CallSlowApiAsync(ct), opts);
+```
+
+**Why:** Cancels the factory CT after 2s. Defaults to `CacheOptions.FactoryTimeout` (30s).
+
+### Payload size cap
+
+**When:** Defend memory/network from accidental large entries.
+
+```csharp
+services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod").WithMaximumPayloadBytes(512 * 1024));
+```
+
+**Why:** Entries above the cap are not written and a warning is logged.
+
+### In-memory size cap
+
+**When:** Bounded memory footprint on the L1 / InMemory cache.
+
+```csharp
+services.AddCaching(b => b.UseInMemory().WithKeyPrefix("svc-prod").WithMemorySizeLimit(256)); // MB
+```
+
+**Why:** Sets `IMemoryCache.SizeLimit` to N×1 MiB. Enables eviction pressure.
+
+### Key prefix
+
+**When:** Isolate keys per service/environment to prevent cross-namespace collisions.
+
+```csharp
+services.AddCaching(b => b.UseRedis("...").WithKeyPrefix("catalog-prod"));
+```
+
+**Why:** Required when `Enabled=true`. Must not contain `':'`. Convention: `serviceName-environment`.
+
+### Key validation
+
+**When:** Skip caching for low-value/sensitive key shapes (e.g. anonymous user keys).
+
+```csharp
+services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod")
+    .WithKeyValidator(k => !k.StartsWith("Anon:")));
+```
+
+**Why:** Returns `false` → reads miss, writes no-op for that key. Fluent-only.
+
+### Key normalization
+
+**When:** Trim, lower-case, or partition keys before caching.
+
+```csharp
+services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod")
+    .WithKeyTransformer(k => k.Trim().ToLowerInvariant()));
+```
+
+**Why:** Improves hit ratio when callers use inconsistent casing/whitespace.
+
+### Custom serializer
+
+**When:** Smaller payloads or AOT/trim compatibility.
+
+```csharp
+services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod")
+    .WithSerializer(new JsonCacheSerializer(MyJsonContext.Default))); // AOT-safe
+// or
+services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod").WithMessagePackSerializer());
+```
+
+**Why:** Default is reflection-based `System.Text.Json`. MessagePack is ~2-3× smaller; source-gen JSON is AOT/trim safe.
+
+### Polly resilience
+
+**When:** Tune Redis timeout, circuit breaker, retry count for your latency budget.
+
+```csharp
+services.AddCaching(b => b.UseRedis("...").WithKeyPrefix("svc-prod").WithResilience(r =>
+{
+    r.Timeout = TimeSpan.FromMilliseconds(500);
+    r.RetryCount = 1;
+    r.FailureRatio = 0.5;
+}));
+```
+
+**Why:** Builds the Polly pipeline used by `RedisCacheService`. Library-owned `CacheResilienceOptions` — Polly types are not on the public API.
+
+### Redis operation timeout
+
+**When:** Bound any single Redis op to prevent latency drag.
+
+```csharp
+services.AddCaching(b => b.UseRedis("...").WithKeyPrefix("svc-prod")
+    .WithRedisOperationTimeout(TimeSpan.FromSeconds(1)));
+```
+
+**Why:** Per-op cap (default 2s). Independent of factory timeout.
+
+### Strict TLS
+
+**When:** Production Redis (ElastiCache) where hostname must match cert.
+
+```csharp
+services.AddCaching(b => b.UseRedis("rediss://...").WithKeyPrefix("svc-prod").WithStrictCertificateValidation());
+```
+
+**Why:** Sets `StrictRedisCertificateValidation=true`. Recommended for prod (also set by `UseProductionDefaults`).
+
+### Permissive TLS
+
+**When:** ElastiCache accessed through a custom DNS alias that does not match the certificate CN/SAN.
+
+```csharp
+services.AddCaching(b => b.UseRedis("rediss://my-alias:6380").WithKeyPrefix("svc-prod").WithPermissiveRedisTls());
+```
+
+**Why:** Allows host-mismatch only; chain-of-trust still validated. Untrusted certs are still rejected.
+
+### Health checks
+
+**When:** ASP.NET Core `/health` endpoint should reflect cache reachability.
+
+```csharp
+services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod").WithHealthChecks(splitLivenessReadiness: true));
+```
+
+**Why:** Registers liveness (connection-only) + readiness (PING + probe). Deep dive: [HEALTH-CHECKS.md](docs/HEALTH-CHECKS.md).
+
+### Ops kill-switch
+
+**When:** Incident mitigation — disable caching without redeploy.
+
+```json
+{ "CacheOptions": { "Enabled": false, "KeyPrefix": "svc-prod" } }
+```
+
+**Why:** When `Enabled=false`, `GetOrCreateAsync` runs the factory directly; writes no-op. Hot-reload flip to `false` takes effect immediately; flipping to `true` at runtime only works if the process started with `Enabled=true` (otherwise restart needed).
+
+### Presets
+
+**When:** Bundle environment-specific defaults.
+
+```csharp
+services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod").UseProductionDefaults());
+// dev: services.AddCaching(b => b.UseInMemory().WithKeyPrefix("svc-dev").UseDevelopmentDefaults());
+```
+
+**Why:** Prod = hashed keys in logs + strict TLS. Dev = raw keys in logs for debugging.
+
 ## Docs
 
+- [features/](docs/features/) — per-feature deep dives (hybrid, stampede, telemetry)
 - [INTERNALS.md](docs/INTERNALS.md) — striped locks, payload envelope, resilience, stale-while-revalidate
 - [OPERATIONS.md](docs/OPERATIONS.md) — K8s/ElastiCache deployment, sharding, cred rotation, circuit-breaker tuning
 - [TELEMETRY.md](docs/TELEMETRY.md) — OTel instruments, tag taxonomy, Grafana dashboard, Prometheus rules
