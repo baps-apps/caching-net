@@ -45,4 +45,15 @@ public sealed class JsonCacheSerializer : ICacheSerializer
         if (bytes.IsEmpty) return default;
         return JsonSerializer.Deserialize<T>(bytes.Span, _options);
     }
+
+    /// <inheritdoc />
+    public object? Deserialize(ReadOnlyMemory<byte> bytes, Type type)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        if (bytes.IsEmpty) return null;
+        // Uses the same _options (and TypeInfoResolver copied from any supplied JsonSerializerContext)
+        // as the generic path, so AOT/trim behavior — including NotSupportedException for an
+        // unregistered type — is identical to Deserialize<T>.
+        return JsonSerializer.Deserialize(bytes.Span, type, _options);
+    }
 }

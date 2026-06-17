@@ -352,6 +352,24 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
     }
 
     /// <inheritdoc />
+    public Task<object?> GetAsync(string key, Type type, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        ArgumentNullException.ThrowIfNull(type);
+        if (IsDisabled)
+        {
+            CacheInstruments.RecordMiss(Mode, "get", "Disabled");
+            return Task.FromResult<object?>(null);
+        }
+        if (!TryPreparePrefixedKey(key, "get", out var prefixed))
+        {
+            CacheInstruments.RecordMiss(Mode, "get", "KeyRejected");
+            return Task.FromResult<object?>(null);
+        }
+        return ResolveService(modeOverride: null).GetAsync(prefixed, type, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));

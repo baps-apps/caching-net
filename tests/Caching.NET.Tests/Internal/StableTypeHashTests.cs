@@ -38,6 +38,36 @@ public class StableTypeHashTests
     [CacheSchema("v1")]
     private sealed class SchemaAnnotated;
 
+    [Theory]
+    [InlineData(typeof(string))]
+    [InlineData(typeof(int))]
+    [InlineData(typeof(int[]))]
+    [InlineData(typeof(List<string>))]
+    [InlineData(typeof(Dictionary<string, int>))]
+    [InlineData(typeof(StableTypeHashTests))]
+    public void Compute_runtime_type_matches_generic(Type type)
+    {
+        var generic = (ulong)typeof(StableTypeHash)
+            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .Single(m => m.Name == nameof(StableTypeHash.Compute) && m.IsGenericMethodDefinition)
+            .MakeGenericMethod(type)
+            .Invoke(null, null)!;
+
+        Assert.Equal(generic, StableTypeHash.Compute(type));
+    }
+
+    [Fact]
+    public void Compute_runtime_type_honors_CacheSchemaAttribute()
+    {
+        Assert.Equal(StableTypeHash.Compute<SchemaAnnotated>(), StableTypeHash.Compute(typeof(SchemaAnnotated)));
+    }
+
+    [Fact]
+    public void Compute_runtime_null_type_throws()
+    {
+        Assert.Throws<ArgumentNullException>(() => StableTypeHash.Compute(null!));
+    }
+
     [Fact]
     public void Compute64_for_empty_string_is_deterministic()
     {

@@ -35,4 +35,12 @@ public sealed class MessagePackCacheSerializer : ICacheSerializer
         if (bytes.IsEmpty) return default;
         return MessagePackSerializer.Deserialize<T>(bytes, _options);
     }
+
+    /// <inheritdoc />
+    public object? Deserialize(ReadOnlyMemory<byte> bytes, Type type)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        if (bytes.IsEmpty) return null;
+        return MessagePackSerializer.Deserialize(type, bytes, _options);
+    }
 }

@@ -285,6 +285,20 @@ var order = await cache.GetOrCreateAsync(
 
 **Why:** Factory runs only on miss; concurrent callers coalesce on the striped lock.
 
+### Runtime-typed read (`GetAsync(key, Type)`)
+
+**When:** You only have a `System.Type` at runtime (e.g. a settings cache keyed by type) and cannot call the generic `GetAsync<T>`.
+
+```csharp
+object? cached = await cache.GetAsync(key, type, ct);
+if (cached is null)
+{
+    // miss — load from source, then SetAsync(key, value)
+}
+```
+
+**Why:** Non-generic counterpart to `GetAsync<T>`; returns `null` on miss/drift, shares the same envelope + schema-hash validation as the generic path (cross-readable with `SetAsync<T>`). Prefer `GetAsync<T>` whenever the type is known at compile time — this overload is not a replacement for it. Not trim/AOT-safe for custom `ICacheService`/`ICacheSerializer` implementations that rely on the reflection fallback; the built-in services and JSON/MessagePack serializers override it.
+
 ### Force refresh
 
 **When:** Invalidate-and-replace a key (e.g. after a write).

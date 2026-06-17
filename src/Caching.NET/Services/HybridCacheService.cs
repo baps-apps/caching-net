@@ -193,6 +193,22 @@ internal sealed class HybridCacheService(
     }
 
     /// <inheritdoc />
+    public Task<object?> GetAsync(string key, Type type, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        ArgumentNullException.ThrowIfNull(type);
+        if (!options.Value.Enabled || cache == null)
+        {
+            CacheInstruments.RecordMiss(Mode, "get", "Disabled");
+            return Task.FromResult<object?>(null);
+        }
+        // HybridCache only exposes a generic GetOrCreateAsync<T>, so route the runtime-typed read
+        // through the generic GetAsync<T> implementation above. This guarantees exact parity (L1 box
+        // assignability + L2 envelope/schema validation) with the compile-time path for the same type.
+        return RuntimeTypedCacheInvoker.GetAsync(this, key, type, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public async Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
     {
         if (!options.Value.Enabled || cache == null) return false;

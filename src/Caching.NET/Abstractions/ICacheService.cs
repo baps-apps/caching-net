@@ -172,6 +172,35 @@ public interface ICacheService
     Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull;
 
     /// <summary>
+    /// Runtime-typed counterpart to <see cref="GetAsync{T}"/>. Reads a value from the cache without invoking
+    /// a factory, deserializing into <paramref name="type"/>. Returns <c>null</c> on miss, envelope-invalid,
+    /// format drift, or schema drift — implementations must not throw on miss. The schema-hash and format
+    /// validation are identical to the generic path for the same CLR type, so values written via
+    /// <see cref="SetAsync{T}"/> are readable here and vice-versa.
+    /// </summary>
+    /// <param name="key">A non-empty cache key that uniquely identifies the value.</param>
+    /// <param name="type">The runtime type to deserialize the cached value into. Must not be <c>null</c>.</param>
+    /// <param name="cancellationToken">Token used to cancel the underlying cache operation.</param>
+    /// <remarks>
+    /// Prefer the generic <see cref="GetAsync{T}"/> when the type is known at compile time. This overload exists
+    /// for callers that only have a runtime <see cref="System.Type"/> (e.g. a settings cache keyed by type). The
+    /// default interface method reflects onto <see cref="GetAsync{T}"/> so existing custom implementations keep
+    /// working; the built-in services override it with an efficient path.
+    /// </remarks>
+    /// <example>
+    /// <code><![CDATA[
+    /// // Type only known at runtime (e.g. resolved from DI by settings type).
+    /// object? cached = await cache.GetAsync(BuildKey(type), type, ct);
+    /// if (cached is null)
+    /// {
+    ///     // miss — caller decides whether to load
+    /// }
+    /// ]]></code>
+    /// </example>
+    Task<object?> GetAsync(string key, Type type, CancellationToken cancellationToken = default)
+        => Caching.NET.Internal.RuntimeTypedCacheInvoker.GetAsync(this, key, type, cancellationToken);
+
+    /// <summary>
     /// Returns <c>true</c> when the cache contains an entry for <paramref name="key"/>.
     /// Implementations should use the cheapest existence check available
     /// (e.g. Redis EXISTS; IMemoryCache TryGetValue).

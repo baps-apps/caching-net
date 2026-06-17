@@ -125,6 +125,23 @@ internal sealed class InMemoryCacheService(
     }
 
     /// <inheritdoc />
+    public Task<object?> GetAsync(string key, Type type, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        ArgumentNullException.ThrowIfNull(type);
+        _ = cancellationToken;
+        // Mirror the generic path's cast-miss behavior: a stored value whose runtime type is not
+        // assignable to the requested type counts as a miss.
+        if (cache.TryGetValue(key, out var cached) && cached is not null && type.IsInstanceOfType(cached))
+        {
+            CacheInstruments.RecordHit(Mode, "get");
+            return Task.FromResult<object?>(cached);
+        }
+        CacheInstruments.RecordMiss(Mode, "get", "NotFound");
+        return Task.FromResult<object?>(null);
+    }
+
+    /// <inheritdoc />
     public Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));

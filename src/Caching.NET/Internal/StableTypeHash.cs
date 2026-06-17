@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using SchemaAttribute = Caching.NET.CacheSchemaAttribute;
 
@@ -10,7 +11,21 @@ namespace Caching.NET.Internal;
 /// </summary>
 internal static class StableTypeHash
 {
+    private static readonly ConcurrentDictionary<Type, ulong> RuntimeCache = new();
+
+    /// <summary>Compute the stable schema hash for the compile-time type <typeparamref name="T"/>.</summary>
     public static ulong Compute<T>() => Cache<T>.Value;
+
+    /// <summary>
+    /// Runtime-typed counterpart to <see cref="Compute{T}"/>. Returns the identical hash that
+    /// <see cref="Compute{T}"/> produces when <paramref name="type"/> equals <c>typeof(T)</c>, so the
+    /// generic and non-generic cache read paths never diverge.
+    /// </summary>
+    public static ulong Compute(Type type)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        return RuntimeCache.GetOrAdd(type, static t => ComputeFor(t));
+    }
 
     private static class Cache<T>
     {

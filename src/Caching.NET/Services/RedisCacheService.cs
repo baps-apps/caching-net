@@ -87,6 +87,19 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         }
     }
 
+    private object? DeserializeTimed(ReadOnlyMemory<byte> payload, Type type)
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            return _serializer.Deserialize(payload, type);
+        }
+        finally
+        {
+            CacheInstruments.RecordDeserializeDuration(SerializerFormatLabel(_serializer.FormatId), sw.Elapsed.TotalMilliseconds);
+        }
+    }
+
     private void LogDriftSampled(string driftKind, string redisKey, Action log)
     {
         if (DriftLogSampler.ShouldLog(driftKind, redisKey))
@@ -326,11 +339,27 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
     /// <inheritdoc />
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull
     {
+        var value = await GetCoreAsync(key, typeof(T), StableTypeHash.Compute<T>(), cancellationToken);
+        return value is null ? default : (T)value;
+    }
+
+    /// <inheritdoc />
+    public Task<object?> GetAsync(string key, Type type, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        return GetCoreAsync(key, type, StableTypeHash.Compute(type), cancellationToken);
+    }
+
+    // Shared read core for both the generic and runtime-typed GetAsync overloads: identical key
+    // prefixing (caller-side), resilience pipeline, envelope/format/schema validation, decompression,
+    // and telemetry. Only the deserialization target type differs.
+    private async Task<object?> GetCoreAsync(string key, Type type, ulong expectedSchema, CancellationToken cancellationToken)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         if (ExceedsKeyLimit(key, nameof(GetAsync)))
         {
             CacheInstruments.RecordMiss(Mode, "get", "KeyTooLong");
-            return default;
+            return null;
         }
         try
         {
@@ -341,10 +370,9 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
             if (bytes is null or { Length: 0 })
             {
                 CacheInstruments.RecordMiss(Mode, "get", "NotFound");
-                return default;
+                return null;
             }
             var expectedFormat = ResolveFormatId(_serializer.FormatId);
-            var expectedSchema = StableTypeHash.Compute<T>();
             var status = PayloadEnvelope.TryRead(bytes, expectedFormat, expectedSchema, out var payload);
             if (status == PayloadEnvelopeReadResult.Ok)
             {
@@ -357,9 +385,9 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                 catch (Exception)
                 {
                     CacheInstruments.RecordMiss(Mode, "get", "EnvelopeInvalid");
-                    return default;
+                    return null;
                 }
-                var value = DeserializeTimed<T>(decodedPayload);
+                var value = DeserializeTimed(decodedPayload, type);
                 if (value != null)
                 {
                     CacheInstruments.RecordHit(Mode, "get");
@@ -367,17 +395,17 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                     return value;
                 }
                 CacheInstruments.RecordMiss(Mode, "get", "SerializationFailed");
-                return default;
+                return null;
             }
             CacheInstruments.RecordMiss(Mode, "get", "EnvelopeInvalid");
-            return default;
+            return null;
         }
         catch (Exception ex)
         {
             if (_options.Value.ThrowOnFailure && !_options.Value.FailOpen) throw;
             _logger.RedisGetFailed(FormatKey(key), ex);
             CacheInstruments.RecordError(Mode, "get", ClassifyError(ex));
-            return default;
+            return null;
         }
     }
 

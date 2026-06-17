@@ -4,6 +4,18 @@ All notable changes to Caching.NET are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/). See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for versioning policy.
 
+## 2.1.0 — 2026-06-16
+
+Additive minor release. No breaking changes.
+
+### Added
+
+- **Runtime-typed read overload:** `ICacheService.GetAsync(string key, Type type, CancellationToken)` — a non-generic counterpart to `GetAsync<T>` for callers that only know the target type at runtime (e.g. a settings cache keyed by `typeof(T).Name`). Returns `object?`; `null` on miss / envelope-invalid / format drift / schema drift; throws `ArgumentNullException` for a null `type`. It shares the **identical** envelope, format, and schema-hash validation as the generic path, so values are cross-readable between `SetAsync<T>` / `GetAsync<T>` and the runtime-typed overload. Prefer `GetAsync<T>` when the type is known at compile time.
+  - Shipped as a **default interface method** so existing third-party `ICacheService` implementations keep compiling; the default reflects onto `GetAsync<T>`. Built-in `RedisCacheService`, `InMemoryCacheService`, `HybridCacheService`, and `RoutingCacheService` override it with a direct path.
+  - Disabled mode (`Enabled=false`) short-circuits to `null`, mirroring the generic path.
+- **`ICacheSerializer.Deserialize(ReadOnlyMemory<byte> bytes, Type type)`** — non-generic deserialize, added as a default interface method (reflects onto `Deserialize<T>` for custom serializers). `JsonCacheSerializer` and `MessagePackCacheSerializer` override it with their native non-generic APIs, preserving AOT/trim behavior.
+- **`StableTypeHash.Compute(Type)`** (internal) — runtime-typed schema hash; `Compute<T>()` and `Compute(typeof(T))` are guaranteed to produce the same value.
+
 ## 2.0.0 — 2026-05-09
 
 Major release. Breaking changes from v1.x. See [docs/MIGRATION-V1-TO-V2.md](docs/MIGRATION-V1-TO-V2.md).
