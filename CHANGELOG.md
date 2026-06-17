@@ -15,6 +15,7 @@ Additive minor release. No breaking changes.
   - Disabled mode (`Enabled=false`) short-circuits to `null`, mirroring the generic path.
 - **`ICacheSerializer.Deserialize(ReadOnlyMemory<byte> bytes, Type type)`** — non-generic deserialize, added as a default interface method (reflects onto `Deserialize<T>` for custom serializers). `JsonCacheSerializer` and `MessagePackCacheSerializer` override it with their native non-generic APIs, preserving AOT/trim behavior.
 - **`StableTypeHash.Compute(Type)`** (internal) — runtime-typed schema hash; `Compute<T>()` and `Compute(typeof(T))` are guaranteed to produce the same value.
+- **`GetOrCreateAsync` no longer caches `null` factory results.** When the factory returns `null` (reference types / empty `Nullable<T>`), the value is returned to the caller but is **not** written to any tier, so the next call re-runs the factory. Applies to all modes (InMemory, Redis, Hybrid). Value-type defaults (`0`, `false`, `default(Guid)`, empty struct) are unaffected and continue to be cached. Explicit `SetAsync(key, value)` is unchanged. Previously a `null` factory result was stored in InMemory/Hybrid (served as a hit) and written to the Redis backend.
 
 ## 2.0.0 — 2026-05-09
 

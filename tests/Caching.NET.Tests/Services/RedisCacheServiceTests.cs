@@ -42,6 +42,31 @@ public class RedisCacheServiceTests
     }
 
     [Fact]
+    public async Task GetOrCreateAsync_DoesNotWriteNullFactoryResultToBackend()
+    {
+        var distributed = new Mock<IDistributedCache>();
+        distributed
+            .Setup(d => d.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((byte[]?)null);
+
+        var services = BaseServices(distributed.Object);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<RedisCacheService>();
+
+        var first = await cache.GetOrCreateAsync("nk", _ => Task.FromResult<string>(null!));
+        Assert.Null(first);
+
+        // null must never be serialized/written to the distributed backend
+        distributed.Verify(
+            d => d.SetAsync(
+                It.IsAny<string>(),
+                It.IsAny<byte[]>(),
+                It.IsAny<DistributedCacheEntryOptions>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
     public async Task GetOrCreateAsync_WhenGetAsyncThrows_FailOpen_ExecutesFactory()
     {
         var mockCache = new Mock<IDistributedCache>();

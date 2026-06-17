@@ -218,6 +218,8 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
 
         T result = await factory(cancellationToken);
         CacheInstruments.RecordMiss(Mode, "get_or_create");
+        // Never write a null factory result to the backend; treat it as a non-cacheable miss.
+        if (result is null) return result!;
         try
         {
             await SetAsync(key, result, expiration, localExpiration, cancellationToken);

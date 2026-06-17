@@ -32,6 +32,32 @@ public class HybridCacheServiceTests
     }
 
     [Fact]
+    public async Task GetOrCreateAsync_DoesNotCacheNullFactoryResult()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "true",
+            ["CacheOptions:Mode"] = "Hybrid",
+            ["CacheOptions:KeyPrefix"] = "test",
+            ["CacheOptions:RedisConnectionString"] = "localhost:6379"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration);
+        await using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<Abstractions.ICacheService>();
+
+        var key = $"hybrid:null:{Guid.NewGuid():N}";
+        var first = await cache.GetOrCreateAsync(key, _ => Task.FromResult<string>(null!));
+        Assert.Null(first);
+
+        // null was not cached, so the next factory runs and its value is returned
+        var second = await cache.GetOrCreateAsync(key, _ => Task.FromResult("real"));
+        Assert.Equal("real", second);
+    }
+
+    [Fact]
     public async Task SetAsync_RemoveAsync_DoNotThrow_WhenRedisUnavailable()
     {
         var config = new Dictionary<string, string?>

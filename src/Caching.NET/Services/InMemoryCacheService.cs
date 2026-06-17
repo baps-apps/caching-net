@@ -52,6 +52,8 @@ internal sealed class InMemoryCacheService(
     {
         CacheInstruments.RecordMiss(Mode, "get_or_create", "NotFound");
         T value = await factory(cancellationToken);
+        // Never cache a null factory result; treat it as a non-cacheable miss so the next call re-runs the factory.
+        if (value is null) return value!;
         var expirationSpan = expiration ?? options.Value.GetDefaultExpiration() ?? FallbackExpiration;
         var entryOpts = new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = expirationSpan };
         entryOpts.PostEvictionCallbacks.Add(s_evictionRegistration);

@@ -30,6 +30,30 @@ public class InMemoryCacheServiceTests
     }
 
     [Fact]
+    public async Task GetOrCreateAsync_DoesNotCacheNullFactoryResult()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "true",
+            ["CacheOptions:Mode"] = "InMemory",
+            ["CacheOptions:KeyPrefix"] = "test"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration);
+        using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<Abstractions.ICacheService>();
+
+        var first = await cache.GetOrCreateAsync("nk", _ => Task.FromResult<string>(null!));
+        Assert.Null(first);
+
+        // null was not cached, so the next factory runs and its value is returned
+        var second = await cache.GetOrCreateAsync("nk", _ => Task.FromResult("real"));
+        Assert.Equal("real", second);
+    }
+
+    [Fact]
     public async Task SetAsync_And_RemoveAsync_Work()
     {
         var config = new Dictionary<string, string?>

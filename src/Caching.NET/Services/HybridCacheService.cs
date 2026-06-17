@@ -61,10 +61,17 @@ internal sealed class HybridCacheService(
             }
             var value = await cache.GetOrCreateAsync(key, wrapper, entryOptions, tags: null, cancellationToken);
             if (factoryRan)
+            {
                 CacheInstruments.RecordMiss(Mode, "get_or_create", "NotFound");
+                // HybridCache always stores the factory result; evict it when null so it is not cached.
+                if (value is null)
+                    await cache.RemoveAsync(key, cancellationToken);
+            }
             else
+            {
                 CacheInstruments.RecordHit(Mode, "get_or_create");
-            return value;
+            }
+            return value!;
         }
         catch (Exception ex)
         {

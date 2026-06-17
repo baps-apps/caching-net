@@ -58,6 +58,8 @@ public class OrderService(ICacheService cache)
 }
 ```
 
+**Null results are not cached.** When the `factory` returns `null` (reference types / empty `Nullable<T>`), `GetOrCreateAsync` returns that `null` to the caller but does **not** store it in any tier — the next call re-runs the factory. This holds across all modes (InMemory, Redis, Hybrid). Value-type defaults (`0`, `false`, `default(Guid)`, empty struct) are real values and **are** cached normally. Only the `GetOrCreateAsync` factory path is guarded; an explicit `SetAsync(key, value)` writes whatever you pass.
+
 ## Three modes
 
 ### InMemory
