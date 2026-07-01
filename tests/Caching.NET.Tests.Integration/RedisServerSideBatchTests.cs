@@ -67,7 +67,10 @@ public class RedisServerSideBatchTests
     {
         var services = new ServiceCollection();
         services.AddLogging(b => b.SetMinimumLevel(LogLevel.Warning));
-        var mux = await ConnectionMultiplexer.ConnectAsync(_redis.ConnectionString);
+        // AllowAdmin is required for the INFO command used below to verify server-side command counts.
+        var adminConfig = ConfigurationOptions.Parse(_redis.ConnectionString);
+        adminConfig.AllowAdmin = true;
+        var mux = await ConnectionMultiplexer.ConnectAsync(adminConfig);
         services.AddSingleton<IConnectionMultiplexer>(mux);
         services.AddCaching(b => b.UseRedis(_redis.ConnectionString).WithKeyPrefix("rt-mget-rt"));
 

@@ -50,6 +50,9 @@ public sealed class CachingBuilder
     internal bool? Enabled { get; private set; }
     internal string? RedisConnectionString { get; private set; }
     internal Action<ConfigurationOptions>? RedisConfigurationAction { get; private set; }
+    // Backing store for WithKeyPrefix; mapped to CacheOptions.KeyPrefix in ApplyTo. Legacy field name
+    // (v1's RedisInstanceName) — not to be confused with the Redis adapter InstanceName that Hybrid L2 now
+    // derives from KeyPrefix (see ServiceCollectionExtensions.ConfigureHybridCache).
     internal string? InstanceName { get; private set; }
     internal TimeSpan? DefaultExpiration { get; private set; }
     internal TimeSpan? DefaultLocalExpiration { get; private set; }
@@ -291,8 +294,10 @@ public sealed class CachingBuilder
     }
 
     /// <summary>
-    /// Sets the mandatory key prefix prepended to every cache key by the routing layer.
-    /// Replaces v1's RedisInstanceName; applies uniformly across InMemory, Redis, and Hybrid backends.
+    /// Sets the mandatory cache namespace for this application. For InMemory and Redis it is prepended to
+    /// the key at the routing layer; for Hybrid it is applied as the L2 Redis <c>InstanceName</c> so it also
+    /// namespaces HybridCache's tag/wildcard invalidation markers (see <see cref="CacheOptions.KeyPrefix"/>).
+    /// <b>Must be unique per application</b> when apps share a Redis database. Replaces v1's RedisInstanceName.
     /// No default — required when <see cref="CacheOptions.Enabled"/> is true. Must match <c>^[a-zA-Z0-9][a-zA-Z0-9._-]*$</c> and must not contain <c>':'</c>.
     /// </summary>
     /// <example>

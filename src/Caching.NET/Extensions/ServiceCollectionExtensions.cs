@@ -474,7 +474,17 @@ public static class ServiceCollectionExtensions
                     redis.ConfigurationOptions = ConfigurationOptions.Parse(options.RedisConnectionString!, ignoreUnknown: true);
                 }
 
-                // RedisInstanceName removed in v2; KeyPrefix is applied at the routing layer instead.
+                // Hybrid L2 isolation: apply KeyPrefix as the adapter InstanceName so every L2 key —
+                // entries AND HybridCache's tag/wildcard invalidation markers (created below the routing
+                // layer) — is namespaced per app. Routing does NOT prefix Hybrid keys (see
+                // RoutingCacheService), so there is no double prefix; the InstanceName is the single prefix
+                // on Hybrid L2. This is what prevents one app's ClearAsync/RemoveByTagAsync from
+                // invalidating another app's entries on a shared Redis database. KeyPrefix must be unique
+                // per app. (Redis mode deliberately does NOT set InstanceName — its direct-multiplexer
+                // SCAN/GetMany/RemoveMany paths bypass the adapter and rely on the routing-layer prefix.)
+                if (!string.IsNullOrEmpty(options.KeyPrefix))
+                    redis.InstanceName = options.KeyPrefix + ":";
+
                 redis.ConfigurationOptions.CertificateValidation += RedisCertificateValidation.ValidateServerCertificate;
             });
         }

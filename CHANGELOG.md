@@ -4,6 +4,25 @@ All notable changes to Caching.NET are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/). See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for versioning policy.
 
+## 2.2.0 — 2026-06-30
+
+Additive minor release. No public API breaks. One operational behavior change for Hybrid L2 key naming (see Changed) that cold-starts the Hybrid distributed cache on upgrade.
+
+### Added
+
+- **`ClearAsync()`** (extension method on `ICacheService`) — clears all of this application's cache entries, scoped to the configured `KeyPrefix`. Per mode:
+  - **InMemory** — clears the process memory cache (`MemoryCache.Clear()`).
+  - **Redis** — cursor-based `SCAN {KeyPrefix}:*` + batched delete (never `FLUSHDB`; safe on a shared database).
+  - **Hybrid** — logical invalidation via the reserved wildcard tag `"*"`; entries expire naturally.
+  - No-op when caching is disabled or the backend cannot clear. New per-call surface lives on the extension/`IRoutingCacheService`, not on `ICacheService` (API-stability contract).
+- **Hybrid tag-write wiring:** `CacheCallOptions.Tags` is now applied to the underlying `HybridCache` on `SetAsync` and `GetOrCreateAsync`. Previously tags were accepted by the API but dropped before reaching `HybridCache`, so `RemoveByTagAsync` had nothing to match. Tags now function end-to-end in Hybrid mode.
+
+### Changed
+
+- **`RemoveManyAsync` (Redis) uses `UNLINK` when the server supports it** (Redis 4.0+), falling back to `DEL` otherwise. `UNLINK` reclaims memory on a background thread (non-blocking), improving large-batch deletes. Server support is probed once and cached.
+- **Hybrid L2 per-app isolation:** `KeyPrefix` is now applied as the Hybrid L2 Redis adapter `InstanceName` rather than at the routing layer. This namespaces **all** Hybrid L2 keys — entries *and* HybridCache's tag/wildcard invalidation markers — so one app's `ClearAsync`/`RemoveByTagAsync` no longer invalidates another app's entries on a shared Redis database. **Requires a unique `KeyPrefix` per application.**
+  - **Migration / impact:** Hybrid L2 physical key names change (markers were previously unprefixed). On upgrade, existing Hybrid L2 entries become unreachable and repopulate on demand (one-time cold cache); orphans expire by TTL. InMemory and Redis modes are unchanged. Hybrid L1 (in-process) keys are now unprefixed (harmless — L1 is per-process); a per-call `Mode = InMemory` override in a Hybrid app writes an unprefixed entry.
+
 ## 2.1.0 — 2026-06-16
 
 Additive minor release. No breaking changes.

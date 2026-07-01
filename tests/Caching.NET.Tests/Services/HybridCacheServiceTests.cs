@@ -1,11 +1,45 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Caching.NET.Extensions;
+using Caching.NET.Options;
 
 namespace Caching.NET.Tests.Services;
 
 public class HybridCacheServiceTests
 {
+    private static Abstractions.ICacheService BuildHybridCache()
+    {
+        var config = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Enabled"] = "true",
+            ["CacheOptions:Mode"] = "Hybrid",
+            ["CacheOptions:KeyPrefix"] = "test",
+            ["CacheOptions:RedisConnectionString"] = "localhost:6379"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCaching(configuration);
+        return services.BuildServiceProvider().GetRequiredService<Abstractions.ICacheService>();
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_WithTags_RemoveByTag_EvictsEntry()
+    {
+        var cache = BuildHybridCache();
+        var tag = $"tag:{Guid.NewGuid():N}";
+        var key = $"hybrid:tagged-goc:{Guid.NewGuid():N}";
+
+        var created = await cache.GetOrCreateAsync(
+            key, _ => Task.FromResult("created"), new CacheCallOptions { Tags = new[] { tag } });
+        Assert.Equal("created", created);
+
+        await cache.RemoveByTagAsync(tag);
+
+        var after = await cache.GetOrCreateAsync(key, _ => Task.FromResult("refreshed"));
+        Assert.Equal("refreshed", after);
+    }
+
     [Fact]
     public async Task GetOrCreateAsync_StoresAndReturnsValue()
     {

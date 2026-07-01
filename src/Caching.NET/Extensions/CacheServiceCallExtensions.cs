@@ -157,5 +157,29 @@ public static class CacheServiceCallExtensions
             localExpiration,
             cancellationToken);
     }
+
+    /// <summary>
+    /// Clears cache entries for this application, scoped to the configured
+    /// <see cref="CacheOptions.KeyPrefix"/>. Behavior by mode:
+    /// <list type="bullet">
+    /// <item><description><b>InMemory</b> — clears the entire process memory cache (per-process, so this app only).</description></item>
+    /// <item><description><b>Redis</b> — <c>SCAN</c>s and removes <c>{KeyPrefix}:*</c> (never <c>FLUSHDB</c>).</description></item>
+    /// <item><description><b>Hybrid</b> — logical invalidation via the reserved wildcard tag <c>"*"</c>; entries
+    /// expire naturally. App-scoped: the library applies <see cref="CacheOptions.KeyPrefix"/> as the Hybrid L2
+    /// (distributed) <c>InstanceName</c>, so the wildcard invalidation marker is namespaced per app. Apps sharing
+    /// one Redis database do not invalidate each other — <b>provided each app uses a unique KeyPrefix</b>.</description></item>
+    /// </list>
+    /// No-op when caching is disabled or the underlying cache does not support clearing.
+    /// </summary>
+    /// <param name="cache">The cache service to clear.</param>
+    /// <param name="cancellationToken">Token used to cancel the underlying operation.</param>
+    public static Task ClearAsync(this ICacheService cache, CancellationToken cancellationToken = default)
+    {
+        if (cache is IRoutingCacheService routing)
+            return routing.ClearAsync(cancellationToken);
+
+        // Safe fallback: the underlying cache does not support clearing.
+        return Task.CompletedTask;
+    }
 }
 

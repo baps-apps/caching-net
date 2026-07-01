@@ -400,7 +400,17 @@ await cache.SetAsync($"Product:{id}", product, opts, expiration: TimeSpan.FromMi
 await cache.RemoveByTagAsync($"category:{categoryId}");
 ```
 
-**Why:** Hybrid only. Call `RequireTagSupport()` at startup to fail fast on misconfig. Deep dive: [features/hybrid.md](docs/features/hybrid.md).
+**Why:** Hybrid only. Tags are applied on write (`SetAsync`/`GetOrCreateAsync`) and matched by `RemoveByTagAsync`. Call `RequireTagSupport()` at startup to fail fast on misconfig. Deep dive: [features/hybrid.md](docs/features/hybrid.md).
+
+### Clear all (this app)
+
+**When:** Flush everything this application owns (e.g. after a bulk reseed or schema bump).
+
+```csharp
+await cache.ClearAsync();
+```
+
+**Why:** Scoped to your `KeyPrefix`. InMemory clears the process cache; Redis `SCAN`s and removes `{KeyPrefix}:*` (never `FLUSHDB`); Hybrid logically invalidates via the reserved `"*"` tag. On a shared Redis database, apps do not clear each other **as long as each app uses a unique `KeyPrefix`** — for Hybrid, `KeyPrefix` is applied as the L2 `InstanceName`, so even tag/wildcard markers are namespaced per app.
 
 ### Factory timeout
 

@@ -96,6 +96,28 @@ internal sealed class InMemoryCacheService(
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Removes every entry from the underlying memory cache. <see cref="IMemoryCache"/> exposes no
+    /// key enumeration, so this clears the whole cache rather than only this app's key prefix; that is
+    /// acceptable because the memory cache is per-process and owned by this app's registration.
+    /// Falls back to a logged no-op when the registered <see cref="IMemoryCache"/> is not the concrete
+    /// <see cref="MemoryCache"/> (the only type exposing <see cref="MemoryCache.Clear"/>).
+    /// </summary>
+    internal Task ClearAsync(CancellationToken cancellationToken = default)
+    {
+        _ = cancellationToken;
+        if (cache is MemoryCache concrete)
+        {
+            concrete.Clear();
+            CacheInstruments.RecordRemove(Mode, "clear");
+        }
+        else
+        {
+            logger.ClearNotSupported(Mode);
+        }
+        return Task.CompletedTask;
+    }
+
     /// <inheritdoc />
     public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {

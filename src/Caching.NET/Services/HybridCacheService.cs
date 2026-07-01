@@ -16,7 +16,7 @@ namespace Caching.NET.Services;
 /// </summary>
 /// <param name="cache">
 /// The <see cref="HybridCache"/> instance to use, or <c>null</c> when the hybrid cache is unavailable.
-/// When <c>null</c>, <see cref="GetOrCreateAsync{T}"/> always falls back to executing the factory directly.
+/// When <c>null</c>, <c>GetOrCreateAsync</c> always falls back to executing the factory directly.
 /// </param>
 /// <param name="options">Bound <see cref="CacheOptions"/> that control expiration defaults and enabled state.</param>
 /// <param name="logger">Logger for recording operational warnings and errors.</param>
@@ -34,11 +34,26 @@ internal sealed class HybridCacheService(
     private static readonly TimeSpan DefaultLocalExpiration = TimeSpan.FromMinutes(5);
 
     /// <inheritdoc />
-    public async Task<T> GetOrCreateAsync<T>(
+    public Task<T> GetOrCreateAsync<T>(
         string key,
         Func<CancellationToken, Task<T>> factory,
         TimeSpan? expiration = null,
         TimeSpan? localExpiration = null,
+        CancellationToken cancellationToken = default) where T : notnull
+        => GetOrCreateAsync(key, factory, expiration, localExpiration, tags: null, cancellationToken);
+
+    /// <summary>
+    /// Tag-aware <see cref="GetOrCreateAsync{T}(string, Func{CancellationToken, Task{T}}, TimeSpan?, TimeSpan?, CancellationToken)"/>.
+    /// Associates <paramref name="tags"/> with the cached entry so it can later be evicted via
+    /// <see cref="RemoveByTagAsync(string, CancellationToken)"/>. Tags are a Hybrid-only capability;
+    /// <see cref="Services.RoutingCacheService"/> routes here only when the caller supplied tags.
+    /// </summary>
+    internal async Task<T> GetOrCreateAsync<T>(
+        string key,
+        Func<CancellationToken, Task<T>> factory,
+        TimeSpan? expiration,
+        TimeSpan? localExpiration,
+        IReadOnlyList<string>? tags,
         CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
@@ -59,7 +74,7 @@ internal sealed class HybridCacheService(
                 factoryRan = true;
                 return await factory(ct);
             }
-            var value = await cache.GetOrCreateAsync(key, wrapper, entryOptions, tags: null, cancellationToken);
+            var value = await cache.GetOrCreateAsync(key, wrapper, entryOptions, NormalizeTags(tags), cancellationToken);
             if (factoryRan)
             {
                 CacheInstruments.RecordMiss(Mode, "get_or_create", "NotFound");
@@ -89,14 +104,23 @@ internal sealed class HybridCacheService(
     };
 
     /// <inheritdoc />
-    public async Task SetAsync<T>(string key, T value, TimeSpan? expiration = null, TimeSpan? localExpiration = null, CancellationToken cancellationToken = default) where T : notnull
+    public Task SetAsync<T>(string key, T value, TimeSpan? expiration = null, TimeSpan? localExpiration = null, CancellationToken cancellationToken = default) where T : notnull
+        => SetAsync(key, value, expiration, localExpiration, tags: null, cancellationToken);
+
+    /// <summary>
+    /// Tag-aware <see cref="SetAsync{T}(string, T, TimeSpan?, TimeSpan?, CancellationToken)"/>.
+    /// Associates <paramref name="tags"/> with the cached entry so it can later be evicted via
+    /// <see cref="RemoveByTagAsync(string, CancellationToken)"/>. Tags are a Hybrid-only capability;
+    /// <see cref="Services.RoutingCacheService"/> routes here only when the caller supplied tags.
+    /// </summary>
+    internal async Task SetAsync<T>(string key, T value, TimeSpan? expiration, TimeSpan? localExpiration, IReadOnlyList<string>? tags, CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         if (!options.Value.Enabled || cache == null) return;
         try
         {
             var entryOptions = BuildEntryOptions(expiration, localExpiration);
-            await cache.SetAsync(key, value, entryOptions, tags: null, cancellationToken);
+            await cache.SetAsync(key, value, entryOptions, NormalizeTags(tags), cancellationToken);
             CacheInstruments.RecordSet(Mode);
         }
         catch (Exception ex)
@@ -105,6 +129,14 @@ internal sealed class HybridCacheService(
             CacheInstruments.RecordError(Mode, "set", ClassifyError(ex));
         }
     }
+
+    /// <summary>
+    /// Converts caller-supplied tags into the form expected by <see cref="HybridCache"/>:
+    /// <c>null</c> when there are no tags, otherwise the same sequence. Returning <c>null</c>
+    /// for an empty list avoids associating an entry with a zero-length tag set.
+    /// </summary>
+    private static IEnumerable<string>? NormalizeTags(IReadOnlyList<string>? tags)
+        => tags is { Count: > 0 } ? tags : null;
 
     /// <inheritdoc />
     public async Task RemoveAsync(string key, CancellationToken cancellationToken = default)
@@ -146,6 +178,32 @@ internal sealed class HybridCacheService(
         if (tags == null) return;
         foreach (var tag in tags)
             await RemoveByTagAsync(tag, cancellationToken);
+    }
+
+    /// <summary>
+    /// Invalidates every <see cref="HybridCache"/> entry via the reserved wildcard tag <c>"*"</c>.
+    /// This is a <em>logical</em> invalidation: entries remain in L1/L2 until they expire naturally,
+    /// but are treated as misses on the next read. There is no physical flush of the backing stores.
+    /// <para>
+    /// App scope: although the wildcard is a tag (not a key), the marker is persisted to L2 through the
+    /// Redis adapter whose <c>InstanceName</c> is set to <c>KeyPrefix</c> (see ConfigureHybridCache). The
+    /// marker is therefore namespaced per app, so apps sharing one Redis database do not invalidate each
+    /// other's entries — provided each app uses a unique <c>KeyPrefix</c>.
+    /// </para>
+    /// </summary>
+    internal async Task ClearAsync(CancellationToken cancellationToken = default)
+    {
+        if (!options.Value.Enabled || cache == null) return;
+        try
+        {
+            await cache.RemoveByTagAsync("*", cancellationToken);
+            CacheInstruments.RecordRemove(Mode, "clear");
+        }
+        catch (Exception ex)
+        {
+            logger.HybridClearFailed(ex);
+            CacheInstruments.RecordError(Mode, "clear", ClassifyError(ex));
+        }
     }
 
     /// <inheritdoc />

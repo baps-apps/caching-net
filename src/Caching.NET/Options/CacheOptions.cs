@@ -7,10 +7,19 @@ namespace Caching.NET.Options;
 public sealed class CacheOptions
 {
     /// <summary>
-    /// Required key prefix prepended to every cache key by the routing layer. Must be non-empty,
-    /// must not contain <c>':'</c> (reserved as the delimiter before the user key segment), and match
-    /// <c>^[a-zA-Z0-9][a-zA-Z0-9._-]*$</c> (no whitespace, '*' or '?'). Replaces v1's
-    /// <c>RedisInstanceName</c>: applies uniformly across InMemory/Redis/Hybrid (not just Redis).
+    /// Required cache namespace for this application. Must be non-empty, must not contain <c>':'</c>
+    /// (reserved as the delimiter before the user key segment), and match
+    /// <c>^[a-zA-Z0-9][a-zA-Z0-9._-]*$</c> (no whitespace, '*' or '?'). <b>Must be unique per application</b>
+    /// when multiple apps share a Redis database — this is what isolates one app's data and cache-clears
+    /// from another's.
+    /// <para>
+    /// Applied per mode: <b>InMemory</b> and <b>Redis</b> prepend it to the key at the routing layer
+    /// (so it covers both adapter and direct-multiplexer/SCAN paths). <b>Hybrid</b> applies it as the L2
+    /// Redis <c>InstanceName</c> instead of at the routing layer, so it also namespaces HybridCache's
+    /// tag/wildcard invalidation markers (created below the routing layer). Consequence for Hybrid: L1
+    /// (in-process) keys are unprefixed, which is harmless since L1 is per-process; and a per-call
+    /// <c>Mode = InMemory</c> override in a Hybrid app writes an unprefixed entry.
+    /// </para>
     /// </summary>
     public string KeyPrefix { get; set; } = string.Empty;
 

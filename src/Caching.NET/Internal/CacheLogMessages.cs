@@ -22,6 +22,14 @@ internal static partial class CacheLogMessages
         Message = "Server-side Redis {Operation} failed; falling back to fan-out.")]
     public static partial void RedisMultiplexerFailed(this ILogger logger, string operation, Exception ex);
 
+    [LoggerMessage(EventId = 1003, Level = LogLevel.Debug,
+        Message = "ClearAsync is not supported for the current backend in {Mode} mode; no-op.")]
+    public static partial void ClearNotSupported(this ILogger logger, string mode);
+
+    [LoggerMessage(EventId = 1004, Level = LogLevel.Debug,
+        Message = "Cleared {Count} cache entries matching pattern {Pattern}.")]
+    public static partial void RedisCleared(this ILogger logger, long count, string pattern);
+
     // ── Warning (1100–1199) ───────────────────────────────────────────────────
 
     [LoggerMessage(EventId = 1100, Level = LogLevel.Warning,
@@ -84,6 +92,10 @@ internal static partial class CacheLogMessages
         Message = "KeyTransformer produced an empty key; skipping cache for {Operation}.")]
     public static partial void RoutingKeyRejectedByTransformer(this ILogger logger, string operation);
 
+    [LoggerMessage(EventId = 1115, Level = LogLevel.Warning,
+        Message = "Redis clear failed for pattern {Pattern}.")]
+    public static partial void RedisClearFailed(this ILogger logger, string pattern, Exception ex);
+
     // ── Error (1200–1299) ─────────────────────────────────────────────────────
 
     [LoggerMessage(EventId = 1200, Level = LogLevel.Error,
@@ -101,4 +113,8 @@ internal static partial class CacheLogMessages
     [LoggerMessage(EventId = 1203, Level = LogLevel.Error,
         Message = "Hybrid tag-remove failed for tag {Tag}.")]
     public static partial void HybridTagRemoveFailed(this ILogger logger, string tag, Exception ex);
+
+    [LoggerMessage(EventId = 1204, Level = LogLevel.Error,
+        Message = "Hybrid clear failed.")]
+    public static partial void HybridClearFailed(this ILogger logger, Exception ex);
 }

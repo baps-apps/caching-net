@@ -3,6 +3,7 @@ using Caching.NET.Internal;
 using Caching.NET.Options;
 using Caching.NET.Telemetry;
 using System.Collections.Concurrent;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -50,7 +51,14 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         _inMemory = inMemory;
         _redis = redis;
         _hybrid = hybrid;
-        _keyPrefix = string.IsNullOrEmpty(_startupOptions.KeyPrefix) ? string.Empty : _startupOptions.KeyPrefix + ":";
+        // Hybrid delegates prefixing to the L2 adapter's InstanceName (see ConfigureHybridCache) so the
+        // prefix also covers HybridCache's tag/wildcard invalidation markers, which are created *below*
+        // this routing layer. Prefixing here too would double-stamp Hybrid L2 keys, so routing steps aside
+        // for Hybrid. InMemory/Redis keep routing-layer prefixing (it must cover their direct-multiplexer
+        // and SCAN paths, which bypass the adapter).
+        _keyPrefix = (_startupOptions.Mode == CacheMode.Hybrid || string.IsNullOrEmpty(_startupOptions.KeyPrefix))
+            ? string.Empty
+            : _startupOptions.KeyPrefix + ":";
     }
 
     private bool IsDisabled => !_optionsMonitor.CurrentValue.Enabled;
@@ -98,12 +106,13 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         return TtlJitter.Apply(ttl, pct);
     }
 
-    private Task SetWithExpirationAsync<T>(
+    private static Task SetWithExpirationAsync<T>(
         ICacheService service, string prefixedKey, T value,
         TimeSpan? expiration, TimeSpan? sliding, TimeSpan? localExpiration,
+        IReadOnlyList<string>? tags,
         CancellationToken ct) where T : notnull
     {
-        if (sliding is null) return service.SetAsync(prefixedKey, value, expiration, localExpiration, ct);
+        if (sliding is null) return SetRoutedAsync(service, prefixedKey, value, expiration, localExpiration, tags, ct);
         if (service is InMemoryCacheService inMem)
         {
             var entry = new Microsoft.Extensions.Caching.Memory.MemoryCacheEntryOptions
@@ -115,9 +124,30 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         }
         if (service is RedisCacheService redis)
             return redis.SetWithSlidingAsync(prefixedKey, value, expiration, sliding, ct);
-        // Hybrid does not support sliding — drop silently.
-        return service.SetAsync(prefixedKey, value, expiration, localExpiration, ct);
+        // Hybrid does not support sliding — drop silently. Tags are still honoured.
+        return SetRoutedAsync(service, prefixedKey, value, expiration, localExpiration, tags, ct);
     }
+
+    // Routes a write to the tag-aware Hybrid overload when tags are present, otherwise the core
+    // ICacheService.SetAsync. Tags are a Hybrid-only capability; other modes ignore them.
+    private static Task SetRoutedAsync<T>(
+        ICacheService service, string prefixedKey, T value,
+        TimeSpan? expiration, TimeSpan? localExpiration,
+        IReadOnlyList<string>? tags, CancellationToken ct) where T : notnull
+        => tags is { Count: > 0 } && service is HybridCacheService hybrid
+            ? hybrid.SetAsync(prefixedKey, value, expiration, localExpiration, tags, ct)
+            : service.SetAsync(prefixedKey, value, expiration, localExpiration, ct);
+
+    // Routes a get-or-create to the tag-aware Hybrid overload when tags are present, otherwise the
+    // core ICacheService.GetOrCreateAsync. Tags are a Hybrid-only capability; other modes ignore them.
+    private static Task<T> GetOrCreateRoutedAsync<T>(
+        ICacheService service, string prefixedKey,
+        Func<CancellationToken, Task<T>> factory,
+        TimeSpan? expiration, TimeSpan? localExpiration,
+        IReadOnlyList<string>? tags, CancellationToken ct) where T : notnull
+        => tags is { Count: > 0 } && service is HybridCacheService hybrid
+            ? hybrid.GetOrCreateAsync(prefixedKey, factory, expiration, localExpiration, tags, ct)
+            : service.GetOrCreateAsync(prefixedKey, factory, expiration, localExpiration, ct);
 
     /// <inheritdoc />
     public Task<T> GetOrCreateAsync<T>(
@@ -206,7 +236,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
                     {
                         T value = await factory(ct);
                         var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-                        await SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, ct);
+                        await RoutingCacheService.SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, callOptions?.Tags, ct);
                         CacheInstruments.RecordSet(Mode);
                         return value;
                     }
@@ -226,7 +256,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
                         return await GetOrCreateWithStaleWindowAsync(service, prefixed, factory, callOptions, expiration, localExpiration, swrTtl, innerCt);
 
                     var jitteredExp = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-                    return await service.GetOrCreateAsync(prefixed, factory, jitteredExp, localExpiration, innerCt);
+                    return await GetOrCreateRoutedAsync(service, prefixed, factory, jitteredExp, localExpiration, callOptions?.Tags, innerCt);
                 }
                 finally
                 {
@@ -246,7 +276,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
             {
                 T value = await factory(ct);
                 var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-                await SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, ct);
+                await RoutingCacheService.SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, callOptions?.Tags, ct);
                 CacheInstruments.RecordSet(Mode);
                 return value;
             }
@@ -274,7 +304,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         try
         {
             var jitteredExp = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-            return await service.GetOrCreateAsync(prefixed, factory, jitteredExp, localExpiration, noLockCt);
+            return await GetOrCreateRoutedAsync(service, prefixed, factory, jitteredExp, localExpiration, callOptions?.Tags, noLockCt);
         }
         finally
         {
@@ -308,7 +338,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         if (!TryPreparePrefixedKey(key, "set", out var prefixed)) return Task.CompletedTask;
         var service = ResolveService(callOptions?.Mode);
         var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-        return SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, cancellationToken);
+        return RoutingCacheService.SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, callOptions?.Tags, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -318,6 +348,39 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         if (string.IsNullOrWhiteSpace(key)) return Task.CompletedTask;
         if (!TryPreparePrefixedKey(key, "remove", out var prefixed)) return Task.CompletedTask;
         return ResolveService(modeOverride: null).RemoveAsync(prefixed, cancellationToken);
+    }
+
+    /// <summary>
+    /// Clears cache entries for this application, scoped by <see cref="CacheOptions.KeyPrefix"/>.
+    /// InMemory clears the process memory cache; Redis SCANs and removes <c>{KeyPrefix}:*</c>; Hybrid
+    /// invalidates via the reserved wildcard tag <c>"*"</c>. The Hybrid wildcard marker is namespaced per
+    /// app because KeyPrefix is applied as the Hybrid L2 <c>InstanceName</c> (see ConfigureHybridCache), so
+    /// apps sharing one Redis database do not invalidate each other when each uses a unique KeyPrefix.
+    /// No-op when disabled.
+    /// </summary>
+    public Task ClearAsync(CancellationToken cancellationToken = default)
+    {
+        if (IsDisabled) return Task.CompletedTask;
+        return ResolveService(modeOverride: null) switch
+        {
+            InMemoryCacheService inMemory => inMemory.ClearAsync(cancellationToken),
+            HybridCacheService hybrid => hybrid.ClearAsync(cancellationToken),
+            RedisCacheService redis => redis.ClearAsync(EscapeGlob(_keyPrefix) + "*", cancellationToken),
+            _ => Task.CompletedTask,
+        };
+    }
+
+    // Escapes Redis glob metacharacters so a literal key prefix is matched verbatim by SCAN MATCH.
+    private static string EscapeGlob(string literal)
+    {
+        if (literal.Length == 0) return literal;
+        var sb = new StringBuilder(literal.Length + 8);
+        foreach (var c in literal)
+        {
+            if (c is '\\' or '*' or '?' or '[' or ']') sb.Append('\\');
+            sb.Append(c);
+        }
+        return sb.ToString();
     }
 
     /// <inheritdoc />
@@ -665,4 +728,6 @@ internal interface IRoutingCacheService
         TimeSpan? localExpiration = null,
         CancellationToken cancellationToken = default)
         where T : notnull;
+
+    Task ClearAsync(CancellationToken cancellationToken = default);
 }

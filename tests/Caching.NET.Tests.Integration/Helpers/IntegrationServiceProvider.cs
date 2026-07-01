@@ -25,4 +25,22 @@ internal static class IntegrationServiceProvider
         var sp = services.BuildServiceProvider();
         return (sp, sp.GetRequiredService<ICacheService>());
     }
+
+    public static (IServiceProvider sp, ICacheService cache) BuildHybrid(
+        string redisConnectionString,
+        string keyPrefix,
+        Action<CachingBuilder>? extra = null,
+        Action<IServiceCollection>? configureServices = null)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging(b => b.SetMinimumLevel(LogLevel.Warning));
+        services.AddCaching(b =>
+        {
+            b.UseHybrid(redisConnectionString).WithKeyPrefix(keyPrefix);
+            extra?.Invoke(b);
+        });
+        configureServices?.Invoke(services);
+        var sp = services.BuildServiceProvider();
+        return (sp, sp.GetRequiredService<ICacheService>());
+    }
 }

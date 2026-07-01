@@ -560,7 +560,7 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var redisKeys = Array.ConvertAll(keyList, k => (RedisKey)k);
-                var deleted = await _multiplexer.GetDatabase().KeyDeleteAsync(redisKeys);
+                var deleted = await DeleteKeysAsync(_multiplexer.GetDatabase(), redisKeys);
                 for (long i = 0; i < deleted; i++)
                     CacheInstruments.RecordRemove(Mode);
                 return;
@@ -579,6 +579,108 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         foreach (var k in keyList)
             tasks.Add(RemoveAsync(k, cancellationToken));
         await Task.WhenAll(tasks);
+    }
+
+    // -1 = unknown, 0 = no, 1 = yes. Lazily probed from server features and cached for the
+    // lifetime of the connection (UNLINK requires Redis 4.0+).
+    private int _unlinkSupport = -1;
+
+    private bool SupportsUnlink()
+    {
+        var cached = Volatile.Read(ref _unlinkSupport);
+        if (cached >= 0) return cached == 1;
+
+        bool supported = false;
+        try
+        {
+            foreach (var endpoint in _multiplexer!.GetEndPoints())
+            {
+                var server = _multiplexer.GetServer(endpoint);
+                if (!server.IsConnected) continue;
+                supported = server.Features.Unlink;
+                break;
+            }
+        }
+        catch
+        {
+            supported = false;
+        }
+
+        Volatile.Write(ref _unlinkSupport, supported ? 1 : 0);
+        return supported;
+    }
+
+    // Deletes keys using UNLINK (non-blocking, background reclaim) when the server supports it,
+    // falling back to DEL otherwise. Returns the number of keys removed.
+    private async Task<long> DeleteKeysAsync(IDatabase db, RedisKey[] redisKeys)
+    {
+        if (redisKeys.Length == 0) return 0;
+        if (SupportsUnlink())
+        {
+            var args = new object[redisKeys.Length];
+            for (int i = 0; i < redisKeys.Length; i++) args[i] = redisKeys[i];
+            var result = await db.ExecuteAsync("UNLINK", args);
+            return (long)result;
+        }
+        return await db.KeyDeleteAsync(redisKeys);
+    }
+
+    /// <summary>
+    /// Removes every key matching <paramref name="keyPattern"/> (a Redis glob, typically
+    /// <c>{KeyPrefix}:*</c>) using a cursor-based <c>SCAN</c> followed by batched <c>UNLINK</c>/<c>DEL</c>.
+    /// SCAN is non-blocking and prefix-scoped, so it is safe against a shared Redis database — unlike
+    /// <c>FLUSHDB</c>. Requires the <see cref="IConnectionMultiplexer"/>; logs a no-op otherwise.
+    /// </summary>
+    internal async Task ClearAsync(string keyPattern, CancellationToken cancellationToken = default)
+    {
+        if (_multiplexer is null)
+        {
+            _logger.ClearNotSupported(Mode);
+            return;
+        }
+
+        const int pageSize = 512;
+        try
+        {
+            var db = _multiplexer.GetDatabase();
+            long cleared = 0;
+            foreach (var endpoint in _multiplexer.GetEndPoints())
+            {
+                var server = _multiplexer.GetServer(endpoint);
+                // Only scan reachable primaries: replicas mirror the primary keyspace, and
+                // deletes must target the writable node.
+                if (!server.IsConnected || server.IsReplica) continue;
+
+                var buffer = new List<RedisKey>(pageSize);
+                await foreach (var key in server
+                    .KeysAsync(database: db.Database, pattern: keyPattern, pageSize: pageSize)
+                    .WithCancellation(cancellationToken))
+                {
+                    buffer.Add(key);
+                    if (buffer.Count >= pageSize)
+                    {
+                        cleared += await DeleteKeysAsync(db, buffer.ToArray());
+                        buffer.Clear();
+                    }
+                }
+                if (buffer.Count > 0)
+                    cleared += await DeleteKeysAsync(db, buffer.ToArray());
+            }
+
+            for (long i = 0; i < cleared; i++)
+                CacheInstruments.RecordRemove(Mode, "clear");
+            _logger.RedisCleared(cleared, keyPattern);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (_options.Value.ThrowOnFailure && !_options.Value.FailOpen) throw;
+            _logger.RedisClearFailed(keyPattern, ex);
+            CacheInstruments.RecordError(Mode, "clear", ClassifyError(ex));
+        }
     }
 
     private bool ExceedsKeyLimit(string key, string operation)

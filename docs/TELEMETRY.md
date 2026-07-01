@@ -59,7 +59,7 @@ Default redaction: 64-bit xxHash64 hex of the key (`StableStringHash.Compute64`)
 
 ### `cache.removes` and batch delete
 
-On **Redis**, when `IConnectionMultiplexer` is available, `RemoveManyAsync` uses `KeyDeleteAsync` and increments `cache.removes` **once per key Redis actually deleted** (server-reported count). The per-key `RemoveAsync` path still records one remove per call. In-memory and hybrid batch paths record per key removed via their single-key implementations.
+On **Redis**, when `IConnectionMultiplexer` is available, `RemoveManyAsync` deletes via `UNLINK` (non-blocking background reclaim) when the server supports it (Redis 4.0+), falling back to `DEL` otherwise, and increments `cache.removes` **once per key Redis actually deleted** (server-reported count). The per-key `RemoveAsync` path still records one remove per call. In-memory and hybrid batch paths record per key removed via their single-key implementations. `ClearAsync` records `cache.removes` with `operation="clear"`.
 
 ## OTel collector + Prometheus
 
