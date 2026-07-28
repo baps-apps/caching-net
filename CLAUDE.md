@@ -96,6 +96,16 @@ Avoid adding new members to `ICacheService` directly.
 
 Static `CacheInstruments` (`Meter` / `ActivitySource`) — subscribe with `AddMeter(CacheInstruments.MeterName)` / `AddSource(CacheInstruments.ActivitySourceName)`; both names are **`Caching.NET`**. `WithOpenTelemetry()` remains an API-compatibility hook for apps that already call it.
 
+Per-call visibility lives in `RoutingCacheService`, not the backend services: it creates one `CacheCallRecorder` per call, which starts the span, times the call, wraps the caller's factory to time source retrieval, and on dispose emits exactly one `cache.operation.duration` sample (tagged `cache.served_from` on read-shaped operations) plus `cache.factory.duration` when a factory ran. Backend services must **not** record durations — doing so reintroduces nested double counting. See [docs/TELEMETRY.md](docs/TELEMETRY.md).
+
+Recorder invariants to preserve when touching this path:
+
+- `CacheCallRecorder.Start` returns **null** when no `ActivityListener` and no `MeterListener` are attached, so a consumer without an OTel pipeline allocates nothing. Every call site uses `recorder?.`; don't reintroduce a non-null assumption.
+- Public `ICacheService` methods on `RoutingCacheService` are **non-async wrappers** that validate arguments and return a single async core. That keeps argument exceptions synchronous (fire-and-forget callers see them) and holds the call to one async state machine.
+- Read hit/miss comes from the internal `ICacheReadProbe` (`TryGetAsync` / `TryGetManyAsync`), never from `value is not null` — the null check is unconditionally true for value-type `T`.
+- `HybridCacheService` reads must keep `ReadOnlyProbeOptions` (`DisableLocalCacheWrite | DisableDistributedCacheWrite`) and detect presence via "did the probe factory run". `HybridCache` has no plain get; without those flags a read *writes* its placeholder and poisons the key for the next `GetOrCreateAsync`.
+- A caller factory that throws is tagged `cache.factory_failed`, not `cache.error_kind`: the source failed, not the cache.
+
 ## Publishing
 
 Scripts in `scripts/` use PowerShell Core (`pwsh`) to publish to GitHub Packages. Requires `GITHUB_PAT` env var. See `scripts/README.md` for details.

@@ -4,6 +4,42 @@ All notable changes to Caching.NET are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/). See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for versioning policy.
 
+## 2.3.0 — 2026-07-28
+
+Additive minor release. No public API breaks. Per-call cache telemetry is a new observability layer on top of existing OTel wiring; see the behavior note below for one non-breaking timing nuance.
+
+### Added
+
+- **Per-call cache telemetry:** one `Activity` per `RoutingCacheService` call, emitted by a new internal `CacheCallRecorder`, from `ActivitySource` `Caching.NET`. Span name is `cache {operation}` (e.g. `cache get_or_create`), `ActivityKind.Internal`. Tag set: `cache.mode` / `cache.operation` (always); `cache.served_from` (read-shaped operations); `cache.factory_ms` (a factory ran); `cache.miss_reason`; `cache.hit_count` / `cache.miss_count` (batch reads); `cache.coalesced` (the call waited on another caller's stripe lock — this routing-level lock coalesces every mode, including Hybrid); `cache.error_kind`; `cache.factory_failed`; `cache.key_hash` (single-key operations, opt-in). See [docs/TELEMETRY.md](docs/TELEMETRY.md#tracing).
+- **`cache.factory.duration`** histogram — time inside the caller's factory (source retrieval), tagged `cache.mode` and `cache.operation`. Emitted only when a factory actually ran in that call.
+- **`cache.served_from`** tag on `cache.operation.duration` — one of `cache`, `source`, `mixed`, `none` on read-shaped operations; omitted on write-shaped operations (`set`, `set_many`, `remove`, `remove_many`, `remove_by_tag`, `clear`, `refresh`) rather than carrying a meaningless value.
+- **`CacheOptions.IncludeKeyHashInTraces` is now honored** (previously accepted by config but unused). When `true` (opt-in, default `false`), single-key operations get a `cache.key_hash` tag — `StableStringHash.Compute64(key)` as 16 hex characters, a stable per-key correlation identifier. Raw keys never reach a span or a metric tag, regardless of this setting or `IncludeRawKeyInLogs`.
+
+### Changed
+
+- **`cache.operation.duration` is now recorded once per call, at the routing layer, instead of inside each backend service.** Previously, composite operations emitted a nested sample from each inner backend call in addition to the outer one, so dashboards summing `cache.operation.duration` across operations were double-counting. **Consumer impact:** those per-backend-service samples for inner operations no longer appear at all — only the single sample for the outer call the consumer actually made survives. Rebuild any dashboard or alert that assumed more than one sample per `ICacheService` call; there is now exactly one.
+
+### Fixed
+
+Defects found auditing the telemetry work above, fixed before release:
+
+- **Hybrid mode returned wrong data for value types, and read misses poisoned the key.** `HybridCache` exposes no plain "get" — every read goes through `GetOrCreateAsync`, which *stores* whatever the probe factory returns. `HybridCacheService` did that with default entry options, so a `GetAsync<T>` miss wrote a placeholder under the key and the next real `GetOrCreateAsync` served the placeholder instead of running its factory (`GetAsync<string>(k)` then `GetOrCreateAsync(k, f)` returned `null` forever, until the TTL). Value types were worse: the read path unwrapped a `HybridValueBox<T>` that no write path produced, so `SetAsync(key, 42)` followed by `GetAsync<int>(key)` returned `0` — silently wrong data, in **InMemory and Redis parity terms a plain bug**, not a telemetry one. Reads now run with `HybridCacheEntryFlags.DisableLocalCacheWrite | DisableDistributedCacheWrite` and detect presence by whether the probe factory ran, so a read writes nothing and value types round-trip. The `HybridValueBox<T>` wrapper is gone; no stored payload shape changed.
+
+- **Value-type reads reported every miss as a hit.** `served_from` and `cache.hit_count` were derived from `value is not null`, which is unconditionally true once `T` is a struct — a missing `int` and a cached `0` are the same value. Reads now go through an internal presence-aware probe (`ICacheReadProbe`), implemented by all three backends, so `GetAsync<int>` / `GetManyAsync<int>` report presence correctly.
+- **Factory timeouts were invisible.** A blown `CacheOptions.FactoryTimeout` surfaces as `OperationCanceledException`, was classified `Canceled`, and the recorder deliberately never marks `Canceled` as an error — so every timed-out factory looked like a client disconnect. Cancellation is now classified against the caller's own token: caller-cancelled stays `Canceled` (unset status), anything else is `Timeout` and marks the span `Error`.
+- **A caller's factory throwing was tagged as a cache error.** The span carried `cache.error_kind=Unknown` while `cache.errors` was never incremented, so span and metric disagreed and cache-error dashboards counted flaky upstreams. A factory fault is now tagged `cache.factory_failed=true` with span status `Error` and no `cache.error_kind`.
+- **Background stale refreshes were parented onto the request that triggered them.** `Task.Run` captured `Activity.Current`, so a refresh that outlives the request hung a long-running child off an already-ended span. `stale_refresh` now starts a root span with an `ActivityLink` back to the trigger.
+- **`refresh` carried a constant `served_from=source`** — a label that split series and said nothing. It is treated as write-shaped for tagging; `cache.factory_ms` / `cache.factory.duration` remain.
+
+### Performance
+
+- **The recorder is no longer allocated when nothing is listening.** `CacheCallRecorder.Start` returns `null` unless an `ActivityListener` or a `MeterListener` is attached, and the factory wrapper is only allocated alongside it. Public routing methods also went back to non-async validation wrappers over a single async core, removing a second async state machine per `get_or_create`. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the InMemory numbers.
+
+### Behavior notes
+
+- Argument-validation exceptions (`ArgumentException.ThrowIfNullOrWhiteSpace` / `ArgumentNullException.ThrowIfNull`) throw **synchronously**, as they did before 2.3.0. An intermediate form of this release routed them through the returned `Task`; validation now lives in a non-async wrapper, so a fire-and-forget `_ = cache.SetAsync(badKey, v)` throws at the call site rather than becoming an unobserved task exception.
+- `cache.error_kind` covers failures the routing layer sees: exceptions that escape to the caller, and swallowed background `stale_refresh` failures. Backend fail-open failures (a Redis blip that `RedisCacheService` catches and turns into a miss) do **not** reach it — they surface on the `cache.errors` counter tagged `cache.mode=Redis`. Alert on that counter, not on span status.
+
 ## 2.2.0 — 2026-06-30
 
 Additive minor release. No public API breaks. One operational behavior change for Hybrid L2 key naming (see Changed) that cold-starts the Hybrid distributed cache on upgrade.

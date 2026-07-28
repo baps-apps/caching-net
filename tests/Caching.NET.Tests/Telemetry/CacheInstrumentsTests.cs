@@ -116,4 +116,44 @@ public sealed class CacheInstrumentsTests
         Assert.Equal(1L, values[0].value);
         Assert.Equal(-1L, values[1].value);
     }
+
+    [Fact]
+    public void RecordFactoryDuration_emits_histogram_with_mode_and_operation()
+    {
+        var modeTag = $"unit-factory-{Guid.NewGuid():N}";
+        var (values, listener) = MeterListenerHelpers.Capture<double>("cache.factory.duration", modeTag);
+        using var _ = listener;
+
+        CacheInstruments.RecordFactoryDuration(modeTag, "get_or_create", 187.5);
+
+        Assert.Single(values);
+        Assert.Equal(187.5, values[0].value);
+        Assert.Contains(values[0].tags, t => t.Key == "cache.operation" && (string?)t.Value == "get_or_create");
+    }
+
+    [Fact]
+    public void RecordDuration_with_servedFrom_adds_served_from_tag()
+    {
+        var modeTag = $"unit-served-{Guid.NewGuid():N}";
+        var (values, listener) = MeterListenerHelpers.Capture<double>("cache.operation.duration", modeTag);
+        using var _ = listener;
+
+        CacheInstruments.RecordDuration(modeTag, "get_or_create", 12.5, "source");
+
+        Assert.Single(values);
+        Assert.Contains(values[0].tags, t => t.Key == "cache.served_from" && (string?)t.Value == "source");
+    }
+
+    [Fact]
+    public void RecordDuration_with_null_servedFrom_omits_the_tag()
+    {
+        var modeTag = $"unit-noserved-{Guid.NewGuid():N}";
+        var (values, listener) = MeterListenerHelpers.Capture<double>("cache.operation.duration", modeTag);
+        using var _ = listener;
+
+        CacheInstruments.RecordDuration(modeTag, "set", 3.0, servedFrom: null);
+
+        Assert.Single(values);
+        Assert.DoesNotContain(values[0].tags, t => t.Key == "cache.served_from");
+    }
 }

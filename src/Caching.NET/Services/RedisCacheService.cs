@@ -21,7 +21,7 @@ namespace Caching.NET.Services;
 /// and an outer per-op timeout via linked <see cref="CancellationTokenSource"/>.
 /// Values are serialized via the registered <see cref="ICacheSerializer"/>.
 /// </summary>
-internal sealed class RedisCacheService : Abstractions.ICacheService
+internal sealed class RedisCacheService : Abstractions.ICacheService, ICacheReadProbe
 {
     private const string Mode = "Redis";
     private static readonly TimeSpan DefaultExpiration = TimeSpan.FromMinutes(10);
@@ -346,6 +346,15 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
     }
 
     /// <inheritdoc />
+    // GetCoreAsync hands back object?, where null is unambiguously "absent" even for a value type
+    // (a cached struct arrives boxed), so presence survives the trip that T? loses it on.
+    public async Task<CacheProbe<T>> TryGetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull
+    {
+        var value = await GetCoreAsync(key, typeof(T), StableTypeHash.Compute<T>(), cancellationToken);
+        return value is null ? new CacheProbe<T>(false, default) : new CacheProbe<T>(true, (T)value);
+    }
+
+    /// <inheritdoc />
     public Task<object?> GetAsync(string key, Type type, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(type);
@@ -456,9 +465,19 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
     public async Task<IReadOnlyDictionary<string, T?>> GetManyAsync<T>(
         IEnumerable<string> keys, CancellationToken cancellationToken = default) where T : notnull
     {
+        var probes = await TryGetManyAsync<T>(keys, cancellationToken);
+        var dict = new Dictionary<string, T?>(probes.Count);
+        foreach (var kvp in probes) dict[kvp.Key] = kvp.Value.Value;
+        return dict;
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<string, CacheProbe<T>>> TryGetManyAsync<T>(
+        IEnumerable<string> keys, CancellationToken cancellationToken = default) where T : notnull
+    {
         ArgumentNullException.ThrowIfNull(keys);
         var keyList = keys.Where(k => !string.IsNullOrWhiteSpace(k)).ToArray();
-        if (keyList.Length == 0) return new Dictionary<string, T?>();
+        if (keyList.Length == 0) return new Dictionary<string, CacheProbe<T>>();
 
         if (_multiplexer is not null)
         {
@@ -476,12 +495,12 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                 batch.Execute();
                 RedisValue[] rawValues = await Task.WhenAll(hashTasks);
 
-                var dict = new Dictionary<string, T?>(keyList.Length);
+                var dict = new Dictionary<string, CacheProbe<T>>(keyList.Length);
                 var expectedFormat = ResolveFormatId(_serializer.FormatId);
                 var expectedSchema = StableTypeHash.Compute<T>();
                 for (int i = 0; i < keyList.Length; i++)
                 {
-                    if (!rawValues[i].HasValue) { dict[keyList[i]] = default; continue; }
+                    if (!rawValues[i].HasValue) { dict[keyList[i]] = new CacheProbe<T>(false, default); continue; }
                     byte[] wire = (byte[])rawValues[i]!;
                     var status = PayloadEnvelope.TryRead(wire, expectedFormat, expectedSchema, out var payload);
                     if (status == PayloadEnvelopeReadResult.Ok)
@@ -489,18 +508,20 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
                         try
                         {
                             var decoded = DecodePayload(PayloadMemoryFromWire(wire, payload), wire[4]);
-                            dict[keyList[i]] = DeserializeTimed<T>(decoded);
+                            dict[keyList[i]] = new CacheProbe<T>(true, DeserializeTimed<T>(decoded));
                         }
                         catch (Exception)
                         {
-                            dict[keyList[i]] = default;
+                            // A payload that will not decode is a miss to the caller, so it must be a
+                            // miss to the probe too — otherwise served_from would claim a cache hit.
+                            dict[keyList[i]] = new CacheProbe<T>(false, default);
                             CacheInstruments.RecordMiss(Mode, "get_many", "EnvelopeInvalid");
                             CacheInstruments.RecordSchemaDrift(Mode, "envelope_invalid");
                         }
                     }
                     else
                     {
-                        dict[keyList[i]] = default;
+                        dict[keyList[i]] = new CacheProbe<T>(false, default);
                         CacheInstruments.RecordMiss(Mode, "get_many", "EnvelopeInvalid");
                         if (status == PayloadEnvelopeReadResult.SchemaDrift)
                             CacheInstruments.RecordSchemaDrift(Mode, "schema_drift");
@@ -523,12 +544,12 @@ internal sealed class RedisCacheService : Abstractions.ICacheService
         return await FanOutGetManyAsync<T>(keyList, cancellationToken);
     }
 
-    private async Task<Dictionary<string, T?>> FanOutGetManyAsync<T>(string[] keys, CancellationToken ct) where T : notnull
+    private async Task<Dictionary<string, CacheProbe<T>>> FanOutGetManyAsync<T>(string[] keys, CancellationToken ct) where T : notnull
     {
-        var tasks = new Task<T?>[keys.Length];
-        for (int i = 0; i < keys.Length; i++) tasks[i] = GetAsync<T>(keys[i], ct);
+        var tasks = new Task<CacheProbe<T>>[keys.Length];
+        for (int i = 0; i < keys.Length; i++) tasks[i] = TryGetAsync<T>(keys[i], ct);
         var values = await Task.WhenAll(tasks);
-        var dict = new Dictionary<string, T?>(keys.Length);
+        var dict = new Dictionary<string, CacheProbe<T>>(keys.Length);
         for (int i = 0; i < keys.Length; i++) dict[keys[i]] = values[i];
         return dict;
     }

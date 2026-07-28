@@ -27,7 +27,7 @@ internal sealed class HybridCacheService(
     HybridCache? cache,
     IOptions<CacheOptions> options,
     ILogger<HybridCacheService> logger,
-    IDistributedCache? distributedCache = null) : Abstractions.ICacheService
+    IDistributedCache? distributedCache = null) : Abstractions.ICacheService, ICacheReadProbe
 {
     private const string Mode = "Hybrid";
     private static readonly TimeSpan DefaultExpiration = TimeSpan.FromMinutes(10);
@@ -208,52 +208,56 @@ internal sealed class HybridCacheService(
 
     /// <inheritdoc />
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull
+        => (await TryGetAsync<T>(key, cancellationToken)).Value;
+
+    /// <summary>
+    /// Entry options for a read that must not write. <see cref="HybridCache"/> exposes no plain "get" —
+    /// every read goes through <c>GetOrCreateAsync</c>, which stores whatever the factory returns. Without
+    /// these flags a probe factory's placeholder is persisted under the key, so a miss on
+    /// <see cref="GetAsync{T}"/> poisons the entry and the next real <c>GetOrCreateAsync</c>
+    /// serves the placeholder instead of running its factory.
+    /// </summary>
+    private static readonly HybridCacheEntryOptions ReadOnlyProbeOptions = new()
+    {
+        Flags = HybridCacheEntryFlags.DisableLocalCacheWrite | HybridCacheEntryFlags.DisableDistributedCacheWrite,
+    };
+
+    /// <inheritdoc />
+    public async Task<CacheProbe<T>> TryGetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         if (!options.Value.Enabled || cache == null)
         {
             CacheInstruments.RecordMiss(Mode, "get", "Disabled");
-            return default;
+            return new CacheProbe<T>(false, default);
         }
         try
         {
-            if (typeof(T).IsValueType && Nullable.GetUnderlyingType(typeof(T)) is null)
-            {
-                HybridValueBox<T>? boxed = await cache.GetOrCreateAsync(
-                    key,
-                    static _ => ValueTask.FromResult<HybridValueBox<T>?>(null),
-                    options: null,
-                    tags: null,
-                    cancellationToken);
-                if (boxed is null)
-                {
-                    CacheInstruments.RecordMiss(Mode, "get", "NotFound");
-                    return default;
-                }
-
-                CacheInstruments.RecordHit(Mode, "get");
-                return boxed.Value;
-            }
-
+            // Presence is "did the probe factory run", not "is the result null". A null check cannot
+            // express a miss for a value type — a cached 0 and a missing int are both 0 — and the
+            // previous attempt to solve that by reading through a HybridValueBox<T> wrapper read a
+            // shape no write path ever produced, so every value-type read missed.
+            var found = true;
             T value = await cache.GetOrCreateAsync(
                 key,
-                static _ => ValueTask.FromResult(default(T)!),
-                options: null,
+                _ => { found = false; return ValueTask.FromResult(default(T)!); },
+                ReadOnlyProbeOptions,
                 tags: null,
                 cancellationToken);
-            if (value is null)
+
+            if (!found)
             {
                 CacheInstruments.RecordMiss(Mode, "get", "NotFound");
-                return default;
+                return new CacheProbe<T>(false, default);
             }
 
             CacheInstruments.RecordHit(Mode, "get");
-            return value;
+            return new CacheProbe<T>(true, value);
         }
         catch (Exception ex)
         {
             CacheInstruments.RecordError(Mode, "get", ClassifyError(ex));
-            return default;
+            return new CacheProbe<T>(false, default);
         }
     }
 
@@ -335,6 +339,20 @@ internal sealed class HybridCacheService(
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<string, CacheProbe<T>>> TryGetManyAsync<T>(
+        IEnumerable<string> keys, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        var dict = new Dictionary<string, CacheProbe<T>>();
+        foreach (var k in keys)
+        {
+            if (string.IsNullOrWhiteSpace(k)) continue;
+            dict[k] = await TryGetAsync<T>(k, cancellationToken);
+        }
+        return dict;
+    }
+
+    /// <inheritdoc />
     public async Task SetManyAsync<T>(
         IReadOnlyDictionary<string, T> items,
         TimeSpan? expiration = null,
@@ -373,6 +391,4 @@ internal sealed class HybridCacheService(
             LocalCacheExpiration = localExpiration ?? expiration ?? DefaultLocalExpiration
         };
     }
-
-    private sealed record HybridValueBox<T>(T Value);
 }

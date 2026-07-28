@@ -1,6 +1,8 @@
 # Benchmarks
 
-Run on macOS arm64, .NET 10. Numbers below are illustrative placeholders; the authoritative source is `benchmark/Caching.NET.Benchmark/bench-baseline.json`.
+Run on macOS arm64, .NET 10. The authoritative source is `benchmark/Caching.NET.Benchmark/bench-baseline.json`; the `GetOrCreateAsync` InMemory rows below are measured, the rest are illustrative placeholders and are marked as such.
+
+The perf gate (`benchmark/perf-gate.ps1`) fails on a >10% regression against that baseline. A baseline of `AllocatedBytes: 0` means "must stay allocation-free" — any allocation fails.
 
 To regenerate: `pwsh scripts/dev.ps1 bench`
 
@@ -8,10 +10,14 @@ To regenerate: `pwsh scripts/dev.ps1 bench`
 
 | Mode | Scenario | Mean (ns) | Allocated (B) |
 |------|----------|----------:|--------------:|
-| InMemory | Hit hot key | ~200 | 0 |
-| InMemory | Miss + factory | ~2 000 | ~400 |
+| InMemory | Hit hot key | ~140 | ~400 |
+| InMemory | Miss + factory | ~620 | ~1 096 |
 | Redis    | Hit hot key | ~250 000 | ~400 |
 | Hybrid   | Hit L1 | ~60 | 0 |
+
+The InMemory rows are measured with **no OTel pipeline attached**, which is the state `CacheCallRecorder.Start` optimizes for: with no `ActivityListener` and no `MeterListener`, it returns `null` and the call allocates nothing for telemetry — these numbers match the pre-telemetry ones. Attach a metrics or tracing pipeline and a recorder (plus the factory wrapper on `get_or_create`) is allocated per call; that is the cost of the signal, and it is only paid by consumers who asked for it.
+
+The Redis and Hybrid rows are not backed by a benchmark in this project; treat them as illustrative until one exists.
 
 Micro-benchmarks do not yet surface `cache.serialize.duration` / `cache.deserialize.duration`; use production metrics or ad-hoc profiling for serializer regressions.
 

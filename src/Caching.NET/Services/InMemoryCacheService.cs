@@ -14,7 +14,7 @@ namespace Caching.NET.Services;
 internal sealed class InMemoryCacheService(
     IMemoryCache cache,
     IOptions<CacheOptions> options,
-    ILogger<InMemoryCacheService> logger) : Abstractions.ICacheService
+    ILogger<InMemoryCacheService> logger) : Abstractions.ICacheService, ICacheReadProbe
 {
     private const string Mode = "InMemory";
     private static readonly TimeSpan FallbackExpiration = TimeSpan.FromMinutes(10);
@@ -139,13 +139,28 @@ internal sealed class InMemoryCacheService(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         _ = cancellationToken;
+        return Task.FromResult(ProbeCore<T>(key, "get").Value);
+    }
+
+    /// <inheritdoc />
+    public Task<CacheProbe<T>> TryGetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        _ = cancellationToken;
+        return Task.FromResult(ProbeCore<T>(key, "get"));
+    }
+
+    // Single presence-aware read shared by GetAsync/TryGetAsync/GetManyAsync so hit-miss counters
+    // and the found flag can never disagree.
+    private CacheProbe<T> ProbeCore<T>(string key, string operation) where T : notnull
+    {
         if (cache.TryGetValue(key, out T? cached))
         {
-            CacheInstruments.RecordHit(Mode, "get");
-            return Task.FromResult<T?>(cached);
+            CacheInstruments.RecordHit(Mode, operation);
+            return new CacheProbe<T>(true, cached);
         }
-        CacheInstruments.RecordMiss(Mode, "get", "NotFound");
-        return Task.FromResult<T?>(default);
+        CacheInstruments.RecordMiss(Mode, operation, "NotFound");
+        return new CacheProbe<T>(false, default);
     }
 
     /// <inheritdoc />
@@ -199,18 +214,24 @@ internal sealed class InMemoryCacheService(
         foreach (var k in keys)
         {
             if (string.IsNullOrWhiteSpace(k)) continue;
-            if (cache.TryGetValue(k, out T? cached))
-            {
-                CacheInstruments.RecordHit(Mode, "get");
-                dict[k] = cached;
-            }
-            else
-            {
-                CacheInstruments.RecordMiss(Mode, "get", "NotFound");
-                dict[k] = default;
-            }
+            dict[k] = ProbeCore<T>(k, "get").Value;
         }
         return Task.FromResult<IReadOnlyDictionary<string, T?>>(dict);
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyDictionary<string, CacheProbe<T>>> TryGetManyAsync<T>(
+        IEnumerable<string> keys, CancellationToken cancellationToken = default) where T : notnull
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        _ = cancellationToken;
+        var dict = new Dictionary<string, CacheProbe<T>>();
+        foreach (var k in keys)
+        {
+            if (string.IsNullOrWhiteSpace(k)) continue;
+            dict[k] = ProbeCore<T>(k, "get");
+        }
+        return Task.FromResult<IReadOnlyDictionary<string, CacheProbe<T>>>(dict);
     }
 
     /// <inheritdoc />

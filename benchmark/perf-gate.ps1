@@ -50,10 +50,20 @@ foreach ($file in $jsonFiles) {
             }
         }
 
-        if ($baseEntry.AllocatedBytes -gt 0) {
-            $allocDelta = ($allocBytes - $baseEntry.AllocatedBytes) / $baseEntry.AllocatedBytes
-            if ($allocDelta -gt $threshold) {
-                $regressions += "$name Allocated regressed by $([Math]::Round($allocDelta * 100, 1))%"
+        # A zero baseline means "this benchmark allocates nothing" — the strictest claim there is, so
+        # any allocation at all is a regression. Skipping the check when the baseline is 0 (the old
+        # behavior) made the one number worth guarding the one number that was never guarded.
+        if ($null -ne $baseEntry.AllocatedBytes) {
+            if ($baseEntry.AllocatedBytes -eq 0) {
+                if ($allocBytes -gt 0) {
+                    $regressions += "$name Allocated regressed from 0 B to $allocBytes B"
+                }
+            }
+            else {
+                $allocDelta = ($allocBytes - $baseEntry.AllocatedBytes) / $baseEntry.AllocatedBytes
+                if ($allocDelta -gt $threshold) {
+                    $regressions += "$name Allocated regressed by $([Math]::Round($allocDelta * 100, 1))%"
+                }
             }
         }
     }

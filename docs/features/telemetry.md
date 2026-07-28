@@ -32,7 +32,8 @@ Defined in [src/Caching.NET/Telemetry/CacheInstruments.cs](../../src/Caching.NET
 | `cache.evictions` | counter | Entry evictions (tagged by `cache.eviction_reason`) |
 | `cache.stale_served` | counter | Stale entries served while a background refresh ran |
 | `cache.stale_refresh.in_flight` | up-down counter | Background refresh tasks currently running |
-| `cache.operation.duration` | histogram (ms) | End-to-end op latency |
+| `cache.operation.duration` | histogram (ms) | Total per call, one sample, tagged `cache.served_from` ([details](../TELEMETRY.md#cacheoperationduration-and-cachefactoryduration)) |
+| `cache.factory.duration` | histogram (ms) | Source (factory) retrieval time, when a factory ran |
 | `cache.serialize.duration` / `cache.deserialize.duration` | histogram (ms) | Serializer encode/decode latency (Redis wire path) |
 | `cache.payload.bytes` | histogram (bytes) | Serialized payload size |
 | `cache.circuit_state_changes` | counter | Polly circuit-breaker transitions |

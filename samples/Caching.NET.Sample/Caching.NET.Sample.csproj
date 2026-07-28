@@ -9,6 +9,9 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <!-- Direct reference only to lift the vulnerable transitive Microsoft.OpenApi 2.0.0 that
+         Microsoft.AspNetCore.OpenApi pulls in; version comes from Directory.Packages.props. -->
+    <PackageReference Include="Microsoft.OpenApi" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="CodeStyle.NET" />

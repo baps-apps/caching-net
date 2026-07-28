@@ -3,6 +3,7 @@ using Caching.NET.Internal;
 using Caching.NET.Options;
 using Caching.NET.Telemetry;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -61,14 +62,16 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
             : _startupOptions.KeyPrefix + ":";
     }
 
-    private bool IsDisabled => !_optionsMonitor.CurrentValue.Enabled;
-
     private string PrependPrefix(string key) => _keyPrefix.Length == 0 ? key : _keyPrefix + key;
 
-    private bool TryPreparePrefixedKey(string userKey, string operation, out string prefixed)
+    // Every public entry point snapshots IOptionsMonitor.CurrentValue exactly once and threads that
+    // snapshot through. CurrentValue is not a field read — it goes through the options cache on every
+    // call — and reading it four times per get_or_create showed up in the hot-path allocation profile.
+    // Snapshotting is also the more defensible semantics: one call sees one configuration, even if a
+    // reload lands mid-call.
+    private bool TryPreparePrefixedKey(string userKey, string operation, CacheOptions opts, out string prefixed)
     {
         var segment = userKey;
-        var opts = _optionsMonitor.CurrentValue;
         if (opts.KeyTransformer is { } xf)
         {
             segment = xf(segment);
@@ -99,10 +102,10 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         return true;
     }
 
-    private TimeSpan? ApplyJitter(TimeSpan? expiration, double? perCallPercentage)
+    private static TimeSpan? ApplyJitter(TimeSpan? expiration, double? perCallPercentage, CacheOptions opts)
     {
         if (expiration is not { } ttl) return expiration;
-        var pct = perCallPercentage ?? _optionsMonitor.CurrentValue.TtlJitterPercentage;
+        var pct = perCallPercentage ?? opts.TtlJitterPercentage;
         return TtlJitter.Apply(ttl, pct);
     }
 
@@ -160,7 +163,11 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         => GetOrCreateAsync(key, factory, callOptions: null, expiration, localExpiration, cancellationToken);
 
     /// <inheritdoc />
-    public async Task<T> GetOrCreateAsync<T>(
+    // Argument validation sits in a non-async wrapper so it still throws on the calling thread rather
+    // than through the returned Task — a fire-and-forget `_ = cache.GetOrCreateAsync(badKey, f)` must
+    // fail loudly at the call site, not as an unobserved task exception. The wrapper also keeps the
+    // whole call to a single async state machine.
+    public Task<T> GetOrCreateAsync<T>(
         string key,
         Func<CancellationToken, Task<T>> factory,
         CacheCallOptions? callOptions,
@@ -170,145 +177,186 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
+        return GetOrCreateCoreAsync(key, factory, callOptions, expiration, localExpiration, cancellationToken);
+    }
 
-        if (IsDisabled)
+    private async Task<T> GetOrCreateCoreAsync<T>(
+        string key,
+        Func<CancellationToken, Task<T>> factory,
+        CacheCallOptions? callOptions,
+        TimeSpan? expiration,
+        TimeSpan? localExpiration,
+        CancellationToken cancellationToken)
+        where T : notnull
+    {
+        var opts = _optionsMonitor.CurrentValue;
+        using var recorder = CacheCallRecorder.Start(Mode, opts, "get_or_create", key);
+        try
         {
-            CacheInstruments.RecordMiss(Mode, "get_or_create", "Disabled");
-            return await factory(cancellationToken);
-        }
+            var originalFactory = factory;
+            if (recorder is not null) factory = recorder.WrapFactory(factory);
 
-        if (!TryPreparePrefixedKey(key, "get_or_create", out var prefixed))
-        {
-            CacheInstruments.RecordMiss(Mode, "get_or_create", "KeyRejected");
-            return await factory(cancellationToken);
-        }
-
-        if ((callOptions?.BypassCache ?? false))
-        {
-            CacheInstruments.RecordMiss(Mode, "get_or_create", "Bypass");
-            var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
-            try
+            if (!opts.Enabled)
             {
-                return await factory(ct);
+                CacheInstruments.RecordMiss(Mode, "get_or_create", "Disabled");
+                recorder?.MarkMissReason("Disabled");
+                return await factory(cancellationToken);
             }
-            finally
+
+            if (!TryPreparePrefixedKey(key, "get_or_create", opts, out var prefixed))
             {
-                cts?.Dispose();
+                CacheInstruments.RecordMiss(Mode, "get_or_create", "KeyRejected");
+                recorder?.MarkMissReason("KeyRejected");
+                return await factory(cancellationToken);
             }
-        }
 
-        var service = ResolveService(callOptions?.Mode);
-
-        // Stale-while-revalidate: if the entry is past its logical expiry but within the stale
-        // window, return the stale value immediately and schedule a background refresh.
-        // Not supported for Hybrid mode (Hybrid manages its own L1/L2 revalidation internally).
-        var allowStaleFor = callOptions?.AllowStaleFor;
-        if (allowStaleFor is { } swWindow && !IsHybridMode() && _staleTracker.TryGet(prefixed, out var staleMeta))
-        {
-            var nowTicks = DateTime.UtcNow.Ticks;
-            if (nowTicks > staleMeta.AbsExpiresAtUtcTicks && nowTicks <= staleMeta.StaleUntilUtcTicks)
+            if ((callOptions?.BypassCache ?? false))
             {
-                var stale = await service.GetAsync<T>(prefixed, cancellationToken);
-                if (stale is not null)
-                {
-                    CacheInstruments.RecordStaleServed(Mode, "get_or_create");
-                    ScheduleBackgroundRefresh(prefixed, factory, callOptions, expiration, localExpiration);
-                    return stale;
-                }
-                _staleTracker.Forget(prefixed);
-            }
-            else if (nowTicks > staleMeta.StaleUntilUtcTicks)
-            {
-                _staleTracker.Forget(prefixed);
-            }
-        }
-
-        if ((callOptions?.CoalesceConcurrent ?? true))
-        {
-            var semaphore = _lockManager.GetLock(prefixed);
-            await semaphore.WaitAsync(cancellationToken);
-            try
-            {
-                if ((callOptions?.ForceRefresh ?? false))
-                {
-                    var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
-                    try
-                    {
-                        T value = await factory(ct);
-                        var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-                        await RoutingCacheService.SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, callOptions?.Tags, ct);
-                        CacheInstruments.RecordSet(Mode);
-                        return value;
-                    }
-                    finally
-                    {
-                        cts?.Dispose();
-                    }
-                }
-
-                var innerCt = ApplyFactoryTimeout(cancellationToken, out var innerCts);
+                CacheInstruments.RecordMiss(Mode, "get_or_create", "Bypass");
+                recorder?.MarkMissReason("Bypass");
+                var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
                 try
                 {
-                    // When AllowStaleFor is configured, extend the underlying TTL so the entry
-                    // remains readable during the stale window, and register metadata so future
-                    // reads can detect the stale condition without a cache miss.
-                    if (allowStaleFor is { } swrTtl && !IsHybridMode())
-                        return await GetOrCreateWithStaleWindowAsync(service, prefixed, factory, callOptions, expiration, localExpiration, swrTtl, innerCt);
-
-                    var jitteredExp = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-                    return await GetOrCreateRoutedAsync(service, prefixed, factory, jitteredExp, localExpiration, callOptions?.Tags, innerCt);
+                    return await factory(ct);
                 }
                 finally
                 {
-                    innerCts?.Dispose();
+                    cts?.Dispose();
                 }
             }
-            finally
-            {
-                semaphore.Release();
-            }
-        }
 
-        if ((callOptions?.ForceRefresh ?? false))
-        {
-            var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
+            var service = ResolveService(callOptions?.Mode);
+            recorder?.SetMode(ModeNameOf(service));
+
+            // Stale-while-revalidate: if the entry is past its logical expiry but within the stale
+            // window, return the stale value immediately and schedule a background refresh.
+            // Not supported for Hybrid mode (Hybrid manages its own L1/L2 revalidation internally).
+            var allowStaleFor = callOptions?.AllowStaleFor;
+            if (allowStaleFor is { } swWindow && !IsHybridMode() && _staleTracker.TryGet(prefixed, out var staleMeta))
+            {
+                var nowTicks = DateTime.UtcNow.Ticks;
+                if (nowTicks > staleMeta.AbsExpiresAtUtcTicks && nowTicks <= staleMeta.StaleUntilUtcTicks)
+                {
+                    var stale = await service.GetAsync<T>(prefixed, cancellationToken);
+                    if (stale is not null)
+                    {
+                        CacheInstruments.RecordStaleServed(Mode, "get_or_create");
+                        recorder?.MarkServedFromCache();
+                        ScheduleBackgroundRefresh(key, prefixed, originalFactory, callOptions, expiration, localExpiration);
+                        return stale;
+                    }
+                    _staleTracker.Forget(prefixed);
+                }
+                else if (nowTicks > staleMeta.StaleUntilUtcTicks)
+                {
+                    _staleTracker.Forget(prefixed);
+                }
+            }
+
+            if ((callOptions?.CoalesceConcurrent ?? true))
+            {
+                var semaphore = _lockManager.GetLock(prefixed);
+                var waitTask = semaphore.WaitAsync(cancellationToken);
+                if (!waitTask.IsCompleted) recorder?.MarkCoalesced();
+                await waitTask;
+                try
+                {
+                    if ((callOptions?.ForceRefresh ?? false))
+                    {
+                        var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
+                        try
+                        {
+                            T value = await factory(ct);
+                            var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage, opts);
+                            await RoutingCacheService.SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, callOptions?.Tags, ct);
+                            CacheInstruments.RecordSet(Mode);
+                            return value;
+                        }
+                        finally
+                        {
+                            cts?.Dispose();
+                        }
+                    }
+
+                    var innerCt = ApplyFactoryTimeout(cancellationToken, out var innerCts);
+                    try
+                    {
+                        // When AllowStaleFor is configured, extend the underlying TTL so the entry
+                        // remains readable during the stale window, and register metadata so future
+                        // reads can detect the stale condition without a cache miss.
+                        if (allowStaleFor is { } swrTtl && !IsHybridMode())
+                        {
+                            var swrResult = await GetOrCreateWithStaleWindowAsync(service, prefixed, factory, callOptions, expiration, localExpiration, swrTtl, opts, innerCt);
+                            recorder?.MarkServedFromCache();
+                            return swrResult;
+                        }
+
+                        var jitteredExp = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage, opts);
+                        var routedResult = await GetOrCreateRoutedAsync(service, prefixed, factory, jitteredExp, localExpiration, callOptions?.Tags, innerCt);
+                        recorder?.MarkServedFromCache();
+                        return routedResult;
+                    }
+                    finally
+                    {
+                        innerCts?.Dispose();
+                    }
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            }
+
+            if ((callOptions?.ForceRefresh ?? false))
+            {
+                var ct = ApplyFactoryTimeout(cancellationToken, out var cts);
+                try
+                {
+                    T value = await factory(ct);
+                    var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage, opts);
+                    await RoutingCacheService.SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, callOptions?.Tags, ct);
+                    CacheInstruments.RecordSet(Mode);
+                    return value;
+                }
+                finally
+                {
+                    cts?.Dispose();
+                }
+            }
+
+            // No-coalesce path: when AllowStaleFor is configured, use extended TTL + register metadata.
+            if (allowStaleFor is { } swrNoLock && !IsHybridMode())
+            {
+                var noLockCtSwr = ApplyFactoryTimeout(cancellationToken, out var noLockCtsSwr);
+                try
+                {
+                    var swrResult = await GetOrCreateWithStaleWindowAsync(service, prefixed, factory, callOptions, expiration, localExpiration, swrNoLock, opts, noLockCtSwr);
+                    recorder?.MarkServedFromCache();
+                    return swrResult;
+                }
+                finally
+                {
+                    noLockCtsSwr?.Dispose();
+                }
+            }
+
+            var noLockCt = ApplyFactoryTimeout(cancellationToken, out var noLockCts);
             try
             {
-                T value = await factory(ct);
-                var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-                await RoutingCacheService.SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, callOptions?.Tags, ct);
-                CacheInstruments.RecordSet(Mode);
-                return value;
+                var jitteredExp = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage, opts);
+                var routedResult = await GetOrCreateRoutedAsync(service, prefixed, factory, jitteredExp, localExpiration, callOptions?.Tags, noLockCt);
+                recorder?.MarkServedFromCache();
+                return routedResult;
             }
             finally
             {
-                cts?.Dispose();
+                noLockCts?.Dispose();
             }
         }
-
-        // No-coalesce path: when AllowStaleFor is configured, use extended TTL + register metadata.
-        if (allowStaleFor is { } swrNoLock && !IsHybridMode())
+        catch (Exception ex)
         {
-            var noLockCtSwr = ApplyFactoryTimeout(cancellationToken, out var noLockCtsSwr);
-            try
-            {
-                return await GetOrCreateWithStaleWindowAsync(service, prefixed, factory, callOptions, expiration, localExpiration, swrNoLock, noLockCtSwr);
-            }
-            finally
-            {
-                noLockCtsSwr?.Dispose();
-            }
-        }
-
-        var noLockCt = ApplyFactoryTimeout(cancellationToken, out var noLockCts);
-        try
-        {
-            var jitteredExp = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-            return await GetOrCreateRoutedAsync(service, prefixed, factory, jitteredExp, localExpiration, callOptions?.Tags, noLockCt);
-        }
-        finally
-        {
-            noLockCts?.Dispose();
+            RecordCallFailure(recorder, ex, cancellationToken);
+            throw;
         }
     }
 
@@ -333,21 +381,58 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
-        if (IsDisabled) return Task.CompletedTask;
-        if ((callOptions?.BypassCache ?? false)) return Task.CompletedTask;
-        if (!TryPreparePrefixedKey(key, "set", out var prefixed)) return Task.CompletedTask;
-        var service = ResolveService(callOptions?.Mode);
-        var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage);
-        return RoutingCacheService.SetWithExpirationAsync(service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration, localExpiration, callOptions?.Tags, cancellationToken);
+        return SetCoreAsync(key, value, callOptions, expiration, localExpiration, cancellationToken);
+    }
+
+    private async Task SetCoreAsync<T>(
+        string key,
+        T value,
+        CacheCallOptions? callOptions,
+        TimeSpan? expiration,
+        TimeSpan? localExpiration,
+        CancellationToken cancellationToken)
+        where T : notnull
+    {
+        var opts = _optionsMonitor.CurrentValue;
+        using var recorder = CacheCallRecorder.Start(Mode, opts, "set", key);
+        try
+        {
+            if (!opts.Enabled) return;
+            if ((callOptions?.BypassCache ?? false)) return;
+            if (!TryPreparePrefixedKey(key, "set", opts, out var prefixed)) return;
+            var service = ResolveService(callOptions?.Mode);
+            recorder?.SetMode(ModeNameOf(service));
+            var jitteredExpiration = ApplyJitter(callOptions?.AbsoluteExpiration ?? expiration, callOptions?.JitterPercentage, opts);
+            await RoutingCacheService.SetWithExpirationAsync(
+                service, prefixed, value, jitteredExpiration, callOptions?.SlidingExpiration,
+                localExpiration, callOptions?.Tags, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            RecordCallFailure(recorder, ex, cancellationToken);
+            throw;
+        }
     }
 
     /// <inheritdoc />
-    public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
+    public async Task RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
-        if (IsDisabled) return Task.CompletedTask;
-        if (string.IsNullOrWhiteSpace(key)) return Task.CompletedTask;
-        if (!TryPreparePrefixedKey(key, "remove", out var prefixed)) return Task.CompletedTask;
-        return ResolveService(modeOverride: null).RemoveAsync(prefixed, cancellationToken);
+        var opts = _optionsMonitor.CurrentValue;
+        using var recorder = CacheCallRecorder.Start(Mode, opts, "remove", key);
+        try
+        {
+            if (string.IsNullOrWhiteSpace(key)) return;
+            if (!opts.Enabled) return;
+            if (!TryPreparePrefixedKey(key, "remove", opts, out var prefixed)) return;
+            var service = ResolveService(modeOverride: null);
+            recorder?.SetMode(ModeNameOf(service));
+            await service.RemoveAsync(prefixed, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            RecordCallFailure(recorder, ex, cancellationToken);
+            throw;
+        }
     }
 
     /// <summary>
@@ -358,16 +443,33 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
     /// apps sharing one Redis database do not invalidate each other when each uses a unique KeyPrefix.
     /// No-op when disabled.
     /// </summary>
-    public Task ClearAsync(CancellationToken cancellationToken = default)
+    public async Task ClearAsync(CancellationToken cancellationToken = default)
     {
-        if (IsDisabled) return Task.CompletedTask;
-        return ResolveService(modeOverride: null) switch
+        var opts = _optionsMonitor.CurrentValue;
+        using var recorder = CacheCallRecorder.Start(Mode, opts, "clear");
+        try
         {
-            InMemoryCacheService inMemory => inMemory.ClearAsync(cancellationToken),
-            HybridCacheService hybrid => hybrid.ClearAsync(cancellationToken),
-            RedisCacheService redis => redis.ClearAsync(EscapeGlob(_keyPrefix) + "*", cancellationToken),
-            _ => Task.CompletedTask,
-        };
+            if (!opts.Enabled) return;
+            var service = ResolveService(modeOverride: null);
+            recorder?.SetMode(ModeNameOf(service));
+            switch (service)
+            {
+                case InMemoryCacheService inMemory:
+                    await inMemory.ClearAsync(cancellationToken);
+                    break;
+                case HybridCacheService hybrid:
+                    await hybrid.ClearAsync(cancellationToken);
+                    break;
+                case RedisCacheService redis:
+                    await redis.ClearAsync(EscapeGlob(_keyPrefix) + "*", cancellationToken);
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            RecordCallFailure(recorder, ex, cancellationToken);
+            throw;
+        }
     }
 
     // Escapes Redis glob metacharacters so a literal key prefix is matched verbatim by SCAN MATCH.
@@ -384,34 +486,88 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
     }
 
     /// <inheritdoc />
-    public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
+    public async Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
-        if (IsDisabled) return Task.CompletedTask;
-        return ResolveService(modeOverride: null).RemoveByTagAsync(tag, cancellationToken);
+        var opts = _optionsMonitor.CurrentValue;
+        using var recorder = CacheCallRecorder.Start(Mode, opts, "remove_by_tag");
+        try
+        {
+            if (!opts.Enabled) return;
+            var service = ResolveService(modeOverride: null);
+            recorder?.SetMode(ModeNameOf(service));
+            await service.RemoveByTagAsync(tag, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            RecordCallFailure(recorder, ex, cancellationToken);
+            throw;
+        }
     }
 
     /// <inheritdoc />
-    public Task RemoveByTagAsync(IEnumerable<string> tags, CancellationToken cancellationToken = default)
+    public async Task RemoveByTagAsync(IEnumerable<string> tags, CancellationToken cancellationToken = default)
     {
-        if (IsDisabled) return Task.CompletedTask;
-        return ResolveService(modeOverride: null).RemoveByTagAsync(tags, cancellationToken);
+        var opts = _optionsMonitor.CurrentValue;
+        using var recorder = CacheCallRecorder.Start(Mode, opts, "remove_by_tag");
+        try
+        {
+            if (!opts.Enabled) return;
+            var service = ResolveService(modeOverride: null);
+            recorder?.SetMode(ModeNameOf(service));
+            await service.RemoveByTagAsync(tags, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            RecordCallFailure(recorder, ex, cancellationToken);
+            throw;
+        }
     }
 
     /// <inheritdoc />
     public Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
-        if (IsDisabled)
+        return GetCoreAsync<T>(key, cancellationToken);
+    }
+
+    private async Task<T?> GetCoreAsync<T>(string key, CancellationToken cancellationToken) where T : notnull
+    {
+        var opts = _optionsMonitor.CurrentValue;
+        using var recorder = CacheCallRecorder.Start(Mode, opts, "get", key);
+        try
         {
-            CacheInstruments.RecordMiss(Mode, "get", "Disabled");
-            return Task.FromResult<T?>(default);
+            if (!opts.Enabled)
+            {
+                CacheInstruments.RecordMiss(Mode, "get", "Disabled");
+                recorder?.MarkMissReason("Disabled");
+                return default;
+            }
+            if (!TryPreparePrefixedKey(key, "get", opts, out var prefixed))
+            {
+                CacheInstruments.RecordMiss(Mode, "get", "KeyRejected");
+                recorder?.MarkMissReason("KeyRejected");
+                return default;
+            }
+            var service = ResolveService(modeOverride: null);
+            recorder?.SetMode(ModeNameOf(service));
+            // Read through the presence-aware probe: `value is not null` cannot express a miss when T
+            // is a value type (a missing int and a cached 0 are both 0), which would report every
+            // value-type miss as served_from=cache.
+            if (service is ICacheReadProbe probe)
+            {
+                var result = await probe.TryGetAsync<T>(prefixed, cancellationToken);
+                recorder?.MarkFound(result.Found);
+                return result.Value;
+            }
+            var value = await service.GetAsync<T>(prefixed, cancellationToken);
+            recorder?.MarkFound(value is not null);
+            return value;
         }
-        if (!TryPreparePrefixedKey(key, "get", out var prefixed))
+        catch (Exception ex)
         {
-            CacheInstruments.RecordMiss(Mode, "get", "KeyRejected");
-            return Task.FromResult<T?>(default);
+            RecordCallFailure(recorder, ex, cancellationToken);
+            throw;
         }
-        return ResolveService(modeOverride: null).GetAsync<T>(prefixed, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -419,26 +575,76 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
         ArgumentNullException.ThrowIfNull(type);
-        if (IsDisabled)
+        return GetCoreAsync(key, type, cancellationToken);
+    }
+
+    private async Task<object?> GetCoreAsync(string key, Type type, CancellationToken cancellationToken)
+    {
+        var opts = _optionsMonitor.CurrentValue;
+        using var recorder = CacheCallRecorder.Start(Mode, opts, "get", key);
+        try
         {
-            CacheInstruments.RecordMiss(Mode, "get", "Disabled");
-            return Task.FromResult<object?>(null);
+            if (!opts.Enabled)
+            {
+                CacheInstruments.RecordMiss(Mode, "get", "Disabled");
+                recorder?.MarkMissReason("Disabled");
+                return null;
+            }
+            if (!TryPreparePrefixedKey(key, "get", opts, out var prefixed))
+            {
+                CacheInstruments.RecordMiss(Mode, "get", "KeyRejected");
+                recorder?.MarkMissReason("KeyRejected");
+                return null;
+            }
+            var service = ResolveService(modeOverride: null);
+            recorder?.SetMode(ModeNameOf(service));
+            // The runtime-typed read returns object?, where null is unambiguously "absent" even for a
+            // boxed value type, so no probe is needed here.
+            var value = await service.GetAsync(prefixed, type, cancellationToken);
+            recorder?.MarkFound(value is not null);
+            return value;
         }
-        if (!TryPreparePrefixedKey(key, "get", out var prefixed))
+        catch (Exception ex)
         {
-            CacheInstruments.RecordMiss(Mode, "get", "KeyRejected");
-            return Task.FromResult<object?>(null);
+            RecordCallFailure(recorder, ex, cancellationToken);
+            throw;
         }
-        return ResolveService(modeOverride: null).GetAsync(prefixed, type, cancellationToken);
     }
 
     /// <inheritdoc />
     public Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
-        if (IsDisabled) return Task.FromResult(false);
-        if (!TryPreparePrefixedKey(key, "exists", out var prefixed)) return Task.FromResult(false);
-        return ResolveService(modeOverride: null).ExistsAsync(prefixed, cancellationToken);
+        return ExistsCoreAsync(key, cancellationToken);
+    }
+
+    private async Task<bool> ExistsCoreAsync(string key, CancellationToken cancellationToken)
+    {
+        var opts = _optionsMonitor.CurrentValue;
+        using var recorder = CacheCallRecorder.Start(Mode, opts, "exists", key);
+        try
+        {
+            if (!opts.Enabled)
+            {
+                recorder?.MarkMissReason("Disabled");
+                return false;
+            }
+            if (!TryPreparePrefixedKey(key, "exists", opts, out var prefixed))
+            {
+                recorder?.MarkMissReason("KeyRejected");
+                return false;
+            }
+            var service = ResolveService(modeOverride: null);
+            recorder?.SetMode(ModeNameOf(service));
+            var present = await service.ExistsAsync(prefixed, cancellationToken);
+            recorder?.MarkFound(present);
+            return present;
+        }
+        catch (Exception ex)
+        {
+            RecordCallFailure(recorder, ex, cancellationToken);
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -450,47 +656,137 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(key));
-        if (IsDisabled) return Task.CompletedTask;
-        if (!TryPreparePrefixedKey(key, "refresh", out var prefixed)) return Task.CompletedTask;
-        return ResolveService(modeOverride: null)
-            .RefreshAsync(prefixed, factory, expiration, localExpiration, cancellationToken);
+        return RefreshCoreAsync(key, factory, expiration, localExpiration, cancellationToken);
+    }
+
+    private async Task RefreshCoreAsync<T>(
+        string key,
+        Func<CancellationToken, Task<T>> factory,
+        TimeSpan? expiration,
+        TimeSpan? localExpiration,
+        CancellationToken cancellationToken) where T : notnull
+    {
+        var opts = _optionsMonitor.CurrentValue;
+        using var recorder = CacheCallRecorder.Start(Mode, opts, "refresh", key);
+        try
+        {
+            if (!opts.Enabled)
+            {
+                recorder?.MarkMissReason("Disabled");
+                return;
+            }
+            if (!TryPreparePrefixedKey(key, "refresh", opts, out var prefixed))
+            {
+                recorder?.MarkMissReason("KeyRejected");
+                return;
+            }
+            var service = ResolveService(modeOverride: null);
+            recorder?.SetMode(ModeNameOf(service));
+            await service.RefreshAsync(
+                prefixed,
+                recorder is null ? factory : recorder.WrapFactory(factory),
+                expiration, localExpiration, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            RecordCallFailure(recorder, ex, cancellationToken);
+            throw;
+        }
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyDictionary<string, T?>> GetManyAsync<T>(
+    public Task<IReadOnlyDictionary<string, T?>> GetManyAsync<T>(
         IEnumerable<string> keys, CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentNullException.ThrowIfNull(keys);
-        if (IsDisabled)
-            return new Dictionary<string, T?>();
+        return GetManyCoreAsync<T>(keys, cancellationToken);
+    }
 
-        var keyList = keys.Where(k => !string.IsNullOrWhiteSpace(k)).ToArray();
-        if (keyList.Length == 0) return new Dictionary<string, T?>();
-
-        var dict = new Dictionary<string, T?>(keyList.Length);
-        var okKeys = new List<string>(keyList.Length);
-        var okPrefixed = new List<string>(keyList.Length);
-        foreach (var k in keyList)
+    private async Task<IReadOnlyDictionary<string, T?>> GetManyCoreAsync<T>(
+        IEnumerable<string> keys, CancellationToken cancellationToken) where T : notnull
+    {
+        var opts = _optionsMonitor.CurrentValue;
+        using var recorder = CacheCallRecorder.Start(Mode, opts, "get_many");
+        try
         {
-            if (TryPreparePrefixedKey(k, "get_many", out var p))
+            if (!opts.Enabled)
             {
-                okKeys.Add(k);
-                okPrefixed.Add(p);
+                recorder?.MarkBatch(0, 0);
+                recorder?.MarkMissReason("Disabled");
+                return new Dictionary<string, T?>();
+            }
+
+            var keyList = keys.Where(k => !string.IsNullOrWhiteSpace(k)).ToArray();
+            if (keyList.Length == 0)
+            {
+                recorder?.MarkBatch(0, 0);
+                return new Dictionary<string, T?>();
+            }
+
+            var dict = new Dictionary<string, T?>(keyList.Length);
+            var okKeys = new List<string>(keyList.Length);
+            var okPrefixed = new List<string>(keyList.Length);
+            foreach (var k in keyList)
+            {
+                if (TryPreparePrefixedKey(k, "get_many", opts, out var p))
+                {
+                    okKeys.Add(k);
+                    okPrefixed.Add(p);
+                }
+                else
+                {
+                    dict[k] = default;
+                }
+            }
+
+            if (okPrefixed.Count == 0)
+            {
+                recorder?.MarkBatch(0, dict.Count);
+                recorder?.MarkMissReason("KeyRejected");
+                return dict;
+            }
+
+            var service = ResolveService(modeOverride: null);
+            recorder?.SetMode(ModeNameOf(service));
+
+            // Presence has to come from the backend, not from a null check on the returned value:
+            // for a value-type T every miss deserializes to default(T), which is not null, so counting
+            // non-nulls would report a batch of misses as a batch of hits.
+            int hits;
+            if (service is ICacheReadProbe probe)
+            {
+                var probed = await probe.TryGetManyAsync<T>(okPrefixed, cancellationToken);
+                hits = 0;
+                for (int i = 0; i < okKeys.Count; i++)
+                {
+                    if (probed.TryGetValue(okPrefixed[i], out var p) && p.Found)
+                    {
+                        dict[okKeys[i]] = p.Value;
+                        hits++;
+                    }
+                    else
+                    {
+                        dict[okKeys[i]] = default;
+                    }
+                }
             }
             else
             {
-                dict[k] = default;
+                var inner = await service.GetManyAsync<T>(okPrefixed, cancellationToken);
+                for (int i = 0; i < okKeys.Count; i++)
+                    dict[okKeys[i]] = inner.TryGetValue(okPrefixed[i], out var v) ? v : default;
+                hits = dict.Values.Count(v => v is not null);
             }
+
+            // A key rejected before dispatch returned nothing to the caller, so it counts as a miss.
+            recorder?.MarkBatch(hits, dict.Count - hits);
+            return dict;
         }
-
-        if (okPrefixed.Count == 0) return dict;
-
-        var inner = await ResolveService(modeOverride: null)
-            .GetManyAsync<T>(okPrefixed, cancellationToken);
-
-        for (int i = 0; i < okKeys.Count; i++)
-            dict[okKeys[i]] = inner.TryGetValue(okPrefixed[i], out var v) ? v : default;
-        return dict;
+        catch (Exception ex)
+        {
+            RecordCallFailure(recorder, ex, cancellationToken);
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -501,31 +797,64 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         CancellationToken cancellationToken = default) where T : notnull
     {
         ArgumentNullException.ThrowIfNull(items);
-        if (IsDisabled || items.Count == 0) return Task.CompletedTask;
-        var jitteredExpiration = ApplyJitter(expiration, null);
-        var inner = ResolveService(modeOverride: null);
-        var prefixed = new Dictionary<string, T>(items.Count);
-        foreach (var kvp in items)
+        return SetManyCoreAsync(items, expiration, localExpiration, cancellationToken);
+    }
+
+    private async Task SetManyCoreAsync<T>(
+        IReadOnlyDictionary<string, T> items,
+        TimeSpan? expiration,
+        TimeSpan? localExpiration,
+        CancellationToken cancellationToken) where T : notnull
+    {
+        var opts = _optionsMonitor.CurrentValue;
+        using var recorder = CacheCallRecorder.Start(Mode, opts, "set_many");
+        try
         {
-            if (!TryPreparePrefixedKey(kvp.Key, "set_many", out var p)) continue;
-            prefixed[p] = kvp.Value;
+            if (!opts.Enabled || items.Count == 0) return;
+            var jitteredExpiration = ApplyJitter(expiration, null, opts);
+            var service = ResolveService(modeOverride: null);
+            recorder?.SetMode(ModeNameOf(service));
+            var prefixed = new Dictionary<string, T>(items.Count);
+            foreach (var kvp in items)
+            {
+                if (!TryPreparePrefixedKey(kvp.Key, "set_many", opts, out var p)) continue;
+                prefixed[p] = kvp.Value;
+            }
+            if (prefixed.Count == 0) return;
+            await service.SetManyAsync(prefixed, jitteredExpiration, localExpiration, cancellationToken);
         }
-        if (prefixed.Count == 0) return Task.CompletedTask;
-        return inner.SetManyAsync(prefixed, jitteredExpiration, localExpiration, cancellationToken);
+        catch (Exception ex)
+        {
+            RecordCallFailure(recorder, ex, cancellationToken);
+            throw;
+        }
     }
 
     /// <inheritdoc />
-    public Task RemoveManyAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
+    public async Task RemoveManyAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
     {
-        if (IsDisabled || keys is null) return Task.CompletedTask;
-        var prefixed = new List<string>();
-        foreach (var k in keys)
+        var opts = _optionsMonitor.CurrentValue;
+        using var recorder = CacheCallRecorder.Start(Mode, opts, "remove_many");
+        try
         {
-            if (string.IsNullOrWhiteSpace(k)) continue;
-            if (TryPreparePrefixedKey(k, "remove_many", out var p)) prefixed.Add(p);
+            if (keys is null) return;
+            if (!opts.Enabled) return;
+            var prefixed = new List<string>();
+            foreach (var k in keys)
+            {
+                if (string.IsNullOrWhiteSpace(k)) continue;
+                if (TryPreparePrefixedKey(k, "remove_many", opts, out var p)) prefixed.Add(p);
+            }
+            if (prefixed.Count == 0) return;
+            var service = ResolveService(modeOverride: null);
+            recorder?.SetMode(ModeNameOf(service));
+            await service.RemoveManyAsync(prefixed, cancellationToken);
         }
-        if (prefixed.Count == 0) return Task.CompletedTask;
-        return ResolveService(modeOverride: null).RemoveManyAsync(prefixed, cancellationToken);
+        catch (Exception ex)
+        {
+            RecordCallFailure(recorder, ex, cancellationToken);
+            throw;
+        }
     }
 
     private bool IsHybridMode() => _startupOptions.Mode == CacheMode.Hybrid;
@@ -538,10 +867,11 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         TimeSpan? expiration,
         TimeSpan? localExpiration,
         TimeSpan staleWindow,
+        CacheOptions opts,
         CancellationToken cancellationToken) where T : notnull
     {
-        var rawAbsExp = callOptions?.AbsoluteExpiration ?? expiration ?? _optionsMonitor.CurrentValue.DefaultExpiration;
-        var jitteredAbsExp = ApplyJitter(rawAbsExp, callOptions?.JitterPercentage) ?? rawAbsExp;
+        var rawAbsExp = callOptions?.AbsoluteExpiration ?? expiration ?? opts.DefaultExpiration;
+        var jitteredAbsExp = ApplyJitter(rawAbsExp, callOptions?.JitterPercentage, opts) ?? rawAbsExp;
         var extendedTtl = jitteredAbsExp + staleWindow;
         bool factoryRan = false;
         T result = await service.GetOrCreateAsync(
@@ -560,6 +890,7 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
     }
 
     private void ScheduleBackgroundRefresh<T>(
+        string rawKey,
         string prefixedKey,
         Func<CancellationToken, Task<T>> factory,
         CacheCallOptions? callOptions,
@@ -570,14 +901,30 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
         if (!_throttle.TryAcquire()) return;
         var shutdownToken = _shutdown.Token;
 
+        // The refresh outlives the call that scheduled it, so it must not be a *child* of that call's
+        // span: the parent ends first, and the consumer's request trace ends up holding a long-running
+        // child it never waited for. Record the trigger as a link instead, and clear Activity.Current
+        // across the Task.Run so ExecutionContext capture cannot re-parent it behind our back.
+        var triggerContext = Activity.Current?.Context;
         var refreshId = Interlocked.Increment(ref _backgroundRefreshId);
-        var refreshTask = Task.Run(async () =>
+        var previousActivity = Activity.Current;
+        Activity.Current = null;
+        Task refreshTask;
+        try
+        {
+            refreshTask = Task.Run(async () =>
         {
             if (Volatile.Read(ref _disposed) != 0) return;
+            // Hash the same (unprefixed) key the triggering get_or_create hashed, so the two spans
+            // carry a matching cache.key_hash and can be correlated — the prefix is routing-layer
+            // plumbing, not part of the logical key.
+            var refreshOpts = _optionsMonitor.CurrentValue;
+            using var recorder = CacheCallRecorder.Start(
+                Mode, refreshOpts, "stale_refresh", rawKey, triggerContext);
             CacheInstruments.AddStaleRefreshInFlight(Mode, +1);
             var lockStripe = _lockManager.GetLock(prefixedKey);
             // Bound the wait so a stuck stripe-holder cannot pin a throttle slot indefinitely.
-            var lockTimeout = _optionsMonitor.CurrentValue.GetFactoryTimeout() ?? TimeSpan.FromSeconds(30);
+            var lockTimeout = refreshOpts.GetFactoryTimeout() ?? TimeSpan.FromSeconds(30);
             bool lockAcquired = false;
             try
             {
@@ -586,20 +933,22 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
                 {
                     _logger.StaleRefreshLockTimeout(prefixedKey, lockTimeout.TotalMilliseconds);
                     CacheInstruments.RecordError(Mode, "stale_refresh", "Timeout");
+                    recorder?.MarkError("Timeout", thrownToCaller: false);
                     return;
                 }
                 var factoryCt = ApplyFactoryTimeout(shutdownToken, out var cts);
                 T value;
                 try
                 {
-                    value = await factory(factoryCt);
+                    value = await (recorder is null ? factory : recorder.WrapFactory(factory))(factoryCt);
                 }
                 finally
                 {
                     cts?.Dispose();
                 }
                 var inner = ResolveService(callOptions?.Mode);
-                var abs = callOptions?.AbsoluteExpiration ?? expiration ?? _optionsMonitor.CurrentValue.DefaultExpiration;
+                recorder?.SetMode(ModeNameOf(inner));
+                var abs = callOptions?.AbsoluteExpiration ?? expiration ?? refreshOpts.DefaultExpiration;
                 var staleFor = callOptions?.AllowStaleFor ?? TimeSpan.Zero;
                 var ttl = abs + staleFor;
                 await inner.SetAsync(prefixedKey, value, ttl, localExpiration, shutdownToken);
@@ -609,11 +958,14 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
             catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
             {
                 // Swallow expected shutdown cancellation.
+                recorder?.MarkError("Canceled", thrownToCaller: false);
             }
             catch (Exception ex)
             {
+                var kind = ClassifyError(ex, shutdownToken);
                 _logger.StaleRefreshFailed(prefixedKey, ex);
-                CacheInstruments.RecordError(Mode, "stale_refresh", ClassifyError(ex));
+                CacheInstruments.RecordError(Mode, "stale_refresh", kind);
+                recorder?.MarkError(kind, thrownToCaller: false);
             }
             finally
             {
@@ -623,19 +975,54 @@ internal sealed class RoutingCacheService : ICacheService, IRoutingCacheService,
                 _backgroundRefreshes.TryRemove(refreshId, out _);
             }
         });
+        }
+        finally
+        {
+            Activity.Current = previousActivity;
+        }
         _backgroundRefreshes[refreshId] = refreshTask;
     }
 
-    private static string ClassifyError(Exception ex) => ex switch
+    // Tags the span for a call that failed. A caller-supplied factory throwing is the source failing,
+    // not the cache: the span is marked Error so the failure is visible, but no cache.error_kind is
+    // emitted, because a cache-error dashboard that counts every flaky upstream is worse than useless.
+    private static void RecordCallFailure(CacheCallRecorder? recorder, Exception ex, CancellationToken callerToken)
+    {
+        if (recorder is null) return;
+        // Cancellation still classifies normally — the distinction that matters there is caller-cancel
+        // vs. our own FactoryTimeout, not who threw.
+        if (ex is not OperationCanceledException && recorder.IsFactoryException(ex))
+        {
+            recorder.MarkFactoryFault();
+            return;
+        }
+        recorder.MarkError(ClassifyError(ex, callerToken), thrownToCaller: true);
+    }
+
+    private static string ClassifyError(Exception ex, CancellationToken callerToken) => ex switch
     {
         // RedisTimeoutException derives from TimeoutException — listing TimeoutException covers both.
         TimeoutException => "Timeout",
-        OperationCanceledException => "Canceled",
+        OperationCanceledException when callerToken.IsCancellationRequested => "Canceled",
+        // The caller's token is still live, so the token that fired was the linked one CacheOptions
+        // .FactoryTimeout cancels. Reporting that as "Canceled" hid every blown factory timeout behind
+        // a status the recorder deliberately refuses to mark as an error.
+        OperationCanceledException => "Timeout",
         StackExchange.Redis.RedisConnectionException => "ConnectionFailed",
         Polly.CircuitBreaker.BrokenCircuitException => "CircuitOpen",
         System.Text.Json.JsonException => "Serialization",
         MessagePack.MessagePackSerializationException => "Serialization",
         _ => "Unknown"
+    };
+
+    // The mode tag reports which backend actually handled the call. Short-circuit paths that never
+    // reach a backend keep the "Routing" value, matching the existing counter behavior.
+    private static string ModeNameOf(ICacheService service) => service switch
+    {
+        InMemoryCacheService => "InMemory",
+        RedisCacheService => "Redis",
+        HybridCacheService => "Hybrid",
+        _ => Mode,
     };
 
     private ICacheService ResolveService(CacheMode? modeOverride)

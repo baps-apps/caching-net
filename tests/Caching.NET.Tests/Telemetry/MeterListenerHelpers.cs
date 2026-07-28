@@ -22,7 +22,7 @@ internal static class MeterListenerHelpers
             foreach (var t in tags)
                 if (t.Key == "cache.mode" && (string?)t.Value == modeTag)
                 {
-                    values.Add((value, tags.ToArray()));
+                    lock (values) values.Add((value, tags.ToArray()));
                     return;
                 }
         });

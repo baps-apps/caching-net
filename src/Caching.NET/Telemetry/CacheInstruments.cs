@@ -55,6 +55,9 @@ public static class CacheInstruments
     internal static readonly Histogram<double> OperationDuration =
         Meter.CreateHistogram<double>("cache.operation.duration", unit: "ms", description: "Cache operation duration.");
 
+    internal static readonly Histogram<double> FactoryDuration =
+        Meter.CreateHistogram<double>("cache.factory.duration", unit: "ms", description: "Factory (source) retrieval duration.");
+
     internal static readonly Histogram<double> SerializeDuration =
         Meter.CreateHistogram<double>("cache.serialize.duration", unit: "ms", description: "Serializer encode duration.");
 
@@ -114,6 +117,31 @@ public static class CacheInstruments
     /// <summary>Record a cache operation duration in milliseconds.</summary>
     public static void RecordDuration(string mode, string operation, double milliseconds)
         => OperationDuration.Record(milliseconds,
+            new KeyValuePair<string, object?>("cache.mode", mode),
+            new KeyValuePair<string, object?>("cache.operation", operation));
+
+    /// <summary>
+    /// Record a cache operation duration in milliseconds together with where the value came from.
+    /// Pass <c>null</c> for <paramref name="servedFrom"/> on write-shaped operations so no
+    /// meaningless tag value is emitted.
+    /// </summary>
+    public static void RecordDuration(string mode, string operation, double milliseconds, string? servedFrom)
+    {
+        if (servedFrom is null)
+        {
+            RecordDuration(mode, operation, milliseconds);
+            return;
+        }
+
+        OperationDuration.Record(milliseconds,
+            new KeyValuePair<string, object?>("cache.mode", mode),
+            new KeyValuePair<string, object?>("cache.operation", operation),
+            new KeyValuePair<string, object?>("cache.served_from", servedFrom));
+    }
+
+    /// <summary>Record how long the caller's factory took to retrieve the value from the source.</summary>
+    public static void RecordFactoryDuration(string mode, string operation, double milliseconds)
+        => FactoryDuration.Record(milliseconds,
             new KeyValuePair<string, object?>("cache.mode", mode),
             new KeyValuePair<string, object?>("cache.operation", operation));
 
