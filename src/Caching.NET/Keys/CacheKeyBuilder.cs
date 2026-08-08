@@ -1,13 +1,17 @@
+using System.Text;
+
 namespace Caching.NET.Keys;
 
 /// <summary>
-/// Builds canonical, validated cache keys. Each segment is checked for whitespace
-/// and the reserved <c>:</c> separator. <c>Build()</c> caps the post-prefix length
-/// at 256 characters; the routing layer's <c>KeyPrefix</c> adds further headroom
-/// up to <see cref="Options.CacheOptions.MaximumKeyLength"/>.
+/// Builds canonical, validated cache keys. Every segment is checked for whitespace and for the
+/// reserved <c>':'</c> separator so that a caller-supplied identifier cannot forge an extra key
+/// segment and collide with, or read, another entity's entry.
 /// </summary>
 public sealed class CacheKeyBuilder
 {
+    /// <summary>Maximum length of the key produced by <see cref="Build"/>, excluding the cache prefix.</summary>
+    public const int MaximumLength = 256;
+
     private readonly string _typeName;
     private readonly string _id;
     private readonly List<string> _segments = new(2);
@@ -18,10 +22,16 @@ public sealed class CacheKeyBuilder
         _id = id;
     }
 
-    /// <summary>Append a variant segment (e.g. version, view-shape).</summary>
+    /// <summary>Appends a variant segment such as a projection shape or schema version.</summary>
+    /// <param name="variant">The variant discriminator.</param>
     public CacheKeyBuilder WithVariant(string variant) => WithSegment(variant);
 
-    /// <summary>Append an arbitrary segment.</summary>
+    /// <summary>Appends a tenant segment. Use this in multi-tenant processes where the tenant cannot be a static prefix.</summary>
+    /// <param name="tenantId">The tenant discriminator.</param>
+    public CacheKeyBuilder WithTenant(string tenantId) => WithSegment(tenantId);
+
+    /// <summary>Appends an arbitrary segment.</summary>
+    /// <param name="segment">The segment text. Must be non-empty and free of whitespace and <c>':'</c>.</param>
     public CacheKeyBuilder WithSegment(string segment)
     {
         ArgumentException.ThrowIfNullOrEmpty(segment);
@@ -30,32 +40,52 @@ public sealed class CacheKeyBuilder
     }
 
     /// <summary>
-    /// Build the final key. Throws <see cref="ArgumentException"/> when any segment
-    /// contains whitespace or <c>:</c>, or when the total length exceeds 256.
+    /// Builds the final key.
     /// </summary>
+    /// <exception cref="ArgumentException">
+    /// A segment contains whitespace or <c>':'</c>, or the key exceeds <see cref="MaximumLength"/>.
+    /// </exception>
     public string Build()
     {
         ValidateSegment(_typeName);
         ValidateSegment(_id);
-        foreach (var s in _segments) ValidateSegment(s);
+        foreach (var segment in _segments)
+        {
+            ValidateSegment(segment);
+        }
 
-        var totalLen = _typeName.Length + 1 + _id.Length;
-        for (int i = 0; i < _segments.Count; i++) totalLen += 1 + _segments[i].Length;
-        if (totalLen > 256) throw new ArgumentException($"Cache key length ({totalLen}) exceeds 256 characters.");
+        var length = _typeName.Length + 1 + _id.Length;
+        for (var i = 0; i < _segments.Count; i++)
+        {
+            length += 1 + _segments[i].Length;
+        }
 
-        var sb = new System.Text.StringBuilder(totalLen);
-        sb.Append(_typeName).Append(':').Append(_id);
-        foreach (var s in _segments) sb.Append(':').Append(s);
-        return sb.ToString();
+        if (length > MaximumLength)
+        {
+            throw new ArgumentException(
+                $"Cache key length ({length}) exceeds the {MaximumLength}-character limit. Shorten the identifier or hash it before building the key.");
+        }
+
+        var builder = new StringBuilder(length);
+        builder.Append(_typeName).Append(':').Append(_id);
+        foreach (var segment in _segments)
+        {
+            builder.Append(':').Append(segment);
+        }
+
+        return builder.ToString();
     }
 
-    private static void ValidateSegment(string s)
+    private static void ValidateSegment(string segment)
     {
-        for (int i = 0; i < s.Length; i++)
+        for (var i = 0; i < segment.Length; i++)
         {
-            char c = s[i];
-            if (c == ':' || char.IsWhiteSpace(c))
-                throw new ArgumentException($"Cache key segment '{s}' contains a forbidden character ('{c}'). Use only ASCII letters/digits/dot/underscore/dash.");
+            var c = segment[i];
+            if (c == ':' || char.IsWhiteSpace(c) || char.IsControl(c))
+            {
+                throw new ArgumentException(
+                    $"Cache key segment '{segment}' contains a forbidden character ('{c}'). Segments must not contain ':', whitespace or control characters.");
+            }
         }
     }
 }

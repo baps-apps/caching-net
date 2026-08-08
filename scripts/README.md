@@ -5,7 +5,7 @@ Local-only build, test, bench, and pack tooling, plus GitHub Packages publishing
 ## Prerequisites
 
 - PowerShell Core 7.4+ (`pwsh`)
-- .NET 10 SDK (with .NET 8 + 9 targeting packs installed via the SDK's multi-target support)
+- .NET 10 SDK
 - Docker (only for `test:integration`)
 
 ## dev.ps1 — local CI gate
@@ -15,8 +15,7 @@ Local-only build, test, bench, and pack tooling, plus GitHub Packages publishing
 ```bash
 pwsh scripts/dev.ps1 help
 pwsh scripts/dev.ps1 build
-pwsh scripts/dev.ps1 test                  # unit tests, all TFMs
-pwsh scripts/dev.ps1 test -Tfm net10.0     # single TFM iteration
+pwsh scripts/dev.ps1 test                  # unit tests (net10.0)
 pwsh scripts/dev.ps1 test:integration      # requires Docker
 pwsh scripts/dev.ps1 test:chaos            # Polly fault-injection suite
 pwsh scripts/dev.ps1 test:property         # FsCheck property suite

@@ -12,8 +12,9 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <SuppressTrimAnalysisWarnings>true</SuppressTrimAnalysisWarnings>
     <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
-    <!-- Suppress IL3050/IL3053 AOT warnings — library uses config binding and HybridCache
-         which are not fully AOT-clean; the smoke test verifies the binary runs, not full AOT safety. -->
+    <!-- The smoke test verifies that the published native binary starts and that the cache API
+         works end to end; it is not a proof of full trim/AOT cleanliness for every optional
+         feature (reflection-based MessagePack, configuration binding). -->
     <IlcTreatWarningsAsErrors>false</IlcTreatWarningsAsErrors>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
   </PropertyGroup>

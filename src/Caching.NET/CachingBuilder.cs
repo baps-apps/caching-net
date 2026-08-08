@@ -1,806 +1,415 @@
+using System.Text.Json;
 using Caching.NET.Options;
-using Caching.NET.Resilience;
-using Caching.NET.Serialization;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using StackExchange.Redis;
 
 namespace Caching.NET;
 
 /// <summary>
-/// Fluent builder for configuring Caching.NET services.
-/// Returned internally by <c>AddCaching</c> overloads; each method returns <c>this</c> for chaining.
+/// Fluent, code-first configuration for one Caching.NET cache. Every method mutates the underlying
+/// <see cref="CachingOptions"/> and returns the builder, so calls chain.
 /// </summary>
+/// <remarks>
+/// The builder is applied after configuration binding, so fluent settings win over
+/// <c>appsettings.json</c> when both are used.
+/// </remarks>
 /// <example>
-/// Fluent:
 /// <code><![CDATA[
-/// services.AddCaching(b => b
-///     .UseHybrid("rediss://redis:6380")
-///     .WithKeyPrefix("svc-prod")
-///     .UseProductionDefaults()
-///     .WithTtlJitter(0.10)
-///     .WithHealthChecks());
-/// ]]></code>
-/// Configuration (appsettings.json) equivalent for the bindable subset:
-/// <code><![CDATA[
-/// {
-///   "CacheOptions": {
-///     "Enabled": true,
-///     "Mode": "Hybrid",
-///     "KeyPrefix": "svc-prod",
-///     "RedisConnectionString": "rediss://redis:6380",
-///     "TtlJitterPercentage": 0.10,
-///     "IncludeRawKeyInLogs": false,
-///     "StrictRedisCertificateValidation": true
-///   }
-/// }
-/// ]]></code>
-/// <code><![CDATA[
-/// services.AddCaching(builder.Configuration);
+/// services.AddCaching(cache => cache
+///     .UseHybrid(redisConnectionString)
+///     .WithApplicationPrefix("orders-api")
+///     .WithEnvironmentPrefix("prod")
+///     .WithDefaultExpiration(TimeSpan.FromMinutes(10))
+///     .WithEagerRefresh(0.8f)
+///     .WithHealthChecks(splitLivenessReadiness: true));
 /// ]]></code>
 /// </example>
 public sealed class CachingBuilder
 {
-    private readonly IServiceCollection? _services;
+    private readonly CachingOptions _options;
 
-    /// <summary>Construct with service-collection access (used by v2 AddCaching overloads).</summary>
-    internal CachingBuilder(IServiceCollection services) { _services = services; }
+    internal CachingBuilder(CachingOptions options)
+    {
+        _options = options;
+    }
 
-    internal CacheMode? Mode { get; private set; }
-    internal bool? Enabled { get; private set; }
-    internal string? RedisConnectionString { get; private set; }
-    internal Action<ConfigurationOptions>? RedisConfigurationAction { get; private set; }
-    // Backing store for WithKeyPrefix; mapped to CacheOptions.KeyPrefix in ApplyTo. Legacy field name
-    // (v1's RedisInstanceName) — not to be confused with the Redis adapter InstanceName that Hybrid L2 now
-    // derives from KeyPrefix (see ServiceCollectionExtensions.ConfigureHybridCache).
-    internal string? InstanceName { get; private set; }
-    internal TimeSpan? DefaultExpiration { get; private set; }
-    internal TimeSpan? DefaultLocalExpiration { get; private set; }
-    internal long? MaximumPayloadBytes { get; private set; }
-    internal int? MaximumKeyLength { get; private set; }
-    internal int? MemorySizeLimitMb { get; private set; }
-    internal TimeSpan? FactoryTimeout { get; private set; }
-    internal int? StripeLockCount { get; private set; }
-    internal TimeSpan? RedisOperationTimeout { get; private set; }
-    /// <summary>
-    /// Fluent intent for <see cref="Caching.NET.Options.CacheOptions.StrictRedisCertificateValidation"/>.
-    /// <c>null</c> = leave config-bound value; otherwise replaces it when <see cref="ApplyTo"/> runs.
-    /// </summary>
-    internal bool? StrictRedisCertificateValidation { get; private set; }
-    internal bool RegisterOpenTelemetry { get; private set; }
     internal bool RegisterHealthChecks { get; private set; }
-    internal string HealthCheckName { get; private set; } = "caching-net";
-    internal bool HealthCheckSplit { get; private set; }
-    internal Func<string, bool>? KeyValidator { get; private set; }
-    internal Func<string, string>? KeyTransformer { get; private set; }
 
-    /// <summary>Sets cache mode to InMemory. Default for <see cref="CacheOptions.Mode"/> when unset: <see cref="CacheMode.InMemory"/>.</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseInMemory().WithKeyPrefix("svc-dev"));
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "Enabled": true, "Mode": "InMemory", "KeyPrefix": "svc-dev" } }
-    /// ]]></code>
-    /// </example>
+    internal string HealthCheckName { get; private set; } = "caching-net";
+
+    internal bool HealthCheckSplit { get; private set; }
+
+    /// <summary>The options being configured. Use for settings without a dedicated builder method.</summary>
+    public CachingOptions Options => _options;
+
+    // ---------------------------------------------------------------- mode
+
+    /// <summary>Uses an in-process memory cache only. No Redis connection is opened.</summary>
     public CachingBuilder UseInMemory()
     {
-        Mode = CacheMode.InMemory;
+        _options.Mode = CacheMode.InMemory;
         return this;
     }
 
-    /// <summary>Sets cache mode to Redis with the specified connection string.</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseRedis("rediss://elasticache.example:6380").WithKeyPrefix("svc-prod"));
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// {
-    ///   "CacheOptions": {
-    ///     "Enabled": true,
-    ///     "Mode": "Redis",
-    ///     "KeyPrefix": "svc-prod",
-    ///     "RedisConnectionString": "rediss://elasticache.example:6380"
-    ///   }
-    /// }
-    /// ]]></code>
-    /// </example>
+    /// <summary>Uses Redis as the single authoritative cache.</summary>
+    /// <param name="connectionString">StackExchange.Redis connection string.</param>
     public CachingBuilder UseRedis(string connectionString)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
-        Mode = CacheMode.Redis;
-        RedisConnectionString = connectionString;
+        _options.Mode = CacheMode.Redis;
+        _options.Redis.Configuration = connectionString;
         return this;
     }
 
-    /// <summary>Sets cache mode to Redis with programmatic StackExchange.Redis configuration.</summary>
-    /// <example>
-    /// Fluent only — <c>ConfigurationOptions</c> programmatic setup is not bindable from JSON.
-    /// (For a connection-string-only config, use <see cref="UseRedis(string)"/> + <c>RedisConnectionString</c> in JSON.)
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b
-    ///     .UseRedis(cfg =>
-    ///     {
-    ///         cfg.EndPoints.Add("redis-primary:6379");
-    ///         cfg.Password = secrets.RedisPassword;
-    ///         cfg.Ssl = true;
-    ///     })
-    ///     .WithKeyPrefix("svc-prod"));
-    /// ]]></code>
-    /// </example>
+    /// <summary>Uses Redis as the single authoritative cache, configured in code.</summary>
+    /// <param name="configure">Applied to the connection configuration immediately before connecting.</param>
     public CachingBuilder UseRedis(Action<ConfigurationOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
-        Mode = CacheMode.Redis;
-        RedisConfigurationAction = configure;
+        _options.Mode = CacheMode.Redis;
+        _options.Redis.ConfigureConnection = configure;
         return this;
     }
 
-    /// <summary>Sets cache mode to Hybrid (in-memory only, no Redis backend).</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid().WithKeyPrefix("svc-dev"));
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "Enabled": true, "Mode": "Hybrid", "KeyPrefix": "svc-dev" } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder UseHybrid()
-    {
-        Mode = CacheMode.Hybrid;
-        return this;
-    }
-
-    /// <summary>Sets cache mode to Hybrid with the specified Redis connection string as the distributed backend.</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b
-    ///     .UseHybrid("rediss://elasticache.example:6380")
-    ///     .WithKeyPrefix("svc-prod"));
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// {
-    ///   "CacheOptions": {
-    ///     "Enabled": true,
-    ///     "Mode": "Hybrid",
-    ///     "KeyPrefix": "svc-prod",
-    ///     "RedisConnectionString": "rediss://elasticache.example:6380"
-    ///   }
-    /// }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder UseHybrid(string connectionString)
+    /// <summary>
+    /// Uses L1 memory plus L2 Redis. Enables the backplane unless it has already been set
+    /// explicitly, so multi-pod deployments get cross-instance invalidation by default.
+    /// </summary>
+    /// <param name="connectionString">StackExchange.Redis connection string.</param>
+    /// <param name="enableBackplane">Overrides the backplane default.</param>
+    public CachingBuilder UseHybrid(string connectionString, bool enableBackplane = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
-        Mode = CacheMode.Hybrid;
-        RedisConnectionString = connectionString;
+        _options.Mode = CacheMode.Hybrid;
+        _options.Redis.Configuration = connectionString;
+        _options.Backplane.Enabled = enableBackplane;
         return this;
     }
 
-    /// <summary>Sets the default cache entry expiration. Default when unset: 10 minutes.</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod")
-    ///     .WithDefaultExpiration(TimeSpan.FromMinutes(5)));
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "DefaultExpiration": "00:05:00" } }
-    /// ]]></code>
-    /// </example>
+    /// <summary>Uses L1 memory plus L2 Redis, configured in code.</summary>
+    /// <param name="configure">Applied to the connection configuration immediately before connecting.</param>
+    /// <param name="enableBackplane">Overrides the backplane default.</param>
+    public CachingBuilder UseHybrid(Action<ConfigurationOptions> configure, bool enableBackplane = true)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        _options.Mode = CacheMode.Hybrid;
+        _options.Redis.ConfigureConnection = configure;
+        _options.Backplane.Enabled = enableBackplane;
+        return this;
+    }
+
+    // ---------------------------------------------------------------- toggle and presets
+
+    /// <summary>Enables caching (the default).</summary>
+    public CachingBuilder Enable()
+    {
+        _options.Enabled = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Disables caching: reads miss, writes are discarded, factories run every time, and no
+    /// backend is created.
+    /// </summary>
+    public CachingBuilder Disable()
+    {
+        _options.Enabled = false;
+        return this;
+    }
+
+    /// <summary>
+    /// Development preset: short expirations, no fail-safe, eager errors. Makes cache-related bugs
+    /// visible instead of hidden behind stale data.
+    /// </summary>
+    public CachingBuilder UseDevelopmentDefaults()
+    {
+        _options.DefaultExpiration = TimeSpan.FromMinutes(1);
+        _options.Resilience.FailSafeEnabled = false;
+        _options.Resilience.ThrowOnDistributedCacheErrors = true;
+        _options.Resilience.ThrowOnSerializationErrors = true;
+        _options.Observability.LogStartupSummary = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Production preset: fail-safe on, soft timeouts on the factory and the distributed layer,
+    /// eager refresh late in the entry's life, and errors degraded rather than surfaced.
+    /// </summary>
+    public CachingBuilder UseProductionDefaults()
+    {
+        _options.Resilience.FailSafeEnabled = true;
+        _options.Resilience.FailSafeMaxDuration = TimeSpan.FromHours(2);
+        _options.Resilience.FactorySoftTimeout = TimeSpan.FromSeconds(1);
+        _options.Resilience.FactoryHardTimeout = TimeSpan.FromSeconds(10);
+        _options.Resilience.DistributedSoftTimeout = TimeSpan.FromMilliseconds(500);
+        _options.Resilience.DistributedHardTimeout = TimeSpan.FromSeconds(2);
+        _options.Resilience.ThrowOnDistributedCacheErrors = false;
+        _options.Resilience.ThrowOnSerializationErrors = false;
+        _options.Entry.EagerRefreshThreshold = 0.8f;
+        return this;
+    }
+
+    // ---------------------------------------------------------------- naming and isolation
+
+    // There is deliberately no WithCacheName: the cache name always comes from the registration
+    // (AddCaching(name, ...)), which is what keyed resolution and the cache.name dimension use.
+    // A builder method could only set a value the registration immediately overwrites.
+
+    /// <summary>Sets the required application key namespace.</summary>
+    /// <param name="applicationPrefix">Application identifier, for example <c>"orders-api"</c>.</param>
+    public CachingBuilder WithApplicationPrefix(string applicationPrefix)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(applicationPrefix);
+        _options.ApplicationPrefix = applicationPrefix;
+        return this;
+    }
+
+    /// <summary>Sets the environment key namespace.</summary>
+    /// <param name="environmentPrefix">Environment identifier, for example <c>"prod"</c>.</param>
+    public CachingBuilder WithEnvironmentPrefix(string environmentPrefix)
+    {
+        _options.EnvironmentPrefix = environmentPrefix;
+        return this;
+    }
+
+    /// <summary>Sets a static tenant key namespace for single-tenant-per-process deployments.</summary>
+    /// <param name="tenantPrefix">Tenant identifier.</param>
+    public CachingBuilder WithTenantPrefix(string tenantPrefix)
+    {
+        _options.TenantPrefix = tenantPrefix;
+        return this;
+    }
+
+    // ---------------------------------------------------------------- expiration
+
+    /// <summary>Sets the default entry lifetime.</summary>
+    /// <param name="expiration">Lifetime; must be greater than zero.</param>
     public CachingBuilder WithDefaultExpiration(TimeSpan expiration)
     {
-        DefaultExpiration = expiration;
+        _options.DefaultExpiration = expiration;
         return this;
     }
 
-    /// <summary>Sets the default local (in-memory) expiration for Hybrid mode. Default when unset: null (inherits <see cref="CacheOptions.DefaultExpiration"/>).</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod")
-    ///     .WithDefaultLocalExpiration(TimeSpan.FromSeconds(30)));
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "HybridLocalCacheExpiration": "00:00:30" } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithDefaultLocalExpiration(TimeSpan expiration)
+    /// <summary>Sets the L2 (Redis) lifetime, which may differ from the L1 lifetime.</summary>
+    /// <param name="expiration">Distributed lifetime.</param>
+    public CachingBuilder WithDistributedExpiration(TimeSpan expiration)
     {
-        DefaultLocalExpiration = expiration;
+        _options.Entry.DistributedExpiration = expiration;
         return this;
     }
 
-    /// <summary>Sets the maximum payload size in bytes. Entries larger than this are not cached. Default when unset: 1,048,576 (1 MiB).</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod")
-    ///     .WithMaximumPayloadBytes(512 * 1024)); // 512 KiB cap
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "MaximumPayloadBytes": 524288 } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithMaximumPayloadBytes(long bytes)
+    /// <summary>Sets the L1 (in-process) lifetime.</summary>
+    /// <param name="expiration">Local lifetime.</param>
+    public CachingBuilder WithLocalExpiration(TimeSpan expiration)
     {
-        MaximumPayloadBytes = bytes;
+        _options.Entry.LocalExpiration = expiration;
         return this;
     }
 
-    /// <summary>Sets the maximum cache key length in characters (full physical key, including <see cref="CacheOptions.KeyPrefix"/> + separator). Default when unset: 512.</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseRedis("...").WithKeyPrefix("svc-prod")
-    ///     .WithMaximumKeyLength(256));
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "MaximumKeyLength": 256 } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithMaximumKeyLength(int length)
+    /// <summary>Enables background refresh once an entry passes the given fraction of its lifetime.</summary>
+    /// <param name="threshold">Fraction between 0 and 1 exclusive, for example <c>0.8f</c>.</param>
+    public CachingBuilder WithEagerRefresh(float threshold)
     {
-        MaximumKeyLength = length;
+        _options.Entry.EagerRefreshThreshold = threshold;
         return this;
     }
 
-    /// <summary>Sets the in-memory cache size limit in megabytes. Default when unset: null (no cap; eviction by GC pressure only).</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseInMemory().WithKeyPrefix("svc-prod")
-    ///     .WithMemorySizeLimit(256)); // 256 MiB cap on IMemoryCache
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "MemorySizeLimitMb": 256 } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithMemorySizeLimit(int megabytes)
+    /// <summary>Sets the maximum random amount added to an entry's lifetime to de-synchronise expirations.</summary>
+    /// <param name="jitter">Maximum jitter.</param>
+    public CachingBuilder WithJitter(TimeSpan jitter)
     {
-        MemorySizeLimitMb = megabytes;
+        _options.Entry.JitterMaxDuration = jitter;
         return this;
     }
 
-    /// <summary>Sets the factory execution timeout (bounds the <c>GetOrCreateAsync</c> factory delegate). Default when unset: 30 seconds.</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod")
-    ///     .WithFactoryTimeout(TimeSpan.FromSeconds(5)));
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "FactoryTimeout": "00:00:05" } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithFactoryTimeout(TimeSpan timeout)
+    /// <summary>Caps the in-process memory layer and sets the default per-entry size charged against it.</summary>
+    /// <param name="megabytes">Cap in megabytes.</param>
+    /// <param name="defaultEntrySize">Default size charged per entry.</param>
+    public CachingBuilder WithMemorySizeLimit(long megabytes, long defaultEntrySize = 1)
     {
-        FactoryTimeout = timeout;
+        _options.Entry.MemorySizeLimitMegabytes = megabytes;
+        _options.Entry.Size = defaultEntrySize;
         return this;
     }
 
-    /// <summary>
-    /// Sets the mandatory cache namespace for this application. For InMemory and Redis it is prepended to
-    /// the key at the routing layer; for Hybrid it is applied as the L2 Redis <c>InstanceName</c> so it also
-    /// namespaces HybridCache's tag/wildcard invalidation markers (see <see cref="CacheOptions.KeyPrefix"/>).
-    /// <b>Must be unique per application</b> when apps share a Redis database. Replaces v1's RedisInstanceName.
-    /// No default — required when <see cref="CacheOptions.Enabled"/> is true. Must match <c>^[a-zA-Z0-9][a-zA-Z0-9._-]*$</c> and must not contain <c>':'</c>.
-    /// </summary>
-    /// <example>
-    /// Fluent (convention: <c>serviceName-environment</c>; must not contain <c>':'</c>):
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("catalog-prod"));
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "KeyPrefix": "catalog-prod" } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithKeyPrefix(string keyPrefix)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(keyPrefix);
-        InstanceName = keyPrefix;
-        return this;
-    }
+    // ---------------------------------------------------------------- resilience
 
-    /// <summary>Override the number of striped lock slots (rounded up to power of 2; default 1024).</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod")
-    ///     .WithStripedLocks(4096));
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "StripeLockCount": 4096 } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithStripedLocks(int stripeCount)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(stripeCount);
-        StripeLockCount = stripeCount;
-        return this;
-    }
-
-    /// <summary>Override the per-op Redis timeout (default 2s).</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseRedis("...").WithKeyPrefix("svc-prod")
-    ///     .WithRedisOperationTimeout(TimeSpan.FromMilliseconds(500)));
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "RedisOperationTimeout": "00:00:00.500" } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithRedisOperationTimeout(TimeSpan timeout)
-    {
-        RedisOperationTimeout = timeout;
-        return this;
-    }
-
-    /// <summary>
-    /// Replaces the registered <see cref="ICacheSerializer"/> with the supplied implementation type
-    /// (must have a parameterless constructor or be resolvable from DI).
-    /// Default <see cref="ICacheSerializer"/> when unset: <see cref="JsonCacheSerializer"/>.
-    /// </summary>
-    /// <example>
-    /// Fluent only — serializer types are not bindable from JSON. To pre-register a serializer outside the
-    /// fluent overload, register <see cref="ICacheSerializer"/> on <see cref="IServiceCollection"/> before
-    /// calling <c>AddCaching(IConfiguration)</c>.
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseRedis("...").WithKeyPrefix("svc-prod")
-    ///     .WithSerializer<MyCustomSerializer>());
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithSerializer<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(
-        System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicConstructors)] TSerializer>()
-        where TSerializer : class, ICacheSerializer
-    {
-        if (_services is null)
-            throw new InvalidOperationException(
-                "WithSerializer<T>() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
-                "Use the AddCaching(builder => ...) overload.");
-        _services.RemoveAll<ICacheSerializer>();
-        _services.AddSingleton<ICacheSerializer, TSerializer>();
-        return this;
-    }
-
-    /// <summary>Replaces the registered <see cref="ICacheSerializer"/> with the supplied instance. Default <see cref="ICacheSerializer"/> when unset: <see cref="JsonCacheSerializer"/>.</summary>
-    /// <example>
-    /// Fluent only — serializer instances are not bindable from JSON.
-    /// <code><![CDATA[
-    /// // AOT/trim-safe: pass a JsonSerializerContext to the JsonCacheSerializer.
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod")
-    ///     .WithSerializer(new JsonCacheSerializer(MyJsonContext.Default)));
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithSerializer(ICacheSerializer serializer)
-    {
-        ArgumentNullException.ThrowIfNull(serializer);
-        if (_services is null)
-            throw new InvalidOperationException(
-                "WithSerializer(...) requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
-                "Use the AddCaching(builder => ...) overload.");
-        _services.RemoveAll<ICacheSerializer>();
-        _services.AddSingleton(serializer);
-        return this;
-    }
-
-    /// <summary>
-    /// Configure Redis resilience (timeout, circuit breaker, retry, optional concurrency limiter).
-    /// Uses library-defined <see cref="CacheResilienceOptions"/> — Polly is not surfaced on the public API.
-    /// </summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseRedis("...").WithKeyPrefix("svc-prod")
-    ///     .WithResilience(r =>
-    ///     {
-    ///         r.Timeout = TimeSpan.FromMilliseconds(500);
-    ///         r.RetryCount = 1;
-    ///         r.FailureRatio = 0.5;
-    ///         r.MinimumThroughput = 20;
-    ///         r.BreakDuration = TimeSpan.FromSeconds(30);
-    ///     }));
-    /// ]]></code>
-    /// Configuration — <see cref="CacheResilienceOptions"/> is a separate options type and is NOT bound by
-    /// <c>AddCaching(IConfiguration)</c>. Bind it explicitly before/after <c>AddCaching</c>:
-    /// <code><![CDATA[
-    /// services.Configure<CacheResilienceOptions>(builder.Configuration.GetSection("CacheResilience"));
-    /// services.AddCaching(builder.Configuration);
-    /// ]]></code>
-    /// <code><![CDATA[
-    /// {
-    ///   "CacheResilience": {
-    ///     "Timeout": "00:00:00.500",
-    ///     "RetryCount": 1,
-    ///     "FailureRatio": 0.5,
-    ///     "MinimumThroughput": 20,
-    ///     "BreakDuration": "00:00:30"
-    ///   }
-    /// }
-    /// ]]></code>
-    /// </example>
+    /// <summary>Configures fail-safe, timeout, circuit-breaker and auto-recovery behaviour.</summary>
+    /// <param name="configure">Receives the resilience options.</param>
     public CachingBuilder WithResilience(Action<CacheResilienceOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
-        if (_services is null)
-            throw new InvalidOperationException(
-                "WithResilience(...) requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
-                "Use the AddCaching(builder => ...) overload.");
-        _services.Configure(configure);
+        configure(_options.Resilience);
         return this;
     }
 
-    /// <summary>
-    /// In v2, telemetry is always emitted via the static <see cref="Telemetry.CacheInstruments"/>
-    /// (Meter and ActivitySource named "Caching.NET"). Consumers wire OpenTelemetry directly:
-    /// <c>builder.Services.AddOpenTelemetry().WithMetrics(b =&gt; b.AddMeter(CacheInstruments.MeterName))</c>.
-    /// This method is preserved for v1 source compat and is now a no-op.
-    /// </summary>
-    /// <example>
-    /// Fluent only — no-op v1-compat hook; no configuration equivalent.
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod").WithOpenTelemetry());
-    ///
-    /// // Actual telemetry wiring (do this in host startup regardless of which AddCaching overload you use):
-    /// services.AddOpenTelemetry()
-    ///     .WithMetrics(m => m.AddMeter(CacheInstruments.MeterName))
-    ///     .WithTracing(t => t.AddSource(CacheInstruments.ActivitySourceName));
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithOpenTelemetry()
+    /// <summary>Configures how long an expired entry stays usable as a fallback.</summary>
+    /// <param name="enabled">Whether fail-safe is on.</param>
+    /// <param name="maxDuration">How long past expiration the entry remains usable.</param>
+    /// <param name="throttleDuration">How long before the factory is retried after serving stale data.</param>
+    public CachingBuilder WithFailSafe(bool enabled = true, TimeSpan? maxDuration = null, TimeSpan? throttleDuration = null)
     {
-        RegisterOpenTelemetry = true;
+        _options.Resilience.FailSafeEnabled = enabled;
+        if (maxDuration is { } max)
+        {
+            _options.Resilience.FailSafeMaxDuration = max;
+        }
+
+        if (throttleDuration is { } throttle)
+        {
+            _options.Resilience.FailSafeThrottleDuration = throttle;
+        }
+
+        return this;
+    }
+
+    /// <summary>Sets the factory soft and hard timeouts.</summary>
+    /// <param name="softTimeout">When to fall back to a stale value while the factory keeps running.</param>
+    /// <param name="hardTimeout">Absolute ceiling on factory execution.</param>
+    public CachingBuilder WithFactoryTimeouts(TimeSpan? softTimeout = null, TimeSpan? hardTimeout = null)
+    {
+        if (softTimeout is { } soft)
+        {
+            _options.Resilience.FactorySoftTimeout = soft;
+        }
+
+        if (hardTimeout is { } hard)
+        {
+            _options.Resilience.FactoryHardTimeout = hard;
+        }
+
+        return this;
+    }
+
+    // ---------------------------------------------------------------- redis
+
+    /// <summary>Configures Redis connection settings.</summary>
+    /// <param name="configure">Receives the Redis options.</param>
+    public CachingBuilder WithRedis(Action<RedisOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        configure(_options.Redis);
+        return this;
+    }
+
+    /// <summary>Requires TLS and strict certificate validation.</summary>
+    public CachingBuilder WithStrictRedisTls()
+    {
+        _options.Redis.UseTls = true;
+        _options.Redis.StrictCertificateValidation = true;
         return this;
     }
 
     /// <summary>
-    /// Registers cache health checks with the ASP.NET Core health check system.
-    /// By default registers a single <see cref="Health.CachingHealthCheck"/> (readiness: PING + probe).
-    /// When <paramref name="splitLivenessReadiness"/> is true, registers
-    /// <see cref="Health.CachingLivenessHealthCheck"/> (connection-level only) and
-    /// <see cref="Health.CachingHealthCheck"/> as <c>{name}-liveness</c> / <c>{name}-readiness</c> with tags <c>liveness</c> / <c>readiness</c>.
+    /// Enables TLS but tolerates a certificate name mismatch. Use only for a private endpoint whose
+    /// DNS name differs from the certificate subject; never for a public endpoint.
     /// </summary>
-    /// <example>
-    /// Fluent only — health-check registration is a service-collection operation, not a <see cref="CacheOptions"/> setting.
-    /// If you registered via <c>AddCaching(IConfiguration)</c>, call
-    /// <see cref="Extensions.ServiceCollectionExtensions.AddCachingHealthChecks"/> on
-    /// <c>services.AddHealthChecks()</c> directly.
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod")
-    ///     .WithHealthChecks(name: "caching-net", splitLivenessReadiness: true));
-    ///
-    /// // Equivalent when using AddCaching(IConfiguration):
-    /// services.AddCaching(builder.Configuration);
-    /// services.AddHealthChecks().AddCachingHealthChecks(name: "caching-net", splitLivenessReadiness: true);
-    /// ]]></code>
-    /// </example>
+    public CachingBuilder WithPermissiveRedisTls()
+    {
+        _options.Redis.UseTls = true;
+        _options.Redis.StrictCertificateValidation = false;
+        return this;
+    }
+
+    /// <summary>Enables or disables the cross-instance invalidation channel.</summary>
+    /// <param name="enabled">Whether the backplane runs.</param>
+    /// <param name="channelPrefix">Optional pub/sub channel prefix.</param>
+    public CachingBuilder WithBackplane(bool enabled = true, string? channelPrefix = null)
+    {
+        _options.Backplane.Enabled = enabled;
+        if (channelPrefix is not null)
+        {
+            _options.Backplane.ChannelPrefix = channelPrefix;
+        }
+
+        return this;
+    }
+
+    // ---------------------------------------------------------------- serialization
+
+    /// <summary>Selects the JSON wire format (the default) and optionally its serializer options.</summary>
+    /// <param name="jsonSerializerOptions">
+    /// Supply a source-generated <c>TypeInfoResolver</c> here for trim- and AOT-safe serialization.
+    /// </param>
+    public CachingBuilder WithJsonSerialization(JsonSerializerOptions? jsonSerializerOptions = null)
+    {
+        _options.Serialization.Format = CacheSerializerFormat.SystemTextJson;
+        _options.Serialization.JsonSerializerOptions = jsonSerializerOptions;
+        return this;
+    }
+
+    /// <summary>Selects the MessagePack wire format. Smaller and faster than JSON, but not human-readable.</summary>
+    public CachingBuilder WithMessagePackSerialization()
+    {
+        _options.Serialization.Format = CacheSerializerFormat.MessagePack;
+        return this;
+    }
+
+    /// <summary>Sets the maximum serialized size of a single entry.</summary>
+    /// <param name="maximumBytes">Ceiling in bytes.</param>
+    public CachingBuilder WithMaximumPayloadBytes(long maximumBytes)
+    {
+        _options.Serialization.MaximumPayloadBytes = maximumBytes;
+        return this;
+    }
+
+    /// <summary>Enables Brotli compression for distributed payloads at or above a threshold.</summary>
+    /// <param name="thresholdBytes">Minimum serialized size before compression is attempted.</param>
+    /// <param name="maximumDecompressedBytes">Decompression ceiling that bounds decompression-bomb exposure.</param>
+    public CachingBuilder WithCompression(int thresholdBytes = 16 * 1024, int maximumDecompressedBytes = 16 * 1024 * 1024)
+    {
+        _options.Serialization.Compression.Enabled = true;
+        _options.Serialization.Compression.ThresholdBytes = thresholdBytes;
+        _options.Serialization.Compression.MaximumDecompressedBytes = maximumDecompressedBytes;
+        return this;
+    }
+
+    // ---------------------------------------------------------------- security and observability
+
+    /// <summary>Configures key, tag and telemetry-redaction limits.</summary>
+    /// <param name="configure">Receives the security options.</param>
+    public CachingBuilder WithSecurity(Action<CacheSecurityOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        configure(_options.Security);
+        return this;
+    }
+
+    /// <summary>Sets the maximum physical cache-key length.</summary>
+    /// <param name="maximumKeyLength">Ceiling in characters, prefix included.</param>
+    public CachingBuilder WithMaximumKeyLength(int maximumKeyLength)
+    {
+        _options.Security.MaximumKeyLength = maximumKeyLength;
+        return this;
+    }
+
+    /// <summary>Configures tracing, metrics and log levels.</summary>
+    /// <param name="configure">Receives the observability options.</param>
+    public CachingBuilder WithObservability(Action<CacheObservabilityOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        configure(_options.Observability);
+        return this;
+    }
+
+    /// <summary>Turns Caching.NET tracing and metrics on or off.</summary>
+    /// <param name="tracing">Whether activities are produced.</param>
+    /// <param name="metrics">Whether metrics are recorded.</param>
+    public CachingBuilder WithTelemetry(bool tracing = true, bool metrics = true)
+    {
+        _options.Observability.EnableTracing = tracing;
+        _options.Observability.EnableMetrics = metrics;
+        return this;
+    }
+
+    /// <summary>Registers Caching.NET health checks.</summary>
+    /// <param name="name">Health-check name. Suffixed with <c>-liveness</c> and <c>-readiness</c> when split.</param>
+    /// <param name="splitLivenessReadiness">Register separate liveness and readiness checks.</param>
     public CachingBuilder WithHealthChecks(string name = "caching-net", bool splitLivenessReadiness = false)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
         RegisterHealthChecks = true;
         HealthCheckName = name;
         HealthCheckSplit = splitLivenessReadiness;
         return this;
-    }
-
-    /// <summary>Enables strict Redis TLS certificate validation (hostname must match the certificate). Default when unset: true (strict — flipped from v1).</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseRedis("rediss://...").WithKeyPrefix("svc-prod")
-    ///     .WithStrictCertificateValidation());
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "StrictRedisCertificateValidation": true } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithStrictCertificateValidation()
-    {
-        StrictRedisCertificateValidation = true;
-        return this;
-    }
-
-    /// <summary>
-    /// Allows TLS connections when the server certificate does not match the Redis host name
-    /// (e.g. custom DNS to AWS ElastiCache). Other validation errors (untrusted chain, etc.) are still rejected.
-    /// Sets <see cref="Caching.NET.Options.CacheOptions.StrictRedisCertificateValidation"/> to <c>false</c>.
-    /// </summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseRedis("rediss://my-alias:6380").WithKeyPrefix("svc-prod")
-    ///     .WithPermissiveRedisTls());
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "StrictRedisCertificateValidation": false } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithPermissiveRedisTls()
-    {
-        StrictRedisCertificateValidation = false;
-        return this;
-    }
-
-    /// <summary>Explicitly disables caching. ICacheService is still registered but short-circuits to factories. Default for <see cref="CacheOptions.Enabled"/> when unset: true.</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod").Disable());
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "Enabled": false, "KeyPrefix": "svc-prod" } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder Disable()
-    {
-        Enabled = false;
-        return this;
-    }
-
-    /// <summary>
-    /// Re-enables caching when overriding a config file that set <see cref="CacheOptions.Enabled"/> to false
-    /// (fluent wins over bound configuration via <see cref="Extensions.ServiceCollectionExtensions.AddCaching(Microsoft.Extensions.DependencyInjection.IServiceCollection, Microsoft.Extensions.Configuration.IConfiguration, System.Action{CachingBuilder})"/>).
-    /// </summary>
-    /// <example>
-    /// Fluent override (config-file says <c>Enabled=false</c>, host forces it on):
-    /// <code><![CDATA[
-    /// services.AddCaching(configuration, b => b.Enable());
-    /// ]]></code>
-    /// Pure configuration:
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "Enabled": true } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder Enable()
-    {
-        Enabled = true;
-        return this;
-    }
-
-    /// <summary>
-    /// Development-oriented defaults: raw keys in logs for easier local debugging.
-    /// Requires <c>AddCaching(IServiceCollection, ...)</c>; throws if the builder has no service collection.
-    /// </summary>
-    /// <example>
-    /// Fluent (preset):
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseInMemory().WithKeyPrefix("svc-dev").UseDevelopmentDefaults());
-    /// ]]></code>
-    /// Configuration (appsettings.json) — set the underlying flags directly:
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "IncludeRawKeyInLogs": true } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder UseDevelopmentDefaults()
-    {
-        if (_services is null)
-            throw new InvalidOperationException(
-                "UseDevelopmentDefaults() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
-                "Use the AddCaching(builder => ...) overload.");
-        _services.PostConfigure<CacheOptions>(o => o.IncludeRawKeyInLogs = true);
-        return this;
-    }
-
-    /// <summary>
-    /// Production-oriented defaults: hashed keys in logs and strict Redis TLS certificate validation.
-    /// Requires <c>AddCaching(IServiceCollection, ...)</c>; throws if the builder has no service collection.
-    /// </summary>
-    /// <example>
-    /// Fluent (preset):
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("rediss://...").WithKeyPrefix("svc-prod").UseProductionDefaults());
-    /// ]]></code>
-    /// Configuration (appsettings.json) — set the underlying flags directly:
-    /// <code><![CDATA[
-    /// {
-    ///   "CacheOptions": {
-    ///     "IncludeRawKeyInLogs": false,
-    ///     "StrictRedisCertificateValidation": true
-    ///   }
-    /// }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder UseProductionDefaults()
-    {
-        if (_services is null)
-            throw new InvalidOperationException(
-                "UseProductionDefaults() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
-                "Use the AddCaching(builder => ...) overload.");
-        _services.PostConfigure<CacheOptions>(o =>
-        {
-            o.IncludeRawKeyInLogs = false;
-            o.StrictRedisCertificateValidation = true;
-        });
-        return this;
-    }
-
-    /// <summary>
-    /// Optional user-key validation on the segment before <see cref="CacheOptions.KeyPrefix"/> is applied.
-    /// Return false to skip caching for that key (reads miss / writes no-op). Fluent-only; not bound from JSON.
-    /// Default when unset: null (all keys accepted).
-    /// </summary>
-    /// <example>
-    /// Fluent only — delegates are not bindable from JSON.
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod")
-    ///     .WithKeyValidator(k => !k.StartsWith("Anon:")));
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithKeyValidator(Func<string, bool> validateKey)
-    {
-        ArgumentNullException.ThrowIfNull(validateKey);
-        if (_services is null)
-            throw new InvalidOperationException(
-                "WithKeyValidator(...) requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
-                "Use the AddCaching(builder => ...) overload.");
-        KeyValidator = validateKey;
-        return this;
-    }
-
-    /// <summary>
-    /// Optional normalization of the user key segment before prefixing (e.g. trim, lower-case segments).
-    /// Fluent-only; not bound from JSON.
-    /// Default when unset: null (no transformation).
-    /// </summary>
-    /// <example>
-    /// Fluent only — delegates are not bindable from JSON.
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod")
-    ///     .WithKeyTransformer(k => k.Trim().ToLowerInvariant()));
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithKeyTransformer(Func<string, string> transformKey)
-    {
-        ArgumentNullException.ThrowIfNull(transformKey);
-        if (_services is null)
-            throw new InvalidOperationException(
-                "WithKeyTransformer(...) requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
-                "Use the AddCaching(builder => ...) overload.");
-        KeyTransformer = transformKey;
-        return this;
-    }
-
-    /// <summary>Apply ±<paramref name="percentage"/> jitter to all entry TTLs (clamped to 0–0.5). Default when unset: 0.10 (±10%).</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod").WithTtlJitter(0.20));
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "TtlJitterPercentage": 0.20 } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithTtlJitter(double percentage)
-    {
-        if (_services is null)
-            throw new InvalidOperationException(
-                "WithTtlJitter() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
-                "Use the AddCaching(builder => ...) overload.");
-        _services.PostConfigure<CacheOptions>(o => o.TtlJitterPercentage = Math.Clamp(percentage, 0.0, 0.5));
-        return this;
-    }
-
-    /// <summary>Cap concurrent in-flight stale-while-revalidate background refreshes. Default when unset: 256.</summary>
-    /// <example>
-    /// Fluent:
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod")
-    ///     .WithStaleRefreshConcurrency(512));
-    /// ]]></code>
-    /// Configuration (appsettings.json):
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "StaleRefreshConcurrency": 512 } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithStaleRefreshConcurrency(int maxConcurrent)
-    {
-        if (_services is null)
-            throw new InvalidOperationException(
-                "WithStaleRefreshConcurrency() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
-                "Use the AddCaching(builder => ...) overload.");
-        _services.PostConfigure<CacheOptions>(o => o.StaleRefreshConcurrency = maxConcurrent);
-        return this;
-    }
-
-    /// <summary>
-    /// Mark the application as requiring tag support. Startup validation fails
-    /// when <see cref="CacheOptions.Mode"/> is not <see cref="CacheMode.Hybrid"/>.
-    /// Default for <see cref="CacheOptions.RequireTagSupport"/> when unset: false.
-    /// </summary>
-    /// <example>
-    /// Fluent (recommended — sets the flag during DI registration):
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod").RequireTagSupport());
-    /// ]]></code>
-    /// Configuration (appsettings.json) — bindable, but the fluent method is the documented entry point:
-    /// <code><![CDATA[
-    /// { "CacheOptions": { "Mode": "Hybrid", "RequireTagSupport": true } }
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder RequireTagSupport()
-    {
-        if (_services is null)
-            throw new InvalidOperationException(
-                "RequireTagSupport() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
-                "Use the AddCaching(builder => ...) overload.");
-        _services.PostConfigure<CacheOptions>(o => o.RequireTagSupport = true);
-        return this;
-    }
-
-    /// <summary>Use the bundled MessagePack serializer. Default <see cref="ICacheSerializer"/> when unset: <see cref="JsonCacheSerializer"/> (reflection-based <c>System.Text.Json</c>).</summary>
-    /// <example>
-    /// Fluent only — serializer selection is not bindable from JSON.
-    /// <code><![CDATA[
-    /// services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod").WithMessagePackSerializer());
-    /// ]]></code>
-    /// </example>
-    public CachingBuilder WithMessagePackSerializer()
-    {
-        if (_services is null)
-            throw new InvalidOperationException(
-                "WithMessagePackSerializer() requires a CachingBuilder constructed via AddCaching(IServiceCollection,...). " +
-                "Use the AddCaching(builder => ...) overload.");
-        _services.RemoveAll<Serialization.ICacheSerializer>();
-        _services.AddSingleton<Serialization.ICacheSerializer, Serialization.MessagePackCacheSerializer>();
-        return this;
-    }
-
-    /// <summary>
-    /// Applies the builder's fluent settings onto a <see cref="CacheOptions"/> instance,
-    /// overriding any values previously set by configuration binding.
-    /// </summary>
-    internal void ApplyTo(CacheOptions options)
-    {
-        if (Enabled.HasValue)
-            options.Enabled = Enabled.Value;
-        if (Mode.HasValue)
-            options.Mode = Mode.Value;
-        if (RedisConnectionString is not null)
-            options.RedisConnectionString = RedisConnectionString;
-        if (InstanceName is not null)
-            options.KeyPrefix = InstanceName;
-        if (DefaultExpiration.HasValue)
-            options.DefaultExpiration = DefaultExpiration.Value;
-        if (DefaultLocalExpiration.HasValue)
-            options.HybridLocalCacheExpiration = DefaultLocalExpiration.Value;
-        if (MaximumPayloadBytes.HasValue)
-            options.MaximumPayloadBytes = MaximumPayloadBytes.Value;
-        if (MaximumKeyLength.HasValue)
-            options.MaximumKeyLength = MaximumKeyLength.Value;
-        if (MemorySizeLimitMb.HasValue)
-            options.MemorySizeLimitMb = MemorySizeLimitMb.Value;
-        if (FactoryTimeout.HasValue)
-            options.FactoryTimeout = FactoryTimeout.Value;
-        if (StripeLockCount.HasValue)
-            options.StripeLockCount = StripeLockCount.Value;
-        if (RedisOperationTimeout.HasValue)
-            options.RedisOperationTimeout = RedisOperationTimeout.Value;
-        if (StrictRedisCertificateValidation.HasValue)
-            options.StrictRedisCertificateValidation = StrictRedisCertificateValidation.Value;
-        if (KeyValidator is not null)
-            options.KeyValidator = KeyValidator;
-        if (KeyTransformer is not null)
-            options.KeyTransformer = KeyTransformer;
     }
 }

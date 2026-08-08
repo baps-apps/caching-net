@@ -34,8 +34,8 @@ function Invoke-Test([string]$project, [string]$tfm) {
 }
 
 function Invoke-UnitMatrix {
-    Step 'test (unit, all TFMs)'
-    $tfms = if ($Tfm) { @($Tfm) } else { @('net8.0', 'net9.0', 'net10.0') }
+    Step 'test (unit)'
+    $tfms = if ($Tfm) { @($Tfm) } else { @('net10.0') }
     foreach ($t in $tfms) {
         Invoke-Test 'tests/Caching.NET.Tests' $t
     }
@@ -142,7 +142,7 @@ switch ($Command) {
 scripts/dev.ps1 <command> [-Tfm <tfm>] [-Configuration Release|Debug] [-NoRestore]
 
   build              Restore + build (warnings-as-errors).
-  test               Unit tests across [net8.0, net9.0, net10.0].
+  test               Unit tests on net10.0.
   test:integration   Testcontainers Redis suite (Docker required). Set CACHING_ENABLE_HANG_DIAGNOSTICS=1 to enable --blame-hang.
   test:chaos         Polly fault-injection suite.
   test:property      FsCheck property suite.

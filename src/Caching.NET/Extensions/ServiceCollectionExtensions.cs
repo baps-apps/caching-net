@@ -1,492 +1,329 @@
-using Microsoft.Extensions.Caching.Hybrid;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using System.ComponentModel.DataAnnotations;
-using System.Text.Json;
-using StackExchange.Redis;
-using Caching.NET.Abstractions;
+using System.Diagnostics.CodeAnalysis;
 using Caching.NET.Configuration;
+using Caching.NET.Health;
 using Caching.NET.Internal;
 using Caching.NET.Keys;
 using Caching.NET.Options;
-using Caching.NET.Services;
+using Caching.NET.Validation;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
+using ZiggyCreatures.Caching.Fusion;
 
 namespace Caching.NET.Extensions;
 
 /// <summary>
-/// Extension methods for registering Caching.NET (InMemory, Redis, or Hybrid).
-/// Supports zero-config, config-file, fluent builder, and combined registration patterns.
+/// Registers Caching.NET. These are the only cache-registration calls an application makes: the
+/// cache engine, its serializer, its Redis connection, its backplane and its telemetry are all
+/// wired internally.
 /// </summary>
 public static class ServiceCollectionExtensions
 {
-    private const int DefaultExpirationMinutes = 10;
-    private const int DefaultLocalExpirationMinutes = 5;
+    private const string ConfigurationBindingWarning =
+        "Binding CachingOptions from IConfiguration uses reflection. For a trimmed or native-AOT "
+        + "application, register the cache from code with AddCaching(Action<CachingBuilder>) or "
+        + "AddCachingOptions(Action<CachingOptions>) instead.";
 
     /// <summary>
-    /// Registers Caching.NET with sensible defaults: InMemory mode, enabled, 10-minute expiration.
-    /// No configuration section required.
+    /// Registers the default cache from the <c>CacheOptions</c> configuration section, plus any
+    /// caches declared under <c>CacheOptions:NamedCaches</c>.
     /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configuration">Application configuration, or the <c>CacheOptions</c> section itself.</param>
     /// <example>
     /// <code><![CDATA[
-    /// // Minimal registration — InMemory, enabled, 10-minute TTL. Production apps usually need a KeyPrefix,
-    /// // so prefer the configuration or fluent overload.
-    /// services.AddCaching();
+    /// builder.Services.AddCaching(builder.Configuration);
+    /// // or, passing the section directly:
+    /// builder.Services.AddCaching(builder.Configuration.GetSection("CacheOptions"));
     /// ]]></code>
     /// </example>
-    public static IServiceCollection AddCaching(this IServiceCollection services)
-    {
-        return AddCachingCore(services, configuration: null, configure: null);
-    }
-
-    /// <summary>
-    /// Registers Caching.NET using the <c>CacheOptions</c> configuration section.
-    /// When <c>Enabled</c> is false, <see cref="ICacheService"/> is still registered but short-circuits to factories.
-    /// </summary>
-    /// <example>
-    /// <code><![CDATA[
-    /// // appsettings.json:
-    /// // {
-    /// //   "CacheOptions": {
-    /// //     "Enabled": true,
-    /// //     "Mode": "Hybrid",
-    /// //     "KeyPrefix": "svc-prod",
-    /// //     "RedisConnectionString": "rediss://elasticache:6380"
-    /// //   }
-    /// // }
-    /// services.AddCaching(builder.Configuration);
-    /// ]]></code>
-    /// </example>
+    [RequiresDynamicCode(ConfigurationBindingWarning)]
+    [RequiresUnreferencedCode(ConfigurationBindingWarning)]
     public static IServiceCollection AddCaching(this IServiceCollection services, IConfiguration configuration)
+        => services.AddCaching(configuration, configure: null);
+
+    /// <summary>
+    /// Registers the default cache from configuration with fluent overrides applied on top.
+    /// Fluent settings win over bound values.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configuration">Application configuration, or the <c>CacheOptions</c> section itself.</param>
+    /// <param name="configure">Fluent overrides. May be <c>null</c>.</param>
+    [RequiresDynamicCode(ConfigurationBindingWarning)]
+    [RequiresUnreferencedCode(ConfigurationBindingWarning)]
+    public static IServiceCollection AddCaching(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        Action<CachingBuilder>? configure)
     {
+        ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
-        return AddCachingCore(services, configuration, configure: null);
+
+        var section = ResolveSection(configuration);
+        AddCache(services, CachingDefaults.DefaultCacheName, isDefault: true, Binder(section), configure);
+        AddNamedCachesFromConfiguration(services, section);
+        return services;
     }
 
     /// <summary>
-    /// Registers Caching.NET using a fluent builder for code-first configuration.
+    /// Registers the default cache entirely from code.
     /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configure">Fluent configuration.</param>
     /// <example>
     /// <code><![CDATA[
-    /// services.AddCaching(b => b
-    ///     .UseHybrid("rediss://elasticache:6380")
-    ///     .WithKeyPrefix("svc-prod")
-    ///     .UseProductionDefaults()
-    ///     .WithTtlJitter(0.10)
-    ///     .WithHealthChecks());
+    /// builder.Services.AddCaching(cache => cache
+    ///     .UseHybrid(redisConnectionString)
+    ///     .WithApplicationPrefix("orders-api")
+    ///     .WithDefaultExpiration(TimeSpan.FromMinutes(10)));
     /// ]]></code>
     /// </example>
     public static IServiceCollection AddCaching(this IServiceCollection services, Action<CachingBuilder> configure)
     {
+        ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
-        return AddCachingCore(services, configuration: null, configure);
-    }
 
-    /// <summary>
-    /// Registers Caching.NET using a configuration section as the base, with fluent builder overrides applied on top.
-    /// Fluent settings take precedence over config-file values.
-    /// </summary>
-    /// <example>
-    /// <code><![CDATA[
-    /// // Bind everything from appsettings then layer code-only knobs (KeyValidator/KeyTransformer, custom serializer).
-    /// services.AddCaching(builder.Configuration, b => b
-    ///     .WithSerializer(new JsonCacheSerializer(MyJsonContext.Default)) // AOT-safe
-    ///     .WithKeyValidator(k => !k.StartsWith("Anon:")));
-    /// ]]></code>
-    /// </example>
-    public static IServiceCollection AddCaching(this IServiceCollection services, IConfiguration configuration, Action<CachingBuilder> configure)
-    {
-        ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentNullException.ThrowIfNull(configure);
-        return AddCachingCore(services, configuration, configure);
-    }
-
-    /// <summary>
-    /// Registers Caching.NET health check(s) on the builder.
-    /// By default registers one <see cref="Health.CachingHealthCheck"/> (readiness).
-    /// When <paramref name="splitLivenessReadiness"/> is true, registers <see cref="Health.CachingLivenessHealthCheck"/> and <see cref="Health.CachingHealthCheck"/> with names <c>{name}-liveness</c> / <c>{name}-readiness</c> and tags <c>liveness</c> / <c>readiness</c>.
-    /// </summary>
-    /// <example>
-    /// <code><![CDATA[
-    /// // Wire via builder: services.AddCaching(b => b.UseHybrid("...").WithKeyPrefix("svc-prod").WithHealthChecks(...));
-    ///
-    /// // Or wire directly onto an existing IHealthChecksBuilder:
-    /// services.AddHealthChecks()
-    ///     .AddCachingHealthChecks(name: "caching-net", splitLivenessReadiness: true);
-    /// ]]></code>
-    /// </example>
-    public static IHealthChecksBuilder AddCachingHealthChecks(
-        this IHealthChecksBuilder builder,
-        string name = "caching-net",
-        Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus failureStatus =
-            Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy,
-        bool splitLivenessReadiness = false)
-    {
-        if (builder is null)
-        {
-            throw new ArgumentNullException(nameof(builder));
-        }
-
-        if (splitLivenessReadiness)
-        {
-            return builder.AddCheck<Health.CachingLivenessHealthCheck>(
-                    name: $"{name}-liveness",
-                    failureStatus: failureStatus,
-                    tags: new[] { "liveness" })
-                .AddCheck<Health.CachingHealthCheck>(
-                    name: $"{name}-readiness",
-                    failureStatus: failureStatus,
-                    tags: new[] { "readiness" });
-        }
-
-        return builder.AddCheck<Health.CachingHealthCheck>(
-            name: name,
-            failureStatus: failureStatus);
-    }
-
-    /// <summary>
-    /// Validates that <see cref="ICacheService"/> can be resolved.
-    /// Call this after building the service provider to fail fast on DI misconfiguration.
-    /// </summary>
-    /// <example>
-    /// <code><![CDATA[
-    /// var app = builder.Build();
-    /// app.Services.ValidateCacheRegistration(); // throws on startup if cache wiring is broken
-    /// ]]></code>
-    /// </example>
-    public static IServiceProvider ValidateCacheRegistration(this IServiceProvider serviceProvider)
-    {
-        _ = serviceProvider.GetRequiredService<ICacheService>();
-        return serviceProvider;
-    }
-
-    private static IServiceCollection AddCachingCore(
-        IServiceCollection services,
-        IConfiguration? configuration,
-        Action<CachingBuilder>? configure)
-    {
-        // 1. Bind config section if provided
-        // Register the v2 IValidateOptions implementation (regex + range checks with redacted error messages).
-        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<CacheOptions>, Validation.CacheOptionsValidator>());
-
-        if (configuration is not null)
-        {
-            IConfigurationSection section = configuration.GetSection(CacheConfigurationKeys.CacheOptions);
-            services.AddOptions<CacheOptions>()
-                .Bind(section)
-                .Validate(ValidateCacheOptions, "Invalid CacheOptions configuration when Enabled is true.")
-                .ValidateOnStart();
-        }
-        else
-        {
-            services.AddOptions<CacheOptions>()
-                .Validate(ValidateCacheOptions, "Invalid CacheOptions configuration when Enabled is true.")
-                .ValidateOnStart();
-        }
-
-        // 2. Execute fluent builder if provided
-        CachingBuilder? builder = null;
-        if (configure is not null)
-        {
-            builder = new CachingBuilder(services);
-            configure(builder);
-        }
-
-        // 3. Apply fluent overrides via PostConfigure (runs after config binding)
-        if (builder is not null)
-        {
-            var capturedBuilder = builder;
-            services.PostConfigure<CacheOptions>(options => capturedBuilder.ApplyTo(options));
-        }
-
-        // 4. Apply zero-config defaults: if no config and no fluent Enabled setting, default to enabled
-        if (configuration is null && builder?.Enabled is null)
-        {
-            services.PostConfigure<CacheOptions>(options =>
-            {
-                options.Enabled = true;
-            });
-        }
-
-        // 5. Resolve effective options for service registration (config + builder merged)
-        CacheOptions effectiveOptions = new();
-        if (configuration is not null)
-        {
-            configuration.GetSection(CacheConfigurationKeys.CacheOptions).Bind(effectiveOptions);
-        }
-        builder?.ApplyTo(effectiveOptions);
-        if (configuration is null && builder?.Enabled is null)
-        {
-            effectiveOptions.Enabled = true;
-        }
-        // 6. Telemetry: v2 uses static CacheInstruments (Meter/ActivitySource).
-        //    No DI registration needed; consumers wire OTel pipeline to subscribe.
-
-        // 7. Register cache infrastructure.
-        // When Enabled is false, the cache is OFF at every level:
-        //   - No backend (no MemoryCache, no Redis multiplexer, no HybridCache).
-        //   - No serializer, no resilience pipeline, no TLS validator.
-        //   - No options validation (CacheOptionsValidator short-circuits on Enabled=false).
-        // Health checks are registered later (step 10) when WithHealthChecks() was used; the
-        // check returns healthy when caching is disabled without probing backends.
-        // RoutingCacheService is still registered so injected ICacheService consumers resolve;
-        // every operation short-circuits to the factory (GetOrCreateAsync) or no-ops.
-        if (effectiveOptions.Enabled)
-        {
-            switch (effectiveOptions.Mode)
-            {
-                case CacheMode.InMemory:
-                    AddMemoryCacheWithOptions(services, effectiveOptions);
-                    services.TryAddSingleton<InMemoryCacheService>();
-                    break;
-
-                case CacheMode.Redis:
-                    if (string.IsNullOrWhiteSpace(effectiveOptions.RedisConnectionString) && builder?.RedisConfigurationAction is null)
-                        throw new InvalidOperationException("CacheOptions.Mode is Redis but RedisConnectionString is not set.");
-                    AddMemoryCacheWithOptions(services, effectiveOptions);
-                    services.TryAddSingleton<InMemoryCacheService>();
-                    ConfigureRedisCache(services, effectiveOptions, builder?.RedisConfigurationAction);
-                    EnsureCacheSerializerOptions(services);
-                    TryAddConnectionMultiplexer(services, effectiveOptions, builder?.RedisConfigurationAction);
-                    services.TryAddSingleton<RedisCacheService>();
-                    break;
-
-                case CacheMode.Hybrid:
-                    if (string.IsNullOrWhiteSpace(effectiveOptions.RedisConnectionString) && builder?.RedisConfigurationAction is null)
-                        throw new InvalidOperationException("CacheOptions.Mode is Hybrid but RedisConnectionString is not set.");
-                    AddMemoryCacheWithOptions(services, effectiveOptions);
-                    services.TryAddSingleton<InMemoryCacheService>();
-                    ConfigureHybridCache(services, effectiveOptions, builder?.RedisConfigurationAction);
-                    EnsureCacheSerializerOptions(services);
-                    TryAddConnectionMultiplexer(services, effectiveOptions, builder?.RedisConfigurationAction);
-                    services.TryAddSingleton<RedisCacheService>();
-                    services.TryAddSingleton<HybridCacheService>();
-                    break;
-
-                default:
-                    throw new InvalidOperationException($"Unsupported CacheOptions.Mode: {effectiveOptions.Mode}");
-            }
-
-            // 7b. TLS certificate validator (Redis/Hybrid only, only when enabled).
-            if (effectiveOptions.Mode is CacheMode.Redis or CacheMode.Hybrid)
-            {
-                services.TryAddSingleton(sp =>
-                {
-                    var opts = sp.GetRequiredService<IOptions<CacheOptions>>().Value;
-                    var logger = sp.GetRequiredService<ILogger<RedisCertificateValidator>>();
-                    var validator = new RedisCertificateValidator(logger, opts.StrictRedisCertificateValidation);
-                    RedisCertificateValidation.Configure(validator);
-                    return validator;
-                });
-            }
-
-            // 8. Default ICacheSerializer (consumers may swap via WithSerializer<T>).
-            services.TryAddSingleton<Serialization.ICacheSerializer>(_ => new Serialization.JsonCacheSerializer());
-
-            // 9. Default Polly resilience pipeline registry (timeout + circuit breaker + retry).
-            services.TryAddSingleton<Polly.Registry.ResiliencePipelineRegistry<string>>(sp =>
-            {
-                var opts = sp.GetService<IOptions<Resilience.CacheResilienceOptions>>()?.Value
-                           ?? new Resilience.CacheResilienceOptions();
-                return Resilience.CacheResiliencePipelineBuilder.BuildDefaultRegistry(
-                    timeout: opts.Timeout,
-                    failureRatio: opts.FailureRatio,
-                    minimumThroughput: opts.MinimumThroughput,
-                    samplingDuration: opts.SamplingDuration,
-                    breakDuration: opts.BreakDuration,
-                    retryCount: opts.RetryCount,
-                    enableRedisConcurrencyLimiter: opts.EnableRedisConcurrencyLimiter,
-                    redisConcurrencyPermitLimit: opts.RedisConcurrencyPermitLimit,
-                    redisConcurrencyQueueLimit: opts.RedisConcurrencyQueueLimit);
-            });
-
-        }
-
-        // 10. Health checks (when opted in via builder). Registered regardless of Enabled so
-        // the health-check endpoint stays wired. The check itself returns Healthy when caching
-        // is disabled by configuration — no backend probe is attempted.
-        if (builder?.RegisterHealthChecks == true)
-        {
-            services.AddHealthChecks()
-                .AddCachingHealthChecks(
-                    name: builder.HealthCheckName,
-                    splitLivenessReadiness: builder.HealthCheckSplit);
-        }
-
-        // 11. Key factory (override by registering ICacheKeyFactory before AddCaching, or add another registration after).
-        services.TryAddSingleton<ICacheKeyFactory, DefaultCacheKeyFactory>();
-
-        // 12. Always register routing infrastructure so RoutingCacheService can be constructed.
-        // These are stateless and zero-cost when the cache short-circuits.
-        services.TryAddSingleton<Internal.StripedLockManager>(sp =>
-            new Internal.StripedLockManager(sp.GetRequiredService<IOptions<CacheOptions>>().Value.StripeLockCount));
-        services.TryAddSingleton<Internal.StaleEntryTracker>();
-        services.TryAddSingleton(sp =>
-        {
-            var opts = sp.GetRequiredService<IOptions<CacheOptions>>().Value;
-            return new Internal.StaleRefreshThrottle(opts.StaleRefreshConcurrency);
-        });
-
-        // 13. Always register RoutingCacheService as ICacheService (TryAdd for idempotency).
-        // When Enabled is false, RoutingCacheService short-circuits every call.
-        services.TryAddSingleton<ICacheService, RoutingCacheService>();
-
+        AddCache(services, CachingDefaults.DefaultCacheName, isDefault: true, bind: null, configure);
         return services;
     }
 
-    private static void AddMemoryCacheWithOptions(IServiceCollection services, CacheOptions options)
+    /// <summary>
+    /// Registers the default cache from a strongly typed options delegate.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configureOptions">Receives the options instance.</param>
+    /// <example>
+    /// <code><![CDATA[
+    /// builder.Services.AddCachingOptions(options =>
+    /// {
+    ///     options.Mode = CacheMode.Hybrid;
+    ///     options.ApplicationPrefix = "orders-api";
+    ///     options.Redis.Configuration = redisConnectionString;
+    /// });
+    /// ]]></code>
+    /// </example>
+    public static IServiceCollection AddCachingOptions(
+        this IServiceCollection services,
+        Action<CachingOptions> configureOptions)
     {
-        if (options.MemorySizeLimitMb.HasValue)
-        {
-            var limit = options.MemorySizeLimitMb.Value;
-            services.AddMemoryCache(memory =>
-            {
-                memory.SizeLimit = limit * 1024L * 1024L;
-            });
-        }
-        else
-        {
-            services.AddMemoryCache();
-        }
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configureOptions);
+
+        return services.AddCaching(builder => configureOptions(builder.Options));
     }
 
-    private static void EnsureCacheSerializerOptions(IServiceCollection services)
+    /// <summary>
+    /// Registers an additional named cache, resolvable with <c>[FromKeyedServices(name)]</c> or
+    /// <c>ICacheProvider.GetCache(name)</c>.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="cacheName">Unique cache name. Registering the same name twice throws at startup.</param>
+    /// <param name="configure">Fluent configuration for this cache.</param>
+    /// <example>
+    /// <code><![CDATA[
+    /// builder.Services.AddCaching("short-lived", cache => cache
+    ///     .UseInMemory()
+    ///     .WithApplicationPrefix("orders-api")
+    ///     .WithDefaultExpiration(TimeSpan.FromSeconds(30)));
+    /// ]]></code>
+    /// </example>
+    public static IServiceCollection AddCaching(
+        this IServiceCollection services,
+        string cacheName,
+        Action<CachingBuilder> configure)
     {
-        services.AddOptions<CacheSerializerOptions>()
-            .Configure(static options =>
-            {
-                // Align with JsonCacheSerializer defaults so ValidateDataAnnotations ([Required]) passes
-                // when the host does not call Configure<CacheSerializerOptions>.
-                options.JsonSerializerOptions ??= new JsonSerializerOptions(JsonSerializerDefaults.Web);
-            })
-            .ValidateDataAnnotations()
-            .ValidateOnStart();
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(cacheName);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        AddCache(services, cacheName, isDefault: false, bind: null, configure);
+        return services;
     }
 
-    private static void TryAddConnectionMultiplexer(
+    /// <summary>
+    /// Registers an additional named cache from a configuration section, with optional fluent overrides.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="cacheName">Unique cache name.</param>
+    /// <param name="configuration">The section holding this cache's settings.</param>
+    /// <param name="configure">Fluent overrides. May be <c>null</c>.</param>
+    [RequiresDynamicCode(ConfigurationBindingWarning)]
+    [RequiresUnreferencedCode(ConfigurationBindingWarning)]
+    public static IServiceCollection AddCaching(
+        this IServiceCollection services,
+        string cacheName,
+        IConfiguration configuration,
+        Action<CachingBuilder>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(cacheName);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        AddCache(services, cacheName, isDefault: false, Binder(configuration), configure);
+        return services;
+    }
+
+    /// <summary>
+    /// Adds Caching.NET health checks to an existing health-checks builder.
+    /// </summary>
+    /// <param name="builder">The health-checks builder.</param>
+    /// <param name="name">Base health-check name.</param>
+    /// <param name="failureStatus">Status reported on failure.</param>
+    /// <param name="splitLivenessReadiness">
+    /// Register a liveness check (no I/O) and a readiness check (real round trip) under
+    /// <c>{name}-liveness</c> and <c>{name}-readiness</c>, tagged <c>liveness</c> and <c>readiness</c>.
+    /// </param>
+    public static IHealthChecksBuilder AddCachingHealthChecks(
+        this IHealthChecksBuilder builder,
+        string name = "caching-net",
+        HealthStatus failureStatus = HealthStatus.Unhealthy,
+        bool splitLivenessReadiness = false)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        if (splitLivenessReadiness)
+        {
+            return builder
+                .AddCheck<CachingLivenessHealthCheck>($"{name}-liveness", failureStatus, ["liveness"])
+                .AddCheck<CachingHealthCheck>($"{name}-readiness", failureStatus, ["readiness"]);
+        }
+
+        return builder.AddCheck<CachingHealthCheck>(name, failureStatus);
+    }
+
+    /// <summary>
+    /// Resolves every registered cache so that a dependency-injection or configuration mistake
+    /// fails immediately rather than on the first cache call.
+    /// </summary>
+    /// <param name="serviceProvider">The built service provider.</param>
+    public static IServiceProvider ValidateCachingRegistration(this IServiceProvider serviceProvider)
+    {
+        ArgumentNullException.ThrowIfNull(serviceProvider);
+
+        var provider = serviceProvider.GetRequiredService<ICacheProvider>();
+        foreach (var cacheName in provider.CacheNames)
+        {
+            _ = provider.GetCache(cacheName);
+        }
+
+        return serviceProvider;
+    }
+
+    private static void AddCache(
         IServiceCollection services,
-        CacheOptions options,
-        Action<ConfigurationOptions>? redisConfigAction)
+        string cacheName,
+        bool isDefault,
+        Action<OptionsBuilder<CachingOptions>>? bind,
+        Action<CachingBuilder>? configure)
     {
-        // Register the rotator that reloads the multiplexer when the connection string changes.
-        services.TryAddSingleton<RedisConnectionRotator>(sp =>
+        CacheRegistrationTracker.ForServices(services).Claim(cacheName, isDefault);
+
+        services.AddOptions();
+        services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<IValidateOptions<CachingOptions>, CachingOptionsValidator>());
+
+        var optionsBuilder = services.AddOptions<CachingOptions>(cacheName);
+
+        bind?.Invoke(optionsBuilder);
+
+        // The cache name always comes from the registration, never from configuration, so a
+        // copy-pasted appsettings block cannot silently retarget a named cache.
+        optionsBuilder.Configure(options => options.CacheName = cacheName);
+
+        if (configure is not null)
         {
-            var monitor = sp.GetRequiredService<IOptionsMonitor<CacheOptions>>();
-            var logger = sp.GetRequiredService<ILogger<RedisConnectionRotator>>();
-            return new RedisConnectionRotator(monitor, conn =>
+            // PostConfigure runs after Bind, so fluent settings win over configuration.
+            optionsBuilder.PostConfigure(options =>
             {
-                var conf = ConfigurationOptions.Parse(conn, ignoreUnknown: true);
-                conf.AbortOnConnectFail = false;
-                return ConnectionMultiplexer.Connect(conf);
-            }, logger);
-        });
-        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<RedisConnectionRotator>());
-
-        services.TryAddSingleton<IConnectionMultiplexer>(sp =>
-        {
-            // Ensure the TLS validator is configured before the multiplexer connects.
-            _ = sp.GetService<RedisCertificateValidator>();
-
-            // Use the rotator's current multiplexer when available (normal hosted-app path).
-            var rotator = sp.GetRequiredService<RedisConnectionRotator>();
-            if (rotator.Current is IConnectionMultiplexer mux) return mux;
-
-            // Fallback: rotator not yet started (pure DI without IHost) or redisConfigAction used.
-            ConfigurationOptions conf;
-            if (redisConfigAction is not null)
-            {
-                conf = new ConfigurationOptions();
-                redisConfigAction(conf);
-            }
-            else
-            {
-                conf = ConfigurationOptions.Parse(options.RedisConnectionString ?? "localhost:6379", ignoreUnknown: true);
-            }
-            conf.AbortOnConnectFail = false;
-            return ConnectionMultiplexer.Connect(conf);
-        });
-    }
-
-    private static bool ValidateCacheOptions(CacheOptions options)
-    {
-        if (!options.Enabled)
-        {
-            return true;
-        }
-
-        var context = new ValidationContext(options);
-        var results = new List<ValidationResult>();
-        return Validator.TryValidateObject(options, context, results, validateAllProperties: true);
-    }
-
-    private static void ConfigureRedisCache(IServiceCollection services, CacheOptions options, Action<ConfigurationOptions>? redisConfigAction)
-    {
-        services.AddStackExchangeRedisCache(redis =>
-        {
-            if (redisConfigAction is not null)
-            {
-                var configOptions = new ConfigurationOptions();
-                redisConfigAction(configOptions);
-                redis.ConfigurationOptions = configOptions;
-            }
-            else
-            {
-                redis.ConfigurationOptions = ConfigurationOptions.Parse(options.RedisConnectionString!, ignoreUnknown: true);
-            }
-
-            // RedisInstanceName removed in v2; KeyPrefix is applied at the routing layer instead.
-            redis.ConfigurationOptions.CertificateValidation += RedisCertificateValidation.ValidateServerCertificate;
-        });
-    }
-
-    private static void ConfigureHybridCache(IServiceCollection services, CacheOptions options, Action<ConfigurationOptions>? redisConfigAction)
-    {
-        services.AddHybridCache(hybrid =>
-        {
-            TimeSpan? defaultExpiration = options.GetDefaultExpiration();
-            TimeSpan? defaultLocalExpiration = options.GetDefaultLocalExpiration();
-            hybrid.DefaultEntryOptions = new HybridCacheEntryOptions
-            {
-                Expiration = defaultExpiration ?? TimeSpan.FromMinutes(DefaultExpirationMinutes),
-                LocalCacheExpiration = defaultLocalExpiration ?? defaultExpiration ?? TimeSpan.FromMinutes(DefaultLocalExpirationMinutes)
-            };
-            if (options.MaximumPayloadBytes > 0)
-                hybrid.MaximumPayloadBytes = options.MaximumPayloadBytes;
-            if (options.MaximumKeyLength > 0)
-                hybrid.MaximumKeyLength = options.MaximumKeyLength;
-        });
-
-        if (!string.IsNullOrWhiteSpace(options.RedisConnectionString) || redisConfigAction is not null)
-        {
-            services.AddStackExchangeRedisCache(redis =>
-            {
-                if (redisConfigAction is not null)
-                {
-                    var configOptions = new ConfigurationOptions();
-                    redisConfigAction(configOptions);
-                    redis.ConfigurationOptions = configOptions;
-                }
-                else
-                {
-                    redis.ConfigurationOptions = ConfigurationOptions.Parse(options.RedisConnectionString!, ignoreUnknown: true);
-                }
-
-                // Hybrid L2 isolation: apply KeyPrefix as the adapter InstanceName so every L2 key —
-                // entries AND HybridCache's tag/wildcard invalidation markers (created below the routing
-                // layer) — is namespaced per app. Routing does NOT prefix Hybrid keys (see
-                // RoutingCacheService), so there is no double prefix; the InstanceName is the single prefix
-                // on Hybrid L2. This is what prevents one app's ClearAsync/RemoveByTagAsync from
-                // invalidating another app's entries on a shared Redis database. KeyPrefix must be unique
-                // per app. (Redis mode deliberately does NOT set InstanceName — its direct-multiplexer
-                // SCAN/GetMany/RemoveMany paths bypass the adapter and rely on the routing-layer prefix.)
-                if (!string.IsNullOrEmpty(options.KeyPrefix))
-                    redis.InstanceName = options.KeyPrefix + ":";
-
-                redis.ConfigurationOptions.CertificateValidation += RedisCertificateValidation.ValidateServerCertificate;
+                var builder = new CachingBuilder(options);
+                configure(builder);
+                options.CacheName = cacheName;
             });
         }
+
+        optionsBuilder.ValidateOnStart();
+
+        services.AddKeyedSingleton(cacheName, (sp, key) => CacheEngineFactory.Create(sp, (string)key!));
+        services.AddKeyedSingleton<IFusionCache>(
+            cacheName,
+            static (sp, key) => sp.GetRequiredKeyedService<CacheInstance>(key).Cache);
+        services.AddKeyedSingleton<ICacheGuard>(
+            cacheName,
+            static (sp, key) => sp.GetRequiredKeyedService<CacheInstance>(key).Guard);
+
+        services.AddSingleton(sp => new CacheRegistration(
+            cacheName,
+            isDefault,
+            () => sp.GetRequiredKeyedService<CacheInstance>(cacheName)));
+
+        if (isDefault)
+        {
+            // Resolved through CacheInstance rather than through the keyed IFusionCache so the two
+            // registrations can never form a resolution cycle.
+            services.TryAddSingleton<IFusionCache>(sp => sp.GetRequiredKeyedService<CacheInstance>(cacheName).Cache);
+            services.TryAddSingleton<ICacheGuard>(sp => sp.GetRequiredKeyedService<CacheInstance>(cacheName).Guard);
+        }
+
+        services.TryAddSingleton<ICacheProvider, CacheProvider>();
+        services.TryAddSingleton<ICacheKeyFactory, DefaultCacheKeyFactory>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, CachingStartupService>());
+
+        if (configure is null)
+        {
+            return;
+        }
+
+        // Health-check registration is a service-collection concern, not an options concern, so the
+        // builder is replayed once here against a throwaway options instance to read the intent.
+        var probe = new CachingBuilder(new CachingOptions());
+        configure(probe);
+        if (probe.RegisterHealthChecks)
+        {
+            services.AddHealthChecks().AddCachingHealthChecks(
+                probe.HealthCheckName,
+                splitLivenessReadiness: probe.HealthCheckSplit);
+        }
+    }
+
+    // Configuration binding is the only reflection-based step in registration. Handing it to
+    // AddCache as a delegate built by an annotated caller keeps the code-first overloads free of the
+    // warning, so a trimmed or native-AOT application is told exactly which entry points cost it.
+    [RequiresDynamicCode(ConfigurationBindingWarning)]
+    [RequiresUnreferencedCode(ConfigurationBindingWarning)]
+    private static Action<OptionsBuilder<CachingOptions>> Binder(IConfiguration section)
+        => optionsBuilder => optionsBuilder.Bind(section);
+
+    [RequiresDynamicCode(ConfigurationBindingWarning)]
+    [RequiresUnreferencedCode(ConfigurationBindingWarning)]
+    private static void AddNamedCachesFromConfiguration(IServiceCollection services, IConfiguration section)
+    {
+        var namedCaches = section.GetSection(CacheConfigurationKeys.NamedCaches);
+        if (!namedCaches.Exists())
+        {
+            return;
+        }
+
+        foreach (var child in namedCaches.GetChildren())
+        {
+            AddCache(services, child.Key, isDefault: false, Binder(child), configure: null);
+        }
+    }
+
+    // Accepts either the application root configuration or the Caching section itself, so
+    // AddCaching(builder.Configuration) and AddCaching(section) both behave.
+    private static IConfiguration ResolveSection(IConfiguration configuration)
+    {
+        if (configuration is IConfigurationSection candidate
+            && string.Equals(candidate.Key, CacheConfigurationKeys.CacheOptions, StringComparison.Ordinal))
+        {
+            return candidate;
+        }
+
+        var section = configuration.GetSection(CacheConfigurationKeys.CacheOptions);
+        return section.Exists() ? section : configuration;
     }
 }

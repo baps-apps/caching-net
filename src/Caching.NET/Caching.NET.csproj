@@ -1,17 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <PackageId>Caching.NET</PackageId>
-    <Version>2.2.0</Version>
+    <Version>3.0.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <InformationalVersion>3.0.0</InformationalVersion>
     <Authors>BAPS Dev Team</Authors>
-    <Description>Production-grade caching: InMemory, Redis, and Hybrid modes with stampede protection, Polly resilience, OpenTelemetry, pluggable serialization.</Description>
-    <PackageTags>cache;caching;memory;redis;hybrid;distributed;polly;opentelemetry</PackageTags>
+    <Description>Caching.NET v3: one branded cache API with InMemory, Redis and Hybrid (L1 memory + L2 Redis) modes. Stampede protection, fail-safe, eager refresh, tags, backplane invalidation, auto-recovery, OpenTelemetry and hardened key/payload limits — configured entirely through Caching.NET.</Description>
+    <PackageTags>cache;caching;memory;redis;hybrid;distributed;l1;l2;backplane;stampede;fail-safe;opentelemetry</PackageTags>
     <PackageProjectUrl>https://github.com/baps-apps/caching-net/</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageReleaseNotes>v3.0.0 is a major redesign. Migration guide: https://github.com/baps-apps/caching-net/blob/main/docs/MIGRATION-V2-TO-V3.md</PackageReleaseNotes>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryUrl>https://github.com/baps-apps/caching-net.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
@@ -19,36 +24,64 @@
     <IsTrimmable>true</IsTrimmable>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
-    <IncludeSymbols>true</IncludeSymbols>
-    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!-- No symbol package: Directory.Build.props sets DebugType=embedded, so the PDB already ships
+         inside the assembly and a .snupkg would be published empty. -->
+    <IncludeSymbols>false</IncludeSymbols>
     <DeterministicSourcePaths>true</DeterministicSourcePaths>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <EnablePackageValidation>true</EnablePackageValidation>
-    <!-- IL2026/IL3050 (trim/AOT) suppressed because the v2 ICacheSerializer interface allows reflection-based
-         JSON impls; consumers must opt into source-gen for full AOT/trim compatibility (P2 work).
-        RS0026 suppressed for legacy multi-overload methods retained for v1 source compat. -->
-    <NoWarn>$(NoWarn);RS0026;IL2026;IL3050</NoWarn>
+    <!-- IL2026: reflection-based System.Text.Json and MessagePack payload serialization.
+         Applications that need full trim/AOT compatibility supply a source-generated
+         JsonSerializerContext through Serialization.JsonSerializerOptions.TypeInfoResolver.
+         IL3050 is not suppressed: the one dynamic-code path (configuration binding) is declared
+         with [RequiresDynamicCode] so an AOT consumer is told about it instead of it being hidden. -->
+    <NoWarn>$(NoWarn);IL2026</NoWarn>
     <GenerateSBOM>true</GenerateSBOM>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="CodeStyle.NET" />
-    <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" />
+    <!-- Packaged so the package page on the feed shows the same documentation as the repository. -->
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Built but not referenced: the analyzer ships inside this package as an analyzer asset, so a
+         consuming application gets the diagnostic without taking a Roslyn dependency. -->
+    <ProjectReference Include="..\Caching.NET.Analyzers\Caching.NET.Analyzers.csproj"
+                      ReferenceOutputAssembly="false"
+                      SkipGetTargetFrameworkProperties="true"
+                      UndefineProperties="TargetFramework" />
+    <None Include="..\Caching.NET.Analyzers\bin\$(Configuration)\netstandard2.0\Caching.NET.Analyzers.dll"
+          Pack="true"
+          PackagePath="analyzers/dotnet/cs"
+          Visible="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Analyzer: applies to this build only. Without PrivateAssets it would flow to every
+         application that installs Caching.NET, which is not ours to decide. -->
+    <PackageReference Include="CodeStyle.NET">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" />
     <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Options" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
-    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
-    <PackageReference Include="Polly" />
-    <PackageReference Include="Polly.Extensions" />
-    <PackageReference Include="Polly.RateLimiting" />
-    <PackageReference Include="System.Diagnostics.DiagnosticSource" />
-    <PackageReference Include="MessagePack" />
+    <PackageReference Include="StackExchange.Redis" />
+    <!-- System.Diagnostics.DiagnosticSource is part of the net10.0 shared framework; NU1510 rejects
+         an explicit reference to it. -->
     <PackageReference Include="System.IO.Hashing" />
+    <!-- Internal cache engine. Consumers never reference or configure these directly. -->
+    <PackageReference Include="ZiggyCreatures.FusionCache" />
+    <PackageReference Include="ZiggyCreatures.FusionCache.Backplane.StackExchangeRedis" />
+    <PackageReference Include="ZiggyCreatures.FusionCache.Serialization.NeueccMessagePack" />
+    <PackageReference Include="ZiggyCreatures.FusionCache.Serialization.SystemTextJson" />
+    <!-- Direct reference so the vulnerable MessagePack 3.1.4 resolved transitively is upgraded. -->
+    <PackageReference Include="MessagePack" />
     <PackageReference Include="Microsoft.Sbom.Targets">
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
@@ -57,6 +90,7 @@
     <InternalsVisibleTo Include="Caching.NET.Benchmark" />
     <InternalsVisibleTo Include="Caching.NET.Tests" />
     <InternalsVisibleTo Include="Caching.NET.Tests.Chaos" />
+    <InternalsVisibleTo Include="Caching.NET.Tests.Integration" />
     <InternalsVisibleTo Include="Caching.NET.Tests.Properties" />
   </ItemGroup>
 </Project>

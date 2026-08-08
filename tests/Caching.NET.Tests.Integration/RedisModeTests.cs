@@ -1,0 +1,336 @@
+using Caching.NET.Extensions;
+using Caching.NET.Tests.Integration.Fixtures;
+using StackExchange.Redis;
+using ZiggyCreatures.Caching.Fusion;
+
+namespace Caching.NET.Tests.Integration;
+
+/// <summary>
+/// Redis mode: Redis is authoritative and no instance may serve a value from its own memory.
+/// </summary>
+[Collection(RedisCollection.Name)]
+public class RedisModeTests
+{
+    private readonly RedisFixture _redis;
+
+    public RedisModeTests(RedisFixture redis)
+    {
+        _redis = redis;
+    }
+
+    private CacheHost Host(string prefix) => CacheHost.Create(cache => cache
+        .UseRedis(_redis.ConnectionString)
+        .WithApplicationPrefix(prefix)
+        .WithJitter(TimeSpan.Zero)
+        .WithDefaultExpiration(TimeSpan.FromMinutes(5))
+        // Production defaults complete distributed writes in the background. These tests assert on
+        // what another instance can see immediately after a write, so the write must be awaited.
+        .WithResilience(r => r.AllowBackgroundDistributedOperations = false));
+
+    [Fact]
+    public async Task WriteThenRead_RoundTripsThroughRedis()
+    {
+        using var host = Host("redis-roundtrip");
+
+        await host.Cache.SetAsync("Product:1", new Product(1, "widget"));
+
+        var value = await host.Cache.GetOrDefaultAsync<Product>("Product:1");
+        Assert.Equal(new Product(1, "widget"), value);
+    }
+
+    [Fact]
+    public async Task ValueWrittenByOneInstance_IsVisibleToAnother()
+    {
+        using var writer = Host("redis-shared");
+        using var reader = Host("redis-shared");
+
+        await writer.Cache.SetAsync("Order:9", 99);
+
+        Assert.Equal(99, await reader.Cache.GetOrDefaultAsync<int>("Order:9"));
+    }
+
+    [Fact]
+    public async Task RemovalOnOneInstance_IsImmediatelyVisibleOnAnother()
+    {
+        using var first = Host("redis-remove");
+        using var second = Host("redis-remove");
+
+        await first.Cache.SetAsync("Order:1", 1);
+        Assert.Equal(1, await second.Cache.GetOrDefaultAsync<int>("Order:1"));
+
+        await first.Cache.RemoveAsync("Order:1");
+
+        // No local copy exists to go stale, so the removal is visible without a backplane.
+        Assert.False((await second.Cache.TryGetAsync<int>("Order:1")).HasValue);
+    }
+
+    [Fact]
+    public async Task ReadsAlwaysConsultRedisRatherThanALocalCopy()
+    {
+        using var host = Host("redis-authoritative");
+        await host.Cache.SetAsync("Order:2", 1);
+
+        // Delete the entry behind the cache's back. A memory layer would still answer; Redis mode
+        // must not.
+        var connection = await ConnectionMultiplexer.ConnectAsync(_redis.ConnectionString);
+        await using (connection.ConfigureAwait(false))
+        {
+            var deleted = await connection.GetDatabase().KeyDeleteAsync(
+                (await FindKeysAsync(connection, "*redis-authoritative:Order:2*")).Single());
+            Assert.True(deleted);
+        }
+
+        Assert.False((await host.Cache.TryGetAsync<int>("Order:2")).HasValue);
+    }
+
+    [Fact]
+    public async Task ConcurrentGetOrSet_StillCoalescesWithoutAMemoryLayer()
+    {
+        using var host = Host("redis-stampede");
+        var calls = 0;
+        using var release = new SemaphoreSlim(0);
+
+        var callers = Enumerable.Range(0, 32).Select(_ => Task.Run(async () =>
+            await host.Cache.GetOrSetAsync<int>("hot", async _ =>
+            {
+                Interlocked.Increment(ref calls);
+                await release.WaitAsync();
+                return 5;
+            }))).ToArray();
+
+        while (Volatile.Read(ref calls) == 0)
+        {
+            await Task.Yield();
+        }
+
+        release.Release(32);
+        var results = await Task.WhenAll(callers);
+
+        Assert.All(results, v => Assert.Equal(5, v));
+
+        // Not 1. Redis mode bypasses the memory cache, so the engine's post-lock re-check — the step
+        // that turns "one lock holder at a time" into "one factory execution" — can never hit, and a
+        // second caller runs the factory in the window before the distributed write is visible.
+        // Asserting 1 here passed only when the write happened to win that race; it failed as soon
+        // as the suite ran under load. The bound is what the mode actually guarantees: coalescing,
+        // not single-flight. StampedeScopeTests measures the same thing across all three modes.
+        Assert.InRange(calls, 1, 2);
+    }
+
+    [Fact]
+    public async Task TagInvalidation_WorksAcrossInstances()
+    {
+        using var first = Host("redis-tags");
+        using var second = Host("redis-tags");
+
+        await first.Cache.SetAsync("Product:1", 1, tags: ["category:tools"]);
+        await first.Cache.SetAsync("Product:2", 2, tags: ["category:toys"]);
+
+        await second.Cache.RemoveByTagAsync("category:tools");
+
+        Assert.False((await first.Cache.TryGetAsync<int>("Product:1")).HasValue);
+        Assert.True((await first.Cache.TryGetAsync<int>("Product:2")).HasValue);
+    }
+
+    [Fact]
+    public async Task ApplicationPrefix_IsolatesApplicationsSharingOneRedisDatabase()
+    {
+        using var appOne = Host("redis-iso-one");
+        using var appTwo = Host("redis-iso-two");
+
+        await appOne.Cache.SetAsync("shared", "one");
+        await appTwo.Cache.SetAsync("shared", "two");
+
+        Assert.Equal("one", await appOne.Cache.GetOrDefaultAsync<string>("shared"));
+        Assert.Equal("two", await appTwo.Cache.GetOrDefaultAsync<string>("shared"));
+    }
+
+    [Fact]
+    public async Task ClearOnOneApplication_LeavesAnotherApplicationsEntriesAlone()
+    {
+        using var appOne = Host("redis-clear-one");
+        using var appTwo = Host("redis-clear-two");
+
+        await appOne.Cache.SetAsync("k", 1);
+        await appTwo.Cache.SetAsync("k", 2);
+
+        await appOne.Cache.ClearAsync();
+
+        Assert.False((await appOne.Cache.TryGetAsync<int>("k")).HasValue);
+        Assert.Equal(2, await appTwo.Cache.GetOrDefaultAsync<int>("k"));
+    }
+
+    [Fact]
+    public async Task CorruptRedisPayload_IsTreatedAsAMissAndOverwritten()
+    {
+        using var host = Host("redis-corrupt");
+        await host.Cache.SetAsync("Order:5", 1);
+
+        var connection = await ConnectionMultiplexer.ConnectAsync(_redis.ConnectionString);
+        await using (connection.ConfigureAwait(false))
+        {
+            var key = (await FindKeysAsync(connection, "*redis-corrupt:Order:5*")).Single();
+            await connection.GetDatabase().StringSetAsync(key, "not-a-caching-net-payload");
+        }
+
+        var rebuilt = await host.Cache.GetOrSetAsync<int>("Order:5", async _ => 42);
+
+        Assert.Equal(42, rebuilt);
+    }
+
+    [Fact]
+    public async Task OversizedValue_ReachesTheCallerWhenTheDistributedWriteIsNotBackgrounded()
+    {
+        // The other half of the oversized-value story, and the dangerous half. With background
+        // distributed operations off — the setting a read-your-writes deployment picks, and the one
+        // every other test in this class uses — the serializer runs on the caller's path and the
+        // engine's foreground distributed write does not honour ReThrowSerializationExceptions:
+        // false. The payload guard therefore fails the request instead of quietly not caching.
+        //
+        // This is engine behaviour Caching.NET cannot intercept without wrapping every cache call,
+        // so it is pinned here, warned about at startup, and documented — rather than left to be
+        // discovered as a 500 in production.
+        using var host = CacheHost.Create(cache => cache
+            .UseRedis(_redis.ConnectionString)
+            .WithApplicationPrefix("redis-oversized-fg")
+            .WithMaximumPayloadBytes(512)
+            .WithResilience(r =>
+            {
+                r.AllowBackgroundDistributedOperations = false;
+                r.ThrowOnSerializationErrors = false;
+            }));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await host.Cache.SetAsync("Big:2", new string('x', 50_000)));
+
+        Assert.Contains("MaximumPayloadBytes", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OversizedValue_IsNotWrittenToRedisAndDoesNotFailTheCaller()
+    {
+        // Background distributed operations on (the default): the write happens off the caller's
+        // path, so the guard degrades to "not cached" as documented.
+        using var host = CacheHost.Create(cache => cache
+            .UseRedis(_redis.ConnectionString)
+            .WithApplicationPrefix("redis-oversized")
+            .WithMaximumPayloadBytes(512));
+
+        var big = new string('x', 50_000);
+
+        // The caller still gets its value: an oversized entry degrades to "not cached", it does not
+        // fail the request.
+        var value = await host.Cache.GetOrSetAsync<string>("Big:1", async _ => big);
+        Assert.Equal(big, value);
+
+        var connection = await ConnectionMultiplexer.ConnectAsync(_redis.ConnectionString);
+        await using (connection.ConfigureAwait(false))
+        {
+            Assert.Empty(await FindKeysAsync(connection, "*redis-oversized:Big:1*"));
+        }
+    }
+
+    [Fact]
+    public async Task CompressionEnabled_StillRoundTrips()
+    {
+        using var host = CacheHost.Create(cache => cache
+            .UseRedis(_redis.ConnectionString)
+            .WithApplicationPrefix("redis-compressed")
+            .WithMaximumPayloadBytes(10_000_000)
+            .WithCompression(thresholdBytes: 128));
+
+        var payload = new Product(1, new string('z', 200_000));
+
+        await host.Cache.SetAsync("Big:2", payload);
+
+        Assert.Equal(payload, await host.Cache.GetOrDefaultAsync<Product>("Big:2"));
+    }
+
+    [Fact]
+    public async Task MessagePackFormat_RoundTrips()
+    {
+        using var host = CacheHost.Create(cache => cache
+            .UseRedis(_redis.ConnectionString)
+            .WithApplicationPrefix("redis-messagepack")
+            .WithMessagePackSerialization());
+
+        await host.Cache.SetAsync("Product:7", new Product(7, "binary"));
+
+        Assert.Equal(new Product(7, "binary"), await host.Cache.GetOrDefaultAsync<Product>("Product:7"));
+    }
+
+    [Fact]
+    public async Task RedisDatabaseSelection_IsolatesEntries()
+    {
+        using var db0 = CacheHost.Create(cache => cache
+            .UseRedis(_redis.ConnectionString)
+            .WithApplicationPrefix("redis-db")
+            .WithRedis(r => r.Database = 0));
+
+        using var db1 = CacheHost.Create(cache => cache
+            .UseRedis(_redis.ConnectionString)
+            .WithApplicationPrefix("redis-db")
+            .WithRedis(r => r.Database = 1));
+
+        await db0.Cache.SetAsync("same-key", "zero");
+
+        Assert.False((await db1.Cache.TryGetAsync<string>("same-key")).HasValue);
+        Assert.Equal("zero", await db0.Cache.GetOrDefaultAsync<string>("same-key"));
+    }
+
+    [Fact]
+    public async Task NamedCaches_AreIsolatedOnSharedRedis()
+    {
+        using var host = CacheHost.CreateMulti(services =>
+        {
+            services.AddCaching(cache => cache
+                .UseRedis(_redis.ConnectionString)
+                .WithApplicationPrefix("redis-named")
+                .WithResilience(r => r.AllowBackgroundDistributedOperations = false));
+            services.AddCaching("short-lived", cache => cache
+                .UseRedis(_redis.ConnectionString)
+                .WithApplicationPrefix("redis-named")
+                .WithDefaultExpiration(TimeSpan.FromSeconds(30))
+                .WithResilience(r => r.AllowBackgroundDistributedOperations = false));
+        });
+
+        await host.Provider.Default.SetAsync("key", "default-value");
+        await host.Provider.GetCache("short-lived").SetAsync("key", "short-value");
+
+        Assert.Equal("default-value", await host.Provider.Default.GetOrDefaultAsync<string>("key"));
+        Assert.Equal("short-value", await host.Provider.GetCache("short-lived").GetOrDefaultAsync<string>("key"));
+    }
+
+    [Fact]
+    public async Task CallerCancellation_IsHonoured()
+    {
+        using var host = Host("redis-cancel");
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await host.Cache.GetOrSetAsync<int>(
+                "cancelled",
+                async token =>
+                {
+                    token.ThrowIfCancellationRequested();
+                    await Task.Yield();
+                    return 1;
+                },
+                token: cts.Token));
+    }
+
+    internal static async Task<RedisKey[]> FindKeysAsync(IConnectionMultiplexer connection, string pattern)
+    {
+        var server = connection.GetServer(connection.GetEndPoints()[0]);
+        var keys = new List<RedisKey>();
+        await foreach (var key in server.KeysAsync(pattern: pattern))
+        {
+            keys.Add(key);
+        }
+
+        return [.. keys];
+    }
+
+    public sealed record Product(int Id, string Name);
+}

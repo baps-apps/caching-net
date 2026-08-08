@@ -1,28 +1,37 @@
-using BenchmarkDotNet.Configs;
-using BenchmarkDotNet.Reports;
 using BenchmarkDotNet.Running;
-using System.IO;
 
-var artifactsPath = Path.GetFullPath(Path.Combine(
-    AppContext.BaseDirectory,
-    "..",
-    "..",
-    "..",
-    "..",
-    "BenchmarkDotNet.Artifacts"));
-var config = DefaultConfig.Instance.WithArtifactsPath(artifactsPath);
+namespace Caching.NET.Benchmark;
 
-return BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args, config).ToArray().ToExitCode();
-
-internal static class Ext
+/// <summary>
+/// Benchmark entry point.
+/// </summary>
+/// <remarks>
+/// <c>dotnet run -c Release -- --filter *</c> runs the Redis-free suites.
+/// Set <c>CACHINGNET_BENCH_REDIS</c> to include the Redis and Hybrid suites.
+/// </remarks>
+public static class Program
 {
-    public static int ToExitCode(this Summary[] summaries)
+    /// <summary>Runs the benchmark suites.</summary>
+    /// <param name="args">BenchmarkDotNet arguments.</param>
+    public static void Main(string[] args)
     {
-        foreach (var s in summaries)
-            if (s.HasCriticalValidationErrors || s.HasAnyErrors()) return 1;
-        return 0;
-    }
+        var suites = new List<Type>
+        {
+            typeof(InMemoryBenchmarks),
+            typeof(SerializationBenchmarks),
+            typeof(TelemetryOverheadBenchmarks)
+        };
 
-    public static bool HasAnyErrors(this Summary s)
-        => s.Reports.Any(r => !r.Success);
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(RedisBenchmarks.ConnectionStringVariable)))
+        {
+            suites.Add(typeof(RedisBenchmarks));
+        }
+        else
+        {
+            Console.WriteLine(
+                $"Skipping Redis and Hybrid benchmarks: {RedisBenchmarks.ConnectionStringVariable} is not set.");
+        }
+
+        BenchmarkSwitcher.FromTypes([.. suites]).Run(args);
+    }
 }

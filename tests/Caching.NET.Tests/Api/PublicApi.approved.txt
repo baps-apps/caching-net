@@ -1,0 +1,242 @@
+class Caching.NET.CachingBuilder
+    Caching.NET.CachingBuilder Disable()
+    Caching.NET.CachingBuilder Enable()
+    Caching.NET.CachingBuilder UseDevelopmentDefaults()
+    Caching.NET.CachingBuilder UseHybrid(System.Action<StackExchange.Redis.ConfigurationOptions> configure, System.Boolean enableBackplane)
+    Caching.NET.CachingBuilder UseHybrid(System.String connectionString, System.Boolean enableBackplane)
+    Caching.NET.CachingBuilder UseInMemory()
+    Caching.NET.CachingBuilder UseProductionDefaults()
+    Caching.NET.CachingBuilder UseRedis(System.Action<StackExchange.Redis.ConfigurationOptions> configure)
+    Caching.NET.CachingBuilder UseRedis(System.String connectionString)
+    Caching.NET.CachingBuilder WithApplicationPrefix(System.String applicationPrefix)
+    Caching.NET.CachingBuilder WithBackplane(System.Boolean enabled, System.String channelPrefix)
+    Caching.NET.CachingBuilder WithCompression(System.Int32 thresholdBytes, System.Int32 maximumDecompressedBytes)
+    Caching.NET.CachingBuilder WithDefaultExpiration(System.TimeSpan expiration)
+    Caching.NET.CachingBuilder WithDistributedExpiration(System.TimeSpan expiration)
+    Caching.NET.CachingBuilder WithEagerRefresh(System.Single threshold)
+    Caching.NET.CachingBuilder WithEnvironmentPrefix(System.String environmentPrefix)
+    Caching.NET.CachingBuilder WithFactoryTimeouts(System.Nullable<System.TimeSpan> softTimeout, System.Nullable<System.TimeSpan> hardTimeout)
+    Caching.NET.CachingBuilder WithFailSafe(System.Boolean enabled, System.Nullable<System.TimeSpan> maxDuration, System.Nullable<System.TimeSpan> throttleDuration)
+    Caching.NET.CachingBuilder WithHealthChecks(System.String name, System.Boolean splitLivenessReadiness)
+    Caching.NET.CachingBuilder WithJitter(System.TimeSpan jitter)
+    Caching.NET.CachingBuilder WithJsonSerialization(System.Text.Json.JsonSerializerOptions jsonSerializerOptions)
+    Caching.NET.CachingBuilder WithLocalExpiration(System.TimeSpan expiration)
+    Caching.NET.CachingBuilder WithMaximumKeyLength(System.Int32 maximumKeyLength)
+    Caching.NET.CachingBuilder WithMaximumPayloadBytes(System.Int64 maximumBytes)
+    Caching.NET.CachingBuilder WithMemorySizeLimit(System.Int64 megabytes, System.Int64 defaultEntrySize)
+    Caching.NET.CachingBuilder WithMessagePackSerialization()
+    Caching.NET.CachingBuilder WithObservability(System.Action<Caching.NET.Options.CacheObservabilityOptions> configure)
+    Caching.NET.CachingBuilder WithPermissiveRedisTls()
+    Caching.NET.CachingBuilder WithRedis(System.Action<Caching.NET.Options.RedisOptions> configure)
+    Caching.NET.CachingBuilder WithResilience(System.Action<Caching.NET.Options.CacheResilienceOptions> configure)
+    Caching.NET.CachingBuilder WithSecurity(System.Action<Caching.NET.Options.CacheSecurityOptions> configure)
+    Caching.NET.CachingBuilder WithStrictRedisTls()
+    Caching.NET.CachingBuilder WithTelemetry(System.Boolean tracing, System.Boolean metrics)
+    Caching.NET.CachingBuilder WithTenantPrefix(System.String tenantPrefix)
+    Caching.NET.Options.CachingOptions Options { get; }
+static class Caching.NET.CachingDefaults
+    System.Int32 MaximumCacheNameLength
+    System.String DefaultCacheName
+    System.String KeyPrefixSeparator
+static class Caching.NET.Configuration.CacheConfigurationKeys
+    System.String CacheOptions
+    System.String NamedCaches
+static class Caching.NET.Extensions.CacheExtensions
+    System.Threading.Tasks.Task RemoveManyAsync(ZiggyCreatures.Caching.Fusion.IFusionCache cache, System.Collections.Generic.IEnumerable<System.String> keys, ZiggyCreatures.Caching.Fusion.FusionCacheEntryOptions options, System.Threading.CancellationToken token)
+    System.Threading.Tasks.Task SetManyAsync(ZiggyCreatures.Caching.Fusion.IFusionCache cache, IReadOnlyDictionary<System.String, TValue> items, ZiggyCreatures.Caching.Fusion.FusionCacheEntryOptions options, System.Collections.Generic.IEnumerable<System.String> tags, System.Threading.CancellationToken token)
+    System.Threading.Tasks.Task<System.Boolean> ExistsAsync(ZiggyCreatures.Caching.Fusion.IFusionCache cache, System.String key, ZiggyCreatures.Caching.Fusion.FusionCacheEntryOptions options, System.Threading.CancellationToken token)
+    Task<IReadOnlyDictionary<System.String, TValue>> GetManyAsync(ZiggyCreatures.Caching.Fusion.IFusionCache cache, System.Collections.Generic.IEnumerable<System.String> keys, ZiggyCreatures.Caching.Fusion.FusionCacheEntryOptions options, System.Threading.CancellationToken token)
+    Task<TValue> RefreshAsync(ZiggyCreatures.Caching.Fusion.IFusionCache cache, System.String key, Func<System.Threading.CancellationToken, Task<TValue>> factory, ZiggyCreatures.Caching.Fusion.FusionCacheEntryOptions options, System.Collections.Generic.IEnumerable<System.String> tags, System.Threading.CancellationToken token)
+static class Caching.NET.Extensions.ServiceCollectionExtensions
+    Microsoft.Extensions.DependencyInjection.IHealthChecksBuilder AddCachingHealthChecks(Microsoft.Extensions.DependencyInjection.IHealthChecksBuilder builder, System.String name, Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus failureStatus, System.Boolean splitLivenessReadiness)
+    Microsoft.Extensions.DependencyInjection.IServiceCollection AddCaching(Microsoft.Extensions.DependencyInjection.IServiceCollection services, Microsoft.Extensions.Configuration.IConfiguration configuration)
+    Microsoft.Extensions.DependencyInjection.IServiceCollection AddCaching(Microsoft.Extensions.DependencyInjection.IServiceCollection services, Microsoft.Extensions.Configuration.IConfiguration configuration, System.Action<Caching.NET.CachingBuilder> configure)
+    Microsoft.Extensions.DependencyInjection.IServiceCollection AddCaching(Microsoft.Extensions.DependencyInjection.IServiceCollection services, System.Action<Caching.NET.CachingBuilder> configure)
+    Microsoft.Extensions.DependencyInjection.IServiceCollection AddCaching(Microsoft.Extensions.DependencyInjection.IServiceCollection services, System.String cacheName, Microsoft.Extensions.Configuration.IConfiguration configuration, System.Action<Caching.NET.CachingBuilder> configure)
+    Microsoft.Extensions.DependencyInjection.IServiceCollection AddCaching(Microsoft.Extensions.DependencyInjection.IServiceCollection services, System.String cacheName, System.Action<Caching.NET.CachingBuilder> configure)
+    Microsoft.Extensions.DependencyInjection.IServiceCollection AddCachingOptions(Microsoft.Extensions.DependencyInjection.IServiceCollection services, System.Action<Caching.NET.Options.CachingOptions> configureOptions)
+    System.IServiceProvider ValidateCachingRegistration(System.IServiceProvider serviceProvider)
+class Caching.NET.Health.CachingHealthCheck
+    .ctor(Caching.NET.ICacheProvider provider, Microsoft.Extensions.Options.IOptionsMonitor<Caching.NET.Options.CachingOptions> options)
+    System.Threading.Tasks.Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult> CheckHealthAsync(Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckContext context, System.Threading.CancellationToken cancellationToken)
+class Caching.NET.Health.CachingLivenessHealthCheck
+    .ctor(Caching.NET.ICacheProvider provider)
+    System.Threading.Tasks.Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult> CheckHealthAsync(Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckContext context, System.Threading.CancellationToken cancellationToken)
+interface Caching.NET.ICacheGuard
+    System.String CacheName { get; }
+    System.String Fingerprint(System.String key)
+    System.Void ValidateKey(System.String key)
+    System.Void ValidateTags(System.Collections.Generic.IEnumerable<System.String> tags)
+interface Caching.NET.ICacheProvider
+    Caching.NET.ICacheGuard GetGuard(System.String cacheName)
+    System.Collections.Generic.IReadOnlyList<System.String> CacheNames { get; }
+    ZiggyCreatures.Caching.Fusion.IFusionCache Default { get; }
+    ZiggyCreatures.Caching.Fusion.IFusionCache GetCache(System.String cacheName)
+    ZiggyCreatures.Caching.Fusion.IFusionCache GetCacheOrNull(System.String cacheName)
+static class Caching.NET.Keys.CacheKey
+    Caching.NET.Keys.CacheKeyBuilder For(System.Object id)
+class Caching.NET.Keys.CacheKeyBuilder
+    Caching.NET.Keys.CacheKeyBuilder WithSegment(System.String segment)
+    Caching.NET.Keys.CacheKeyBuilder WithTenant(System.String tenantId)
+    Caching.NET.Keys.CacheKeyBuilder WithVariant(System.String variant)
+    System.Int32 MaximumLength
+    System.String Build()
+class Caching.NET.Keys.DefaultCacheKeyFactory
+    .ctor()
+    Caching.NET.Keys.CacheKeyBuilder For(System.Object id)
+interface Caching.NET.Keys.ICacheKeyFactory
+    Caching.NET.Keys.CacheKeyBuilder For(System.Object id)
+class Caching.NET.Options.CacheBackplaneOptions
+    .ctor()
+    System.Boolean Enabled { get; set; }
+    System.Boolean WaitForInitialSubscribe { get; set; }
+    System.String ChannelPrefix { get; set; }
+class Caching.NET.Options.CacheCompressionOptions
+    .ctor()
+    System.Boolean Enabled { get; set; }
+    System.Int32 MaximumDecompressedBytes { get; set; }
+    System.Int32 ThresholdBytes { get; set; }
+class Caching.NET.Options.CacheEntryOptions
+    .ctor()
+    Microsoft.Extensions.Caching.Memory.CacheItemPriority Priority { get; set; }
+    System.Boolean EnableAutoClone { get; set; }
+    System.Nullable<System.Int64> MemorySizeLimitMegabytes { get; set; }
+    System.Nullable<System.Int64> Size { get; set; }
+    System.Nullable<System.Single> EagerRefreshThreshold { get; set; }
+    System.Nullable<System.TimeSpan> DistributedExpiration { get; set; }
+    System.Nullable<System.TimeSpan> LocalExpiration { get; set; }
+    System.TimeSpan JitterMaxDuration { get; set; }
+enum Caching.NET.Options.CacheGuardPolicy
+    Caching.NET.Options.CacheGuardPolicy Ignore
+    Caching.NET.Options.CacheGuardPolicy Throw
+    Caching.NET.Options.CacheGuardPolicy Warn
+    System.Int32 value__
+enum Caching.NET.Options.CacheMode
+    Caching.NET.Options.CacheMode Hybrid
+    Caching.NET.Options.CacheMode InMemory
+    Caching.NET.Options.CacheMode Redis
+    System.Int32 value__
+class Caching.NET.Options.CacheObservabilityOptions
+    .ctor()
+    Microsoft.Extensions.Logging.LogLevel BackplaneErrorLogLevel { get; set; }
+    Microsoft.Extensions.Logging.LogLevel DistributedCacheErrorLogLevel { get; set; }
+    Microsoft.Extensions.Logging.LogLevel FactoryErrorLogLevel { get; set; }
+    Microsoft.Extensions.Logging.LogLevel FailSafeActivationLogLevel { get; set; }
+    Microsoft.Extensions.Logging.LogLevel SerializationErrorLogLevel { get; set; }
+    Microsoft.Extensions.Logging.LogLevel SyntheticTimeoutLogLevel { get; set; }
+    System.Boolean EnableMetrics { get; set; }
+    System.Boolean EnableTracing { get; set; }
+    System.Boolean IncludeCacheNameDimension { get; set; }
+    System.Boolean LogStartupSummary { get; set; }
+class Caching.NET.Options.CacheResilienceOptions
+    .ctor()
+    System.Boolean AllowBackgroundBackplaneOperations { get; set; }
+    System.Boolean AllowBackgroundDistributedOperations { get; set; }
+    System.Boolean AllowTimedOutFactoryBackgroundCompletion { get; set; }
+    System.Boolean AutoRecoveryEnabled { get; set; }
+    System.Boolean FailSafeEnabled { get; set; }
+    System.Boolean ThrowOnBackplaneErrors { get; set; }
+    System.Boolean ThrowOnDistributedCacheErrors { get; set; }
+    System.Boolean ThrowOnSerializationErrors { get; set; }
+    System.Boolean ThrowOriginalExceptions { get; set; }
+    System.Nullable<System.Int32> AutoRecoveryMaxItems { get; set; }
+    System.Nullable<System.Int32> AutoRecoveryMaxRetryCount { get; set; }
+    System.TimeSpan AutoRecoveryDelay { get; set; }
+    System.TimeSpan BackplaneCircuitBreakerDuration { get; set; }
+    System.TimeSpan DistributedCircuitBreakerDuration { get; set; }
+    System.TimeSpan DistributedHardTimeout { get; set; }
+    System.TimeSpan DistributedSoftTimeout { get; set; }
+    System.TimeSpan FactoryHardTimeout { get; set; }
+    System.TimeSpan FactorySoftTimeout { get; set; }
+    System.TimeSpan FailSafeMaxDuration { get; set; }
+    System.TimeSpan FailSafeThrottleDuration { get; set; }
+class Caching.NET.Options.CacheSecurityOptions
+    .ctor()
+    Caching.NET.Options.CacheGuardPolicy KeyLengthPolicy { get; set; }
+    Caching.NET.Options.CacheGuardPolicy TagPolicy { get; set; }
+    System.Boolean AllowRawKeysInLogs { get; set; }
+    System.Boolean AllowTagsInTelemetry { get; set; }
+    System.Int32 MaximumKeyLength { get; set; }
+    System.Int32 MaximumTagCount { get; set; }
+    System.Int32 MaximumTagLength { get; set; }
+class Caching.NET.Options.CacheSerializationOptions
+    .ctor()
+    Caching.NET.Options.CacheCompressionOptions Compression { get; set; }
+    Caching.NET.Options.CacheSerializerFormat Format { get; set; }
+    System.Int64 MaximumPayloadBytes { get; set; }
+    System.Text.Json.JsonSerializerOptions JsonSerializerOptions { get; set; }
+enum Caching.NET.Options.CacheSerializerFormat
+    Caching.NET.Options.CacheSerializerFormat MessagePack
+    Caching.NET.Options.CacheSerializerFormat SystemTextJson
+    System.Int32 value__
+class Caching.NET.Options.CachingOptions
+    .ctor()
+    Caching.NET.Options.CacheBackplaneOptions Backplane { get; set; }
+    Caching.NET.Options.CacheEntryOptions Entry { get; set; }
+    Caching.NET.Options.CacheMode Mode { get; set; }
+    Caching.NET.Options.CacheObservabilityOptions Observability { get; set; }
+    Caching.NET.Options.CacheResilienceOptions Resilience { get; set; }
+    Caching.NET.Options.CacheSecurityOptions Security { get; set; }
+    Caching.NET.Options.CacheSerializationOptions Serialization { get; set; }
+    Caching.NET.Options.RedisOptions Redis { get; set; }
+    System.Boolean Enabled { get; set; }
+    System.Boolean UsesDistributedLayer { get; }
+    System.Boolean UsesMemoryLayer { get; }
+    System.String ApplicationPrefix { get; set; }
+    System.String BuildKeyPrefix()
+    System.String CacheName { get; set; }
+    System.String EnvironmentPrefix { get; set; }
+    System.String TenantPrefix { get; set; }
+    System.TimeSpan DefaultExpiration { get; set; }
+class Caching.NET.Options.RedisOptions
+    .ctor()
+    System.Action<StackExchange.Redis.ConfigurationOptions> ConfigureConnection { get; set; }
+    System.Boolean AbortOnConnectFail { get; set; }
+    System.Boolean StrictCertificateValidation { get; set; }
+    System.Boolean UseTls { get; set; }
+    System.Int32 ConnectRetry { get; set; }
+    System.Nullable<System.Int32> Database { get; set; }
+    System.Nullable<System.Int32> KeepAliveSeconds { get; set; }
+    System.String ClientName { get; set; }
+    System.String Configuration { get; set; }
+    System.String InstancePrefix { get; set; }
+    System.TimeSpan CommandTimeout { get; set; }
+    System.TimeSpan ConnectTimeout { get; set; }
+static class Caching.NET.Telemetry.CacheLayers
+    System.String Backplane
+    System.String Factory
+    System.String Memory
+    System.String Redis
+static class Caching.NET.Telemetry.CacheResults
+    System.String Error
+    System.String Hit
+    System.String Miss
+    System.String Removed
+    System.String Set
+    System.String Stale
+static class Caching.NET.Telemetry.CacheTelemetry
+    System.Diagnostics.ActivitySource Activity
+    System.String ActivitySourceName
+    System.String EngineKeyAttributeName
+    System.String MeterName
+    System.String SystemName
+    System.String[] ActivitySourceNames
+    System.String[] EngineActivitySourceNames
+    System.String[] EngineMeterNames
+    System.String[] MeterNames
+static class Caching.NET.Telemetry.CacheTelemetryAttributes
+    System.String BackgroundOperation
+    System.String ErrorType
+    System.String FactoryExecuted
+    System.String FailSafeUsed
+    System.String KeyFingerprint
+    System.String Layer
+    System.String Mode
+    System.String Name
+    System.String Operation
+    System.String PayloadBytes
+    System.String Result
+    System.String System
+class Caching.NET.Validation.CachingOptionsValidator
+    .ctor()
+    Microsoft.Extensions.Options.ValidateOptionsResult Validate(System.String name, Caching.NET.Options.CachingOptions options)

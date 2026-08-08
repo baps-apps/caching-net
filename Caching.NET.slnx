@@ -15,10 +15,12 @@
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Caching.NET/Caching.NET.csproj" />
+    <Project Path="src/Caching.NET.Analyzers/Caching.NET.Analyzers.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Caching.NET.Tests.Chaos/Caching.NET.Tests.Chaos.csproj" />
     <Project Path="tests/Caching.NET.Tests.Integration/Caching.NET.Tests.Integration.csproj" />
+    <Project Path="tests/Caching.NET.Tests.Pod/Caching.NET.Tests.Pod.csproj" />
     <Project Path="tests/Caching.NET.Tests.Properties/Caching.NET.Tests.Properties.csproj" />
     <Project Path="tests/Caching.NET.Tests/Caching.NET.Tests.csproj" />
   </Folder>

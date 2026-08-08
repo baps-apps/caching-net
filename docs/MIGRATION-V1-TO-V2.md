@@ -1,5 +1,10 @@
 # Migrating from Caching.NET v1 to v2
 
+> **Historical.** This document describes the v1 → v2 migration and every API on this page
+> (`ICacheService`, `KeyPrefix`, `CacheCallOptions`, `ICacheSerializer`) was removed in v3.0.0. It is
+> kept for applications still on v1: migrate v1 → v2 with this guide, then v2 → v3 with
+> [MIGRATION-V2-TO-V3.md](MIGRATION-V2-TO-V3.md). Nothing here describes current behaviour.
+
 v2.0.0 is a major release with **no backwards-compatible shims**. This guide is a find/replace table.
 
 ## Required changes

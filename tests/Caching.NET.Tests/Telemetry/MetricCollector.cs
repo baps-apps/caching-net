@@ -1,0 +1,98 @@
+using System.Diagnostics.Metrics;
+using Caching.NET.Telemetry;
+
+namespace Caching.NET.Tests.Telemetry;
+
+/// <summary>Collects Caching.NET metric measurements for assertions.</summary>
+internal sealed class MetricCollector : IDisposable
+{
+    private readonly MeterListener _listener = new();
+    private readonly List<Measurement> _measurements = [];
+    private readonly object _gate = new();
+
+    public MetricCollector(params string[] instrumentNames)
+    {
+        var wanted = new HashSet<string>(instrumentNames, StringComparer.Ordinal);
+
+        _listener.InstrumentPublished = (instrument, listener) =>
+        {
+            if (instrument.Meter.Name == CacheTelemetry.MeterName
+                && (wanted.Count == 0 || wanted.Contains(instrument.Name)))
+            {
+                listener.EnableMeasurementEvents(instrument);
+            }
+        };
+
+        _listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) => Record(instrument.Name, value, tags));
+        _listener.SetMeasurementEventCallback<double>((instrument, value, tags, _) => Record(instrument.Name, value, tags));
+        _listener.Start();
+    }
+
+    public IReadOnlyList<Measurement> Measurements
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _measurements.ToArray();
+            }
+        }
+    }
+
+    public long Total(string instrumentName)
+        => Measurements.Where(m => m.Instrument == instrumentName).Sum(m => (long)m.Value);
+
+    public IEnumerable<Measurement> For(string instrumentName)
+        => Measurements.Where(m => m.Instrument == instrumentName);
+
+    public IReadOnlyCollection<string> AllTagKeys()
+        => Measurements.SelectMany(m => m.Tags.Keys).Distinct(StringComparer.Ordinal).ToArray();
+
+    public IReadOnlyCollection<string> AllTagValues()
+        => Measurements
+            .SelectMany(m => m.Tags.Values)
+            .Select(v => v?.ToString() ?? string.Empty)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+    private void Record(string instrument, double value, ReadOnlySpan<KeyValuePair<string, object?>> tags)
+    {
+        var map = new Dictionary<string, object?>(tags.Length, StringComparer.Ordinal);
+        foreach (var tag in tags)
+        {
+            map[tag.Key] = tag.Value;
+        }
+
+        lock (_gate)
+        {
+            _measurements.Add(new Measurement(instrument, value, map));
+        }
+    }
+
+    public void Flush() => _listener.RecordObservableInstruments();
+
+    /// <summary>
+    /// Waits for measurements to arrive. Cache events are dispatched on the engine's background
+    /// event pump — deliberately, so telemetry never sits on the caller's path — so an assertion
+    /// made immediately after a cache call can race the recorder.
+    /// </summary>
+    public async Task<bool> WaitForAsync(Func<MetricCollector, bool> condition, int timeoutMilliseconds = 5000)
+    {
+        var deadline = Environment.TickCount64 + timeoutMilliseconds;
+        while (Environment.TickCount64 < deadline)
+        {
+            if (condition(this))
+            {
+                return true;
+            }
+
+            await Task.Delay(10);
+        }
+
+        return condition(this);
+    }
+
+    public void Dispose() => _listener.Dispose();
+
+    internal sealed record Measurement(string Instrument, double Value, IReadOnlyDictionary<string, object?> Tags);
+}
