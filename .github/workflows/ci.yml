@@ -1,0 +1,252 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  # Directory.Build.props sets TreatWarningsAsErrors and ContinuousIntegrationBuild keys off CI.
+  CI: true
+
+jobs:
+  build-and-test:
+    # Docker is required: the integration and chaos suites start real Redis containers through
+    # Testcontainers. They must never be filtered out — a green run that silently skipped them is
+    # worse than a red one.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (Release, warnings are errors)
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Unit tests
+        run: >
+          dotnet test tests/Caching.NET.Tests
+          --configuration Release --no-build
+          --logger "trx;LogFileName=unit.trx"
+          --results-directory artifacts/test-results
+
+      - name: Property tests
+        run: >
+          dotnet test tests/Caching.NET.Tests.Properties
+          --configuration Release --no-build
+          --logger "trx;LogFileName=properties.trx"
+          --results-directory artifacts/test-results
+
+      - name: Integration tests (real Redis via Testcontainers)
+        run: >
+          dotnet test tests/Caching.NET.Tests.Integration
+          --configuration Release --no-build
+          --logger "trx;LogFileName=integration.trx"
+          --results-directory artifacts/test-results
+
+      - name: Chaos tests (Redis outage, restart, fail-safe)
+        run: >
+          dotnet test tests/Caching.NET.Tests.Chaos
+          --configuration Release --no-build
+          --logger "trx;LogFileName=chaos.trx"
+          --results-directory artifacts/test-results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: artifacts/test-results
+
+      - name: Pack
+        run: dotnet pack src/Caching.NET/Caching.NET.csproj --configuration Release --no-build --output artifacts/nupkgs
+
+      - name: Verify the packed version is 3.0.0
+        run: |
+          set -euo pipefail
+          test -f artifacts/nupkgs/Caching.NET.3.0.0.nupkg
+          # The analyzer ships inside this package and must never be published on its own.
+          test "$(ls artifacts/nupkgs/*.nupkg | wc -l)" -eq 1
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkgs
+          path: artifacts/nupkgs
+
+  external-consumer:
+    # Proves an application can consume the package the way a real consumer does — restore from the
+    # packed .nupkg, not a project reference — using ONLY Caching.NET types. It also asserts the
+    # inverse: that the engine is not resolvable from the container and not needed to use the cache.
+    # That inverse is the whole point of v3, so it is guarded here against a real installed package
+    # rather than only by the in-repo approved-API test.
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nupkgs
+          path: local-feed
+
+      - name: Build and run an external consumer against the packed package
+        run: |
+          set -euo pipefail
+          # A stale extracted copy of the same version in the global cache would silently shadow the
+          # package under test, which is exactly the failure mode this job exists to catch.
+          rm -rf ~/.nuget/packages/caching.net
+          mkdir -p consumer && cd consumer
+          dotnet new console --force
+          dotnet nuget add source "$GITHUB_WORKSPACE/local-feed" --name local
+          dotnet add package Caching.NET --version 3.0.0
+          dotnet add package Microsoft.Extensions.DependencyInjection
+          dotnet add package Microsoft.Extensions.Logging
+          cat > Program.cs <<'PROGRAM'
+          using Caching.NET;
+          using Caching.NET.Extensions;
+          using Microsoft.Extensions.DependencyInjection;
+          using Microsoft.Extensions.Logging;
+
+          var services = new ServiceCollection();
+          services.AddLogging(b => b.SetMinimumLevel(LogLevel.Warning));
+          services.AddCaching(cache => cache.UseInMemory().WithApplicationPrefix("ci-consumer"));
+
+          await using var provider = services.BuildServiceProvider(
+              new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
+          provider.ValidateCachingRegistration();
+
+          var cache = provider.GetRequiredService<ICacheService>();
+          var value = await cache.GetOrSetAsync<int>("Order:1", async _ => 42);
+          var cached = await cache.GetOrDefaultAsync<int>("Order:1");
+
+          if (value != 42 || cached != 42)
+          {
+              Console.Error.WriteLine($"external consumer check failed: {value}/{cached}");
+              return 1;
+          }
+
+          // The engine must be unreachable from the container. Resolved by name so this file needs
+          // no reference to the engine assembly — which is itself the point being proven.
+          var engineContract = Type.GetType(
+              "ZiggyCreatures.Caching.Fusion.IFusionCache, ZiggyCreatures.FusionCache");
+          if (engineContract is not null && provider.GetService(engineContract) is not null)
+          {
+              Console.Error.WriteLine("external consumer check failed: the cache engine is resolvable from DI");
+              return 1;
+          }
+
+          Console.WriteLine("external consumer check passed");
+          return 0;
+          PROGRAM
+          dotnet run --configuration Release
+
+  public-api:
+    # The approved public-API file is the breaking-change gate. Running it in its own job keeps the
+    # failure legible: a diff here means a deliberate review is owed, not a flaky test.
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Public API surface is unchanged
+        run: >
+          dotnet test tests/Caching.NET.Tests
+          --configuration Release
+          --filter PublicApiTests
+
+  vulnerabilities:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - run: dotnet restore
+
+      - name: Fail on any vulnerable package, transitive included
+        run: |
+          set -euo pipefail
+          # dotnet list exits 0 even when it finds advisories, so the output has to be inspected.
+          dotnet list package --vulnerable --include-transitive 2>&1 | tee vulnerable.txt
+          if grep -qiE '(critical|high|moderate|low)$|has the following vulnerable' vulnerable.txt; then
+            echo "::error::vulnerable packages found"
+            exit 1
+          fi
+
+      - name: Report deprecated packages (advisory, does not fail the build)
+        continue-on-error: true
+        run: dotnet list package --deprecated
+
+  native-aot:
+    # IsAotCompatible=true is a claim on the shipped package; this is what backs it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Install the native toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Publish and run the native-AOT smoke test
+        run: |
+          set -euo pipefail
+          dotnet publish aot/Caching.NET.AotSmoke -c Release -r linux-x64 -o aot-out
+          ./aot-out/Caching.NET.AotSmoke
+
+  benchmark-smoke:
+    # Not a performance gate — a compile-and-start check so a broken benchmark suite is caught here
+    # rather than the next time someone tries to measure something.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Benchmarks build and enumerate
+        run: |
+          set -euo pipefail
+          dotnet build benchmark/Caching.NET.Benchmark -c Release
+          dotnet run --project benchmark/Caching.NET.Benchmark -c Release --no-build -- --list flat

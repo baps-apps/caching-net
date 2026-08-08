@@ -2,7 +2,428 @@
 
 All notable changes to Caching.NET are documented in this file.
 
-The project follows [Semantic Versioning](https://semver.org/). See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for versioning policy.
+The project follows [Semantic Versioning](https://semver.org/).
+
+## 3.0.0 — 2026-08-12
+
+**Major redesign.** Caching.NET v3 replaces three hand-written cache implementations with a single
+engine, and reuses the `ICacheService` name for a new eight-verb contract Caching.NET owns and
+implements over that engine — the engine itself never appears in a public signature — while keeping
+registration, configuration, security, connection management and observability under Caching.NET's
+own names.
+
+There is **no compatibility shim**. Keeping the v2 surface would have preserved exactly the
+limitation this release exists to remove — a four-method cache interface that hid fail-safe,
+timeouts, eager refresh and factory context from applications.
+
+Migration guide: [docs/MIGRATION-V2-TO-V3.md](docs/MIGRATION-V2-TO-V3.md). The release-gate review,
+with the measured evidence behind every gate, is
+[docs/audits/2026-08-12-v3.0.0-final-release-gate.md](docs/audits/2026-08-12-v3.0.0-final-release-gate.md).
+The three earlier reviews in that directory are **superseded and carry banners saying so** — the
+2026-08-12 gate found a release blocker all three passed over (tag and `Clear` invalidation silently
+lost across instances in `Redis` mode), so their approvals cover builds that shipped it. The oldest,
+the [2026-08-08 review](docs/audits/2026-08-08-v3.0.0-production-readiness-review.md), additionally
+describes a design that was rejected after it — the one in which the engine's own `IFusionCache` was
+the public contract — and does not describe what ships.
+
+### Added
+
+- **Full cache operation surface.** Fail-safe with throttling, factory soft/hard timeouts,
+  distributed soft/hard timeouts, eager refresh, factory execution context (`CacheFactoryContext<T>`:
+  stale value, ETag/`LastModified`, `NotModified()`/`Fail(reason)`, adaptive per-execution overrides),
+  background distributed and backplane operations, auto-recovery, and per-entry options
+  (`CacheEntryOverrides`) — all available to applications for the first time, through a new,
+  permanently eight-verb `ICacheService` (`GetOrSet`, `GetOrDefault`, `TryGet`, `Set`, `Remove`,
+  `Expire`, `RemoveByTag`, `Clear`, each async and sync) that Caching.NET owns and implements over the
+  engine. The engine's own event hub and plugin system are **not** exposed to applications — they are
+  consumed internally, the event hub only for telemetry (`CacheEventBridge`) — so a new engine
+  capability lands as a `CachingOptions` knob or a `CacheEntryOverrides` field, never a ninth verb or
+  a reference to the engine.
+- **`CacheValue<T>`** — the result of a read, distinguishing a cached `null` from a miss; returned by
+  `TryGet(Async)` and exposed to a factory as `CacheFactoryContext<T>.StaleValue`.
+- **`CacheEntryOverrides` is additive by construction.** Every property is nullable and starts `null`
+  ("use the configured value"). There is no way to build one that starts from a blank slate, so a
+  per-call override can add to a cache's mode and guard behaviour but can never escape it — closing,
+  by construction, the gap the equivalent caller-constructed engine options object used to leave open.
+- **`ICacheProvider`** — Caching.NET-owned named-cache resolution (`Default`, `GetCache`,
+  `GetCacheOrNull`, `CacheNames`, `GetGuard`). Built from an enumerable of registrations; no service
+  locator, no static dictionary.
+- **Named caches** — `AddCaching("name", …)`, resolvable by keyed injection or through
+  `ICacheProvider`. Isolated by a cache-name key segment. Also declarable under
+  `CacheOptions:NamedCaches`.
+- **`ICacheGuard`** — key/tag limit validation and non-reversible key fingerprints.
+- **Redis backplane** — cross-instance L1 invalidation in Hybrid mode, on by default via
+  `UseHybrid(...)`, channel-scoped to the application prefix.
+- **Tags in every mode.** v2 supported them only in Hybrid.
+- **Environment and tenant key prefixes** alongside the application prefix.
+- **Payload framing** — a one-byte format header validated before deserialization, so a poisoned or
+  truncated Redis value becomes a miss rather than a parse of attacker-controlled bytes.
+- **Bounded decompression** — `Serialization.Compression.MaximumDecompressedBytes`.
+- **Payload size enforcement on read** as well as on write.
+- **Key-length guard enforced on every call**, inside the cache adapter, whether or not the call
+  supplies per-call overrides.
+- **`CacheExtensions`** — `GetManyAsync`, `SetManyAsync`, `RemoveManyAsync`, `ExistsAsync`,
+  `RefreshAsync`. Only operations the contract does not already provide; nothing renamed.
+- **Startup summary log line** describing the resolved topology, with no endpoint or credential.
+- **`CachingOptionsValidator`** — every failure reported at once, scoped to the cache name, each
+  naming the property and the fix. Two of its rules are worth calling out:
+  - `Entry.LocalExpiration` longer than `Entry.DistributedExpiration` is **rejected at startup** in
+    Hybrid mode, comparing effective values so an unset duration is measured against
+    `DefaultExpiration` rather than skipped. A longer local lifetime means the in-process copy
+    outlives the authoritative Redis entry, so the instance keeps answering with data every other
+    instance has already refetched.
+  - Hybrid mode with the backplane disabled logs a **startup warning (event 3051)** naming the stale
+    window being accepted. `UseHybrid(...)` enables the backplane; a cache bound from configuration
+    does not. It stays a warning rather than a failure because a single-replica deployment has
+    nothing to invalidate.
+- **`CACHENET001` analyzer**, shipped inside the Caching.NET package. Warns on any direct reference in
+  consumer code to a `ZiggyCreatures.Caching.Fusion` type — the internal cache engine, including its
+  generics such as `MaybeValue<T>` — because a direct reference forfeits the guarantee that
+  Caching.NET's whole public surface (`ICacheService`, `CacheEntryOverrides`, `CachingBuilder`,
+  `CachingOptions`) exists precisely so the engine can be replaced without a source change downstream.
+  Caching.NET's own assembly and its `Caching.NET.Tests*` assemblies are exempt, since they legitimately
+  build and verify the adapter that hides the engine from everyone else. `StackExchange.Redis` is not
+  flagged: an application may legitimately use the Redis client directly for something that is not the
+  cache. Consumers take no Roslyn
+  dependency.
+- **One activity source, one meter, both fully owned.** `CacheTelemetry.ActivitySourceName` /
+  `.MeterName` are `"Caching.NET"`; the plural `ActivitySourceNames`/`MeterNames` arrays contain that
+  same single name, for API symmetry rather than a second, engine-branded detail tier. The internal
+  cache engine's own diagnostics are never registered under any name — every span and metric an
+  application sees originates inside Caching.NET (`FusionCacheService`, the layer decorators, and
+  `CacheEventBridge` for engine-event-sourced signals). Pinned by `SpanKeyExposureTests` and
+  `OperationSpanTests`.
+- **Public API baseline.** `PublicApiTests` compares the reflected public surface against
+  `Api/PublicApi.approved.txt` and fails on any addition, removal or signature change, listing
+  removals as breaking. Approve an intended change with `CACHINGNET_APPROVE_API=1`. Companion tests
+  assert that no `Internal` namespace is exported and that **no engine type appears in any public
+  signature at all** (`NoEngineTypeAppearsInAPublicSignature`) — a stricter guarantee than earlier
+  drafts of this release, which had planned to allow `IFusionCache` and `FusionCacheEntryOptions`
+  through.
+- **Chaos test suite** covering Redis unavailable at startup, runtime outage, restart, backplane
+  loss, fail-safe activation, factory-timeout fallback, and log-storm suppression — plus **network
+  partition** (`NetworkPartitionTests`): a warm key is still served from L1 without waiting for
+  Redis, a cold key runs its factory and releases the caller, a write made during the partition
+  reaches Redis once it heals, readiness degrades and recovers without a restart, and cross-instance
+  invalidation resumes after the heal. A partition is distinct from an outage: the connection is not
+  refused, it hangs, which is the case a timeout budget rather than a connection error has to cover.
+- **Redis authentication and TLS tests** against purpose-built containers: correct password round
+  trips; a wrong password surfaces to the caller when distributed errors are requested and reports
+  readiness as degraded otherwise; an untrusted TLS certificate is rejected under strict validation
+  **and** under permissive validation (permissive relaxes a host-name mismatch and nothing else);
+  a TLS rejection degrades the cache instead of taking the application down. Ten unit tests cover
+  the certificate policy directly, including combined policy errors and one-time handshake logging.
+- **`CachingDefaults`** — the public constants registration and key composition are built from
+  (`DefaultCacheName`, `KeyPrefixSeparator`, `MaximumCacheNameLength`).
+- **`Caching.NET.Health.CachingHealthCheck` and `CachingLivenessHealthCheck` are public again.** v2.0.0
+  made both `internal` (see its "Removed" section); v3 exports them, so an application can register a
+  probe itself instead of going through `WithHealthChecks()`/`AddCachingHealthChecks()`.
+- **Cross-process multi-pod tests.** `Caching.NET.Tests.Pod` is a console cache instance the suite
+  launches as a separate OS process; seven tests exercise write visibility, L1 invalidation, remove,
+  tag invalidation, clear, application isolation and pod restart across real processes rather than
+  two service providers sharing one CLR.
+
+### Changed
+
+- **Cache API**: `ICacheService` (v2's four-method shape) → `ICacheService` (v3's eight-verb shape) —
+  **the interface keeps its name**, but the shape is entirely new and Caching.NET owns the
+  implementation over the engine rather than exposing the engine's own operation contract. See the
+  migration guide for the call-site map.
+- **Registration**: `AddCaching` and `CachingBuilder` keep their v2 names but are new types with new
+  signatures — v2 call sites compile and then fail startup validation until they are updated.
+- **Configuration section**: still `CacheOptions`, but restructured into `Entry`, `Resilience`,
+  `Redis`, `Backplane`, `Serialization`, `Security`, `Observability`. A v2 section binds partially
+  and is rejected at startup; it is not silently accepted.
+- **`KeyPrefix` → `ApplicationPrefix`**, and the key layout gains optional environment, tenant and
+  cache-name segments.
+- **BREAKING: the memory cap is `Entry.MemorySizeLimit`, and it is no longer multiplied by
+  1024 × 1024.** v2 called it `MemorySizeLimitMb` and a v3 pre-release called it
+  `MemorySizeLimitMegabytes`; both scaled the configured value. Neither was ever a megabyte cap.
+  The in-process memory layer's size limit
+  is a ceiling on the **summed `Size` the cached entries declare**, in whatever unit the application
+  charges; it cannot weigh an arbitrary object in bytes. Scaling the configured value and calling it
+  megabytes made a documented `WithMemorySizeLimit(megabytes: 1)` a 1,048,576-entry cap under the
+  default per-entry size of `1` — measured, 200 entries holding about 78 MB of strings all stayed
+  resident under that "1 MB" cap, so a pod sized against the documented meaning would OOM.
+  `CachingBuilder.WithMemorySizeLimit`'s first parameter is renamed `megabytes` → `limit`. With
+  `defaultEntrySize: 1` the limit is simply a cap on the **number of entries**; to approximate bytes,
+  charge each entry a size in your own unit (per call via `CacheEntryOverrides.Size`, or as the
+  `Entry.Size` default) and express the limit in that same unit. A new validation rule rejects
+  `Entry.Size` of zero or less alongside a limit: an entry that charges nothing can never move the
+  sum, so the cap would look configured while the memory layer stayed unbounded. See
+  [docs/OPERATIONS.md §4](docs/OPERATIONS.md#4-capacity).
+- **Health-check registration is idempotent.** Two caches that both called `WithHealthChecks()` used
+  to register the same probe name twice and fail the host at startup with
+  `ArgumentException: Duplicate health checks were registered with the name(s): caching-net` — a
+  message naming neither Caching.NET nor the cause. The repeat is now a no-op, on the internal path
+  and through `AddCachingHealthChecks` alike; one `CachingHealthCheck` already probes every
+  registered cache through `ICacheProvider.CacheNames`. The consumer's `Action<CachingBuilder>` also
+  no longer runs twice per registration — it used to be replayed eagerly against a throwaway
+  `CachingOptions` purely to read whether health checks had been opted into, so a delegate that
+  loaded a client certificate loaded two, and one that read a secret from a vault made the call twice
+  at startup.
+- **Metric names**: `cache.*` → `caching.net.*`. Dashboards and alerts must be updated.
+- **Telemetry accessor**: `CacheInstruments` → `CacheTelemetry`. `ActivitySourceNames`/`MeterNames`
+  are plural arrays containing the same single `"Caching.NET"` name as the singular properties — for
+  API symmetry, not a second detail tier.
+- **Telemetry recording moved off the engine's event pump for the signals that belong on the caller's
+  path.** `FusionCacheService` now records `caching.net.hits`, `caching.net.misses`,
+  `caching.net.operations` and `caching.net.invalidations` synchronously, one producer per
+  signal; only the signals the engine's own code path must attribute (factory executions, fail-safe,
+  eager refresh, backplane publish/receive, evictions) still come through the event bridge.
+  Engine-side evictions have their own counter, **`caching.net.evictions`** — they are engine-
+  initiated, not caller-requested, so counting them on `caching.net.operations` or
+  `caching.net.invalidations` booked every removal, overwrite and expiry twice. This also
+  fixed the hit ratio: the old event-hub subscription could fire more than once per logical read (tag
+  lookups, lock double-checks), inflating `caching.net.hits`/`.misses` by a call-mix-dependent factor.
+- **Key and tag guards are enforced on every call**, inside `FusionCacheService`, not only for calls
+  that fall back to the configured default entry options.
+- **`cache.layer` is omitted from the `cache.get_or_set` span and from `caching.net.operations` on a
+  Hybrid hit**, corrected from an earlier draft that would have tagged every Hybrid hit `memory`. A
+  Hybrid hit can be answered by L1 *or* L2 (L2 after an L1 miss — exactly the case an operator
+  investigates), and the engine's hit signal carries no level information on the common path;
+  reporting `memory` when Redis actually answered would be worse than reporting nothing. `InMemory`
+  and `Redis` modes still get a tautological `cache.layer`, since each has exactly one layer.
+  Per-layer truth for Hybrid lives on `caching.net.layer.duration` and the `cache.memory.*`/
+  `cache.redis.*` child spans instead.
+- **Redis mode no longer keeps entries in local memory.** Reads always consult Redis, so no instance
+  can serve a value Redis has not confirmed. The in-process stampede locker is unaffected.
+- **Jitter keeps v2's proportional model under a new name, plus an absolute ceiling.**
+  `TtlJitterPercentage` (fraction) → `Entry.JitterFraction` (fraction, default `0.1` — the same
+  default), capped by `Entry.JitterMaxDuration` (default 2 s). The applied window is
+  `min(duration × JitterFraction, JitterMaxDuration)`. Setting `JitterFraction` to `null` makes
+  `JitterMaxDuration` a flat absolute window instead. See the Fixed entry below for why the
+  fraction exists: an interim v3 draft shipped only the flat window, and a flat window does not
+  scale down to short-lived entries.
+- **Fail-safe is on by default**; a failing factory now returns a stale value where one exists.
+- **`Enabled` is no longer hot-reloadable.** It is read once at registration.
+- **Health checks**: `AddCachingHealthChecks` keeps its v2 name; readiness now reports
+  Degraded rather than Unhealthy when only the distributed layer is down, and reports exception
+  types rather than messages.
+- **`ValidateCacheRegistration` → `ValidateCachingRegistration`**, which now resolves every
+  registered cache.
+- **Engine log output is re-categorised** under `Caching.NET`, so log filters never name the engine.
+- **`Logging:LogLevel:Caching.NET` guidance is `Warning`**, but `Information` is safe as a standing
+  setting too: the engine's per-operation lines are rewritten to
+  `Observability.EngineOperationLogLevel` (`Debug` by default), so `Information` on that category
+  costs zero engine lines per operation — see the `EngineOperationLogLevel` entry under Fixed.
+  Everything an operator needs during an incident is `Warning` or above regardless.
+- **`CacheKey.For<T>` puts generic arguments in the type segment.** In v2, `List<int>` and
+  `List<string>` both produced `` List`1 ``, so two different types shared one key — a
+  type-confusion bug, not just a collision. They now produce `List_Int32` and `List_String`. Keys for
+  non-generic types are unchanged; keys for closed generics change, so those entries cold-start.
+
+### Removed
+
+- **`net8.0` and `net9.0` target frameworks.** The package targets `net10.0` only. Applications on
+  .NET 8 or .NET 9 must stay on 2.2.0 or upgrade their target framework.
+- v2's `ICacheService` shape (`GetAsync`/`SetAsync`/`GetOrSetAsync`/`RemoveAsync`, `GetOrCreateAsync`,
+  runtime-typed `GetAsync`, and the rest). The **name** `ICacheService` is reused by v3 for a new,
+  unrelated eight-verb contract — see Changed above; this is not the same interface with new methods,
+  it is a breaking replacement that happens to share a name.
+- `CacheOptions` (the class), `CacheCallOptions`, `CacheSerializerOptions`, `CacheServiceCallExtensions`,
+  `CacheSchemaAttribute`.
+- The v2 `CachingBuilder` and all four v2 `AddCaching` overloads. Both names are reused by v3 with
+  different members and signatures.
+- `ValidateCacheRegistration`.
+- `ICacheSerializer`, `JsonCacheSerializer`, `MessagePackCacheSerializer`, `PayloadEnvelope`,
+  `PayloadEnvelopeReadResult`, schema-drift detection.
+- **Every member of `Caching.NET.Resilience.CacheResilienceOptions`.** v3 reuses the type *name* in
+  `Caching.NET.Options` with a completely different member set, and
+  `CachingBuilder.WithResilience(Action<CacheResilienceOptions>)` exists in both versions — so a v2
+  call site keeps binding a same-named type and fails only on the member. Gone: `Timeout`,
+  `FailureRatio`, `MinimumThroughput`, `SamplingDuration`, `BreakDuration`, `RetryCount`,
+  `EnableRedisConcurrencyLimiter`, `RedisConcurrencyPermitLimit`, `RedisConcurrencyQueueLimit`.
+- `CacheResiliencePipelineBuilder`, `ResiliencePipelineNames`, and the whole Polly layer.
+- `CacheInstruments` and every `cache.*` metric.
+- Per-call `Mode` override, `BypassCache`, `ForceRefresh` and `CoalesceConcurrent` (use a named cache
+  or `RefreshAsync`; there is no per-call layer-skip override in v3 — `CacheEntryOverrides`
+  deliberately has no equivalent of `BypassCache`, since that is exactly the kind of mode-encoding
+  flag the additive-overrides design keeps out of per-call reach, and the engine owns stampede
+  protection with no per-call opt-out).
+- Runtime-typed `GetAsync(string, Type, …)`.
+- `RequireTagSupport`, `StripeLockCount`, `StaleRefreshConcurrency`, `KeyValidator`, `KeyTransformer`.
+- **v2-internal types**, listed because a v2 stack trace, log line or internal fork may still name
+  them — none of them can break a consumer compile: `RoutingCacheService`, `InMemoryCacheService`,
+  `RedisCacheService`, `HybridCacheService`, `StripedLockManager`, `StaleEntryTracker`,
+  `StaleRefreshThrottle`, `TtlJitter`, `RuntimeTypedCacheInvoker`, `DriftLogSampler`,
+  `RedisConnectionRotator`, `StableTypeHash`, `StableStringHash`, `PayloadCompression`.
+- NuGet dependencies: `Microsoft.Extensions.Caching.Hybrid`, `Polly`, `Polly.Extensions`,
+  `Polly.RateLimiting`, `Microsoft.Extensions.Options.DataAnnotations`, and the explicit
+  `System.Diagnostics.DiagnosticSource` reference — the last is part of the `net10.0` shared
+  framework, so referencing it explicitly is now rejected by NU1510.
+
+### Security
+
+- System.Text.Json with no type-name handling, and MessagePack with the contractless resolver, are
+  the only wire formats. No `BinaryFormatter`, no `NetDataContractSerializer`, no polymorphic type
+  resolution from Redis payloads, and no switch that enables them.
+- Corrupt-payload rejection before deserialization; bounded Brotli decompression.
+- Payload size enforced in both directions.
+- Permissive Redis TLS is rejected at startup unless TLS is actually enabled.
+- Per-cache TLS validators replace the process-wide mutable validator.
+- Tag values are excluded from logs, traces and metrics unless explicitly opted in.
+- **No raw cache key reaches the logs unless `Security.AllowRawKeysInLogs` is enabled.** A cache key
+  routinely embeds a user id, an email address or a tenant id. Caching.NET's own messages never carry
+  one, and the logger adapter substitutes the `ICacheGuard.Fingerprint` digest into both the rendered
+  message and the structured `CacheKey` property of the engine's per-operation lines — which an
+  application could not otherwise filter out, since engine output is re-categorised under
+  `Caching.NET`. Pinned by `EngineKeyRedactionTests`.
+- Health output reports exception types only.
+- `MessagePack` pinned to 3.1.8, above the 3.1.4 the serializer resolves transitively (three
+  high-severity advisories). `Microsoft.OpenApi` pinned to 2.11.0 in the sample, above the
+  vulnerable 2.0.0 resolved transitively by `Microsoft.AspNetCore.OpenApi`.
+
+### Fixed
+
+- **Tag and `Clear` invalidation now reaches instances that already read the key.** The engine
+  implements `RemoveByTag` and `Clear` as *marker* entries that every read compares itself against, and
+  markers are configured separately from ordinary entries. Caching.NET applied the cache mode only to
+  ordinary entries, so markers kept the engine's defaults — **ten days, memory layer included**. In
+  `Redis` mode, entries bypassed the memory layer but markers did not, so an instance's first read
+  cached "no marker exists" locally for ten days; Redis mode registers no backplane, so nothing could
+  ever evict it, and an invalidation was invisible to every instance that had already served the key
+  once — which under real traffic is every instance. Measured: a warm reader still served a
+  tag-invalidated value after 45 seconds. In `Hybrid` without a backplane, markers ignored
+  `Entry.LocalExpiration`, so the documented bound held for an overwrite and not for a tag
+  invalidation. The mode is now applied to markers as well: `Redis` keeps them out of the memory layer,
+  `Hybrid` bounds their in-process copy by `Entry.LocalExpiration ?? DefaultExpiration`, and `InMemory`
+  keeps them out of the distributed layer. Their logical and distributed lifetimes keep the engine's
+  long defaults so an invalidation stays durable for an instance that was offline when it happened.
+  **This costs Redis mode read latency:** a read that *hits* now takes `3 + n` Redis commands for an
+  entry with `n` tags, re-baselined at ×3.10 for an untagged read (109 µs → 338 µs) and ×4.92 with two
+  tags (537 µs), with per-read allocation roughly doubling. A read that *misses* is unchanged at one
+  command, so the amplification tracks the hit ratio rather than the request rate:
+  `commands ≈ requests × (1 + hitRatio × (2 + n))`. `Hybrid` and `InMemory` are
+  unaffected. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the numbers,
+  [docs/OPERATIONS.md §4](docs/OPERATIONS.md#4-capacity) for capacity planning, and
+  [ARCHITECTURE §3.1](docs/ARCHITECTURE.md#31-the-mode-also-has-to-reach-the-tag-markers) for why. The
+  earlier tests passed because they asserted from a *cold* reader, which fetches the marker from Redis;
+  the regression tests now assert from a warm one.
+- **The public-API baseline can now see a method's generic parameters.** `PublicApiSurface` rendered a
+  method by name only, so `CacheKey.For<T>(object)` was recorded as `For(System.Object id)` and
+  `CacheExtensions.ExistsAsync<TValue>` lost `<TValue>` entirely. Changing `For<T>` to `For<T, TId>`, or
+  dropping a type parameter, produced an identical baseline and passed the gate — both source-breaking
+  for every caller. No shipped API changed; the regenerated baseline differs only by the `<T>`
+  annotations it was previously blind to.
+- **Jitter is proportional again.** v2 expressed jitter as `TtlJitterPercentage`, a fraction of the
+  entry's lifetime; the first v3 draft replaced it with a flat `Entry.JitterMaxDuration` defaulting to
+  2 seconds. A flat window does not scale: 2 s against a 10-minute entry is a rounding error, but
+  against a 300 ms entry it is **seven times** the requested lifetime, so an entry could be served
+  long after the duration its caller asked for — measured, an entry configured for 300 ms was still
+  returned 900 ms later. `Entry.JitterFraction` (default `0.1`) restores the v2 model, and
+  `Entry.JitterMaxDuration` becomes its ceiling: the applied window is
+  `min(duration × JitterFraction, JitterMaxDuration)`. A 10-minute entry still gets 2 s (60 s
+  proposed, capped), so long-lived entries are bit-for-bit unchanged; a 300 ms entry now gets 30 ms.
+  The base duration is the **shortest** lifetime governing the entry — `Entry.LocalExpiration` or
+  `Entry.DistributedExpiration` when either is set and shorter — because an entry with a 200 ms memory
+  duration is short-lived in the layer that will actually expire it. Per-call and adaptive overrides
+  that shorten an entry recompute its jitter with it, so shortening an entry for one call no longer
+  leaves a window sized for the configured default. `CacheEntryOverrides.JitterFraction` overrides the
+  fraction per call; an explicit `CacheEntryOverrides.JitterMaxDuration` is still honoured as a flat
+  window; `JitterFraction = null` restores the flat behaviour; `JitterMaxDuration = TimeSpan.Zero`
+  still disables jitter entirely and no fraction can reintroduce it. New
+  `CachingBuilder.WithProportionalJitter(fraction, maximum)`, and a validator rule rejecting a
+  fraction outside `(0.0, 1.0]`.
+- **The shipped analyzer no longer breaks every consuming build.** `Caching.NET.Analyzers` was built
+  against `Microsoft.CodeAnalysis.CSharp` 5.6.0, whose assembly version (`5.6.0.0`) is newer than the
+  Roslyn in the .NET 10.0.100 SDK this repository itself pins (`5.0.0.0`). Because the analyzer ships
+  inside the Caching.NET package, a consumer's `csc` loaded it and refused: `error CS9057: Analyzer
+  assembly ... references version '5.6.0.0' of the compiler, which is newer than the currently
+  running version '5.0.0.0'`. The package was therefore uninstallable, while every in-repo build
+  stayed green — nothing in the repository loads the analyzer through the compiler. Pinned to
+  `4.14.0`, which loads in the .NET 8, 9 and 10 SDK compilers alike, and guarded by
+  `EngineTypeAnalyzerTests.ShippedAnalyzer_TargetsARoslynOldEnoughForConsumerCompilers` so raising it
+  again is a deliberate decision to raise the minimum consumer SDK.
+- **Caller cancellation is no longer recorded as a cache error.** `cache.get_or_set`, `cache.factory`
+  and every other operation span were marked `ActivityStatusCode.Error` with
+  `cache.error.type=OperationCanceledException` when the caller's own token cancelled the call. In
+  ASP.NET Core the ambient token is `HttpContext.RequestAborted`, so every client that navigated away
+  mid-request produced error spans, making ordinary user behaviour indistinguishable from a Redis
+  outage on an error-rate dashboard. Such a span is now tagged `cache.result=canceled` and left
+  `Unset`; the `factory` layer of `caching.net.layer.duration` uses the same value, so a cancellation
+  is never booked as a factory error. A cancellation Caching.NET did not ask for — an internal
+  timeout, a disposed connection — still reports an error, because that is what it is.
+- **The engine's per-operation log lines no longer flood production logs.** The internal engine logs
+  every cache call, and every cache result, at `Information` — the level production runs at —
+  measured at **2.04 lines per `GetOrSet`**, each carrying a full dump of the entry's resolved
+  options. The engine exposes level knobs for its error categories but none for these, and the
+  documentation's answer was to tell operators to suppress the whole `Caching.NET` category. Those
+  lines are now rewritten to the new `Observability.EngineOperationLogLevel` (default `Debug`):
+  measured 0 lines per 100 `GetOrSet` calls at `Information`, and all of them back at `Debug`. The
+  rewrite also answers the engine's `IsEnabled(Information)` probe with the rewritten level, so a
+  suppressed line is never formatted at all rather than formatted and dropped. Warnings and errors are
+  never downgraded, and `CachingOptionsValidator` rejects setting any `Observability.*LogLevel`
+  diagnostic property to `Information` while the rewrite is active, so a level an operator
+  deliberately raised cannot be silently lowered again.
+- **The readiness health check now detects a Redis outage in Hybrid mode.** Its probe read was
+  served by L1 — the value its own write had just placed there — so it reported `Healthy` with Redis
+  stopped, and never contacted the distributed layer even when Redis was up. The probe read now
+  forces `SkipMemoryCacheRead`, and the probe write awaits the L2 operation with
+  `ReThrowDistributedCacheExceptions`, when the cache has a distributed layer. Both are engine-only
+  settings reached through `FusionCacheService`'s internal `ProbeSetAsync`/`ProbeTryGetAsync` helpers
+  — deliberately not on the public `CacheEntryOverrides`, since `SkipMemoryCacheRead` is exactly the
+  kind of mode-encoding flag the per-call override surface excludes by design — and both are skipped
+  in InMemory mode, where bypassing memory would make every probe a miss. See
+  [docs/HEALTH-CHECKS.md](docs/HEALTH-CHECKS.md).
+- **Probe entries no longer inherit the configured expirations.** The probe builds its
+  `CacheEntryOverrides` explicitly (`LocalExpiration`/`DistributedExpiration` both pinned to 10
+  seconds) instead of starting from the cache's configured defaults, so a configured
+  `Entry.DistributedExpiration` of, say, 6 hours can no longer override the probe's own duration and
+  leave the probe key in Redis for 6 hours. `JitterMaxDuration` and (on the read) `EagerRefreshThreshold`
+  are cleared the same way, so the probe's TTL is at most 10 seconds in every layer regardless of
+  configuration.
+- **Packaging.** The README is now inside the NuGet package, and `PackageReleaseNotes` no longer
+  points at a repository path that does not resolve from a package page. The symbol package is no
+  longer produced: `DebugType=embedded` already ships the PDB inside the assembly, so `IncludeSymbols`
+  built a `.snupkg` containing no symbols.
+
+### Known behavior
+
+- **Accepted performance trade-off: the telemetry-off in-memory hit path is ~15% slower than the
+  pre-release `IFusionCache`-exposing baseline.** Measured against `329d8f4` (the commit immediately
+  before this plan's first task, the last point where the engine's own contract was still public):
+  **116.0 ns → 133.2 ns (+14.9%)** on a telemetry-off `GetOrSet` hit in InMemory mode, against a ≤2%
+  spec gate; allocations are unchanged at 192 B both sides, so the cost is pure CPU —
+  `FusionCacheService` now runs key/tag guard validation and `CacheEntryOverrides` resolution on every
+  call, where the old surface called the engine directly. **Accepted**, not fixed in this release,
+  because (1) it buys enforced key/tag guards on every call, which the exposed-engine-contract design
+  could not enforce at all, and (2) the shipping default is faster in absolute terms than before this
+  plan: with metrics on — the default — the same hit went **304.4 ns → 153.4 ns (−49.6%)**, because
+  the old "metrics on" cost included the engine's own event-bridge dispatch, which this release
+  replaced with direct, single-producer `RecordHit`/`RecordMiss` calls. Redis miss (−7.0%) and Hybrid
+  full miss + factory (−6.5%) are also faster than the baseline. **The Redis *hit* row of that
+  comparison no longer holds**: it read −5.8% when measured, but that was before the tag-marker fix
+  above, i.e. while Redis-mode invalidation could be silently lost. Re-measured against the same
+  baseline it is now **+192%** (115,827 ns → 338,110 ns) — but that figure is a composite of two
+  independent changes with opposite signs, and should not be read as the contract's cost:
+
+  | Step | Reading | Δ |
+  |---|---:|---:|
+  | Baseline `329d8f4` — engine exposed, markers local | 115,827 ns | — |
+  | …after the engine-agnostic contract | 109,120 ns | **−5.8%** |
+  | …after the tag-marker fix | 338,110 ns | **×3.10** |
+  | Net vs. baseline | | **+192%** |
+
+  The contract change made this row *faster*; the marker fix is what multiplied it, and `3 + n`
+  commands per hit is the reason. The controlled measurement of the fix is therefore the ×3.10, not
+  the +192%. The cross-session comparison is trustworthy because two rows untouched by the fix act as
+  controls on the same machine — Redis miss moved +1.6% and Hybrid full miss + factory +4.5% between
+  the two sessions, so the hit row's jump is not session drift. Full
+  numbers and methodology: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#baseline-comparison-the-engine-agnostic-contracts-cost).
+- **Unobserved task exceptions during a Redis outage.** With background distributed operations on
+  (the default) the engine schedules distributed reads, writes and backplane publishes as background
+  tasks; when Redis goes away some fault with nothing awaiting them and reach
+  `TaskScheduler.UnobservedTaskException`. Measured at three per 50 operations across a full outage,
+  plus one `SocketClosed` on `UNSUBSCRIBE` when a cache is disposed mid-outage. It does not crash the
+  process and the same failures are already on `caching.net.redis.errors`, but a host that subscribes
+  to that event will see cache-layer noise during an incident. OPERATIONS.md carries the filtering
+  guidance; it is not fixable without the delegating wrapper v3 exists to remove.
+- **Physical Redis TTL is `Duration + FailSafeMaxDuration`** when fail-safe is on — a one-minute entry
+  occupies Redis for two hours and one minute under the defaults, not the longer of the two. Verified
+  directly against `TTL` on a live key; see OPERATIONS.md's capacity guidance.
+- **`Observability.EnableMetrics: false` skips the event-hub subscription entirely** rather than
+  installing handlers that return immediately.
 
 ## 2.2.0 — 2026-06-30
 
@@ -131,7 +552,7 @@ Major release. Breaking changes from v1.x. See [docs/MIGRATION-V1-TO-V2.md](docs
 ### Documentation
 
 - [README.md](README.md) – quick start, configuration, per-call options, telemetry, security.
-- [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) – implementation details, modes, configuration, telemetry.
+- `docs/IMPLEMENTATION.md` – implementation details, modes, configuration, telemetry. (Superseded in v3 by `docs/ARCHITECTURE.md`.)
 - [docs/OPERATIONS.md](docs/OPERATIONS.md) – production runbooks (when present).
 
 ---

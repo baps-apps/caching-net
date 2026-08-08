@@ -1,35 +1,33 @@
-using Caching.NET.Options;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using Microsoft.Extensions.Options;
-using StackExchange.Redis;
 
 namespace Caching.NET.Health;
 
 /// <summary>
-/// Lightweight liveness probe for Kubernetes-style setups: verifies configuration and (for Redis/Hybrid)
-/// that the multiplexer reports connected — without Redis PING or cache write traffic.
-/// Pair with <see cref="CachingHealthCheck"/> (readiness) by registering health checks with split enabled
-/// (see <c>Caching.NET.Extensions.ServiceCollectionExtensions.AddCachingHealthChecks</c> and <c>splitLivenessReadiness: true</c>).
+/// Liveness probe. Confirms only that the Caching.NET object graph resolves; it performs no I/O.
 /// </summary>
-internal sealed class CachingLivenessHealthCheck : IHealthCheck
+/// <remarks>
+/// A liveness probe must not depend on an external dependency: if it did, a Redis outage would
+/// restart every pod in the deployment rather than degrading the cache. Use
+/// <see cref="CachingHealthCheck"/> for readiness.
+/// </remarks>
+public sealed class CachingLivenessHealthCheck : IHealthCheck
 {
-    private readonly IOptions<CacheOptions> _options;
-    private readonly IConnectionMultiplexer? _multiplexer;
+    private readonly ICacheProvider _provider;
 
-    /// <summary>
-    /// Creates a liveness check; multiplexer is resolved from DI when registered for Redis/Hybrid modes.
-    /// </summary>
-    public CachingLivenessHealthCheck(
-        IOptions<CacheOptions> options,
-        IConnectionMultiplexer? multiplexer = null)
+    /// <summary>Creates the liveness health check.</summary>
+    /// <param name="provider">Resolves the registered caches.</param>
+    public CachingLivenessHealthCheck(ICacheProvider provider)
     {
-        _options = options;
-        _multiplexer = multiplexer;
+        _provider = provider;
     }
 
     /// <inheritdoc />
     public Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context,
-        CancellationToken cancellationToken = default) =>
-        CachingHealthProbe.CheckLivenessAsync(_options, _multiplexer, context, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        var names = _provider.CacheNames;
+        return Task.FromResult(HealthCheckResult.Healthy(
+            $"Caching.NET is registered with {names.Count} cache(s): {(names.Count == 0 ? "(none)" : string.Join(", ", names))}."));
+    }
 }

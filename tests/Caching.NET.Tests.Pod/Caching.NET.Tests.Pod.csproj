@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>Caching.NET.Tests.Pod</AssemblyName>
+    <RootNamespace>Caching.NET.Tests.Pod</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="CodeStyle.NET" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Caching.NET\Caching.NET.csproj" />
+  </ItemGroup>
+</Project>

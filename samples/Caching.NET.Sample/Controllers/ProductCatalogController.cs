@@ -1,254 +1,143 @@
-using Caching.NET.Abstractions;
+using Caching.NET;
 using Caching.NET.Extensions;
 using Caching.NET.Keys;
 using Caching.NET.Options;
+using Caching.NET.Sample.Data;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Caching.NET.Sample.Controllers;
 
 /// <summary>
-/// Sample controller that demonstrates the key Caching.NET usage patterns:
-/// global-mode caching, per-call mode overrides, bypass, force-refresh, and tag-based invalidation.
+/// Shows how an application consumes Caching.NET. The cache is injected as
+/// <see cref="ICacheService"/> — Caching.NET's own operation contract — and named caches come from
+/// <see cref="ICacheProvider"/>. Every configuration concern lives in <c>Program</c> and
+/// <c>appsettings.json</c>.
 /// </summary>
 [ApiController]
-[Route("catalog")]
-public class ProductCatalogController : ControllerBase
+[Route("api/[controller]")]
+public sealed class ProductCatalogController : ControllerBase
 {
-    // Basic, fake in-memory data source to simulate a database or external service.
-    private static readonly Product[] AllProducts =
-    [
-        new("p-100", "Gaming Laptop", "electronics", 1799.00m),
-        new("p-101", "Noise Cancelling Headphones", "electronics", 299.00m),
-        new("p-200", "Ergonomic Office Chair", "furniture", 499.00m),
-        new("p-300", "Stainless Steel Water Bottle", "home", 29.00m),
-    ];
+    private readonly ICacheService _cache;
+    private readonly ICacheService _shortLived;
+    private readonly ICacheGuard _guard;
+    private readonly ProductRepository _repository;
 
-    /// <summary>
-    /// Returns the full product catalog, cached using the globally configured mode (Hybrid by default).
-    /// Demonstrates the basic <c>GetOrCreateAsync</c> pattern with explicit expiration values.
-    /// </summary>
-    /// <param name="cache">Cache service injected per-request via <c>[FromServices]</c>.</param>
-    /// <param name="cancellationToken">Request cancellation token.</param>
-    [HttpGet("products")]
-    public Task<IEnumerable<Product>> GetProducts(
-        [FromServices] ICacheService cache,
-        CancellationToken cancellationToken)
+    /// <summary>Creates the controller.</summary>
+    /// <param name="cache">The default cache.</param>
+    /// <param name="caches">Resolves named caches.</param>
+    /// <param name="guard">Key and tag limits for the default cache.</param>
+    /// <param name="repository">The sample data source.</param>
+    public ProductCatalogController(
+        ICacheService cache,
+        ICacheProvider caches,
+        ICacheGuard guard,
+        ProductRepository repository)
     {
-        return cache.GetOrCreateAsync(
-            key: "catalog:all",
-            factory: _ => Task.FromResult<IEnumerable<Product>>(AllProducts),
-            expiration: TimeSpan.FromMinutes(5),
-            localExpiration: TimeSpan.FromMinutes(2),
-            cancellationToken: cancellationToken);
+        _cache = cache;
+        _shortLived = caches.GetCache("short-lived");
+        _guard = guard;
+        _repository = repository;
     }
 
-    /// <summary>
-    /// Returns the featured product subset, always served from the in-process memory cache
-    /// regardless of the application-level cache mode.
-    /// Demonstrates <see cref="CacheCallOptions.Mode"/> to pin a hot path to <see cref="CacheMode.InMemory"/>.
-    /// </summary>
-    /// <param name="cache">Cache service injected per-request via <c>[FromServices]</c>.</param>
+    /// <summary>Reads one product, loading it on a miss. The common get-or-set pattern.</summary>
+    /// <param name="sku">Product identifier.</param>
     /// <param name="cancellationToken">Request cancellation token.</param>
-    [HttpGet("featured")]
-    public Task<IEnumerable<Product>> GetFeaturedInMemory(
-        [FromServices] ICacheService cache,
-        CancellationToken cancellationToken)
+    [HttpGet("{sku}")]
+    public async Task<ActionResult<Product>> GetAsync(string sku, CancellationToken cancellationToken)
     {
-        var callOptions = new CacheCallOptions
-        {
-            Mode = CacheMode.InMemory
-        };
+        var key = CacheKey.For<Product>(sku).Build();
+        _guard.ValidateKey(key);
 
-        return cache.GetOrCreateAsync(
-            key: "catalog:featured",
-            factory: _ => Task.FromResult(AllProducts.Take(2)),
-            callOptions: callOptions,
-            expiration: TimeSpan.FromMinutes(2),
-            localExpiration: null,
-            cancellationToken: cancellationToken);
-    }
-
-    /// <summary>
-    /// Returns the full product catalog fetched directly from the source, bypassing all cache tiers.
-    /// Demonstrates <see cref="CacheCallOptions.BypassCache"/> for diagnostics or emergency "cache off" scenarios.
-    /// </summary>
-    /// <param name="cache">Cache service injected per-request via <c>[FromServices]</c>.</param>
-    /// <param name="cancellationToken">Request cancellation token.</param>
-    [HttpGet("products/raw")]
-    public Task<IEnumerable<Product>> GetProductsBypassingCache(
-        [FromServices] ICacheService cache,
-        CancellationToken cancellationToken)
-    {
-        var callOptions = new CacheCallOptions
-        {
-            BypassCache = true
-        };
-
-        return cache.GetOrCreateAsync(
-            key: "catalog:raw",
-            factory: _ => Task.FromResult<IEnumerable<Product>>(AllProducts),
-            callOptions: callOptions,
-            expiration: TimeSpan.FromMinutes(1),
-            localExpiration: null,
-            cancellationToken: cancellationToken);
-    }
-
-    /// <summary>
-    /// Returns the specified product, always recomputing the value from the source and overwriting the cache entry.
-    /// Demonstrates <see cref="CacheCallOptions.ForceRefresh"/> to proactively refresh stale cached data
-    /// without first removing the key.
-    /// </summary>
-    /// <param name="cache">Cache service injected per-request via <c>[FromServices]</c>.</param>
-    /// <param name="id">The product identifier.</param>
-    /// <param name="cancellationToken">Request cancellation token.</param>
-    /// <returns>The product, or <c>404 Not Found</c> when the identifier does not exist.</returns>
-    [HttpGet("products/{id}/force-refresh")]
-    public async Task<ActionResult<Product>> GetProductWithForceRefresh(
-        [FromServices] ICacheService cache,
-        string id,
-        CancellationToken cancellationToken)
-    {
-        var callOptions = new CacheCallOptions
-        {
-            ForceRefresh = true
-        };
-
-        var product = await cache.GetOrCreateAsync(
-            key: $"product:{id}",
-            factory: _ =>
+        var product = await _cache.GetOrSetAsync<Product?>(
+            key,
+            async (_, token) => await _repository.LoadAsync(sku, token),
+            options: new CacheEntryOverrides
             {
-                var found = AllProducts.FirstOrDefault(p => p.Id == id);
-                if (found is null)
-                {
-                    throw new KeyNotFoundException($"Product '{id}' was not found.");
-                }
-
-                return Task.FromResult(found);
+                LocalExpiration = TimeSpan.FromMinutes(10),
+                DistributedExpiration = TimeSpan.FromMinutes(10)
             },
-            callOptions: callOptions,
-            expiration: TimeSpan.FromMinutes(10),
-            localExpiration: TimeSpan.FromMinutes(5),
-            cancellationToken: cancellationToken);
+            tags: [$"product:{sku}"],
+            token: cancellationToken);
 
-        return Ok(product);
+        return product is null ? NotFound() : Ok(product);
     }
 
-    /// <summary>
-    /// Evicts all cache entries associated with the specified category tag.
-    /// In Hybrid mode this leverages <c>HybridCache</c> tag support.
-    /// In InMemory or Redis modes the call is a safe no-op (logs a debug message and returns no content).
-    /// Demonstrates <see cref="ICacheService.RemoveByTagAsync(string, CancellationToken)"/> for tag-based invalidation.
-    /// </summary>
-    /// <param name="cache">Cache service injected per-request via <c>[FromServices]</c>.</param>
-    /// <param name="category">The category tag whose associated cache entries should be evicted.</param>
+    /// <summary>Reads a category, tagging every entry so the whole group can be invalidated at once.</summary>
+    /// <param name="categoryId">Category identifier.</param>
     /// <param name="cancellationToken">Request cancellation token.</param>
-    /// <returns><c>204 No Content</c> on success, or <c>400 Bad Request</c> when <paramref name="category"/> is blank.</returns>
-    [HttpDelete("categories/{category}/invalidate")]
-    public async Task<IActionResult> InvalidateCategory(
-        [FromServices] ICacheService cache,
-        string category,
+    [HttpGet("category/{categoryId:int}")]
+    public async Task<ActionResult<IReadOnlyList<Product>>> GetByCategoryAsync(
+        int categoryId,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(category))
-        {
-            return BadRequest("Category is required.");
-        }
+        var tags = new[] { $"category:{categoryId}" };
+        _guard.ValidateTags(tags);
 
-        await cache.RemoveByTagAsync(category, cancellationToken);
+        var products = await _cache.GetOrSetAsync<IReadOnlyList<Product>>(
+            CacheKey.For<Product>(categoryId).WithVariant("by-category").Build(),
+            async (_, token) => await _repository.LoadByCategoryAsync(categoryId, token),
+            options: new CacheEntryOverrides
+            {
+                LocalExpiration = TimeSpan.FromMinutes(5),
+                DistributedExpiration = TimeSpan.FromMinutes(5),
+                EagerRefreshThreshold = 0.8f
+            },
+            tags: tags,
+            token: cancellationToken);
+
+        return Ok(products);
+    }
+
+    /// <summary>Reads several products in one round of concurrent lookups.</summary>
+    /// <param name="skus">Comma-separated product identifiers.</param>
+    /// <param name="cancellationToken">Request cancellation token.</param>
+    [HttpGet("batch")]
+    public async Task<ActionResult<IReadOnlyDictionary<string, Product?>>> GetManyAsync(
+        [FromQuery] string skus,
+        CancellationToken cancellationToken)
+    {
+        var keys = skus.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(sku => CacheKey.For<Product>(sku).Build());
+
+        var cached = await _cache.GetManyAsync<Product>(keys, token: cancellationToken);
+        return Ok(cached);
+    }
+
+    /// <summary>Invalidates one product across every instance.</summary>
+    /// <param name="sku">Product identifier.</param>
+    /// <param name="cancellationToken">Request cancellation token.</param>
+    [HttpDelete("{sku}")]
+    public async Task<IActionResult> InvalidateAsync(string sku, CancellationToken cancellationToken)
+    {
+        await _cache.RemoveAsync(CacheKey.For<Product>(sku).Build(), token: cancellationToken);
         return NoContent();
     }
 
-    /// <summary>
-    /// Returns a single product using stale-while-revalidate semantics.
-    /// After the absolute expiration the cached value continues to be served for an additional
-    /// <c>AllowStaleFor</c> window while a single background refresh runs.
-    /// Demonstrates <see cref="CacheKey.For{T}(object)"/> for structured key construction and
-    /// <see cref="CacheCallOptions.AllowStaleFor"/> for SWR-style caching.
-    /// </summary>
-    /// <param name="id">The product identifier (e.g. <c>p-100</c>).</param>
-    /// <param name="cache">Cache service injected per-request via <c>[FromServices]</c>.</param>
-    /// <param name="keyFactory">Cache key factory used to compose typed cache keys.</param>
-    /// <param name="ct">Request cancellation token.</param>
-    /// <returns>The product, or <c>404 Not Found</c> when the identifier does not exist.</returns>
-    [HttpGet("products/{id}/with-swr")]
-    public async Task<IActionResult> GetWithSwr(
-        string id,
-        [FromServices] ICacheService cache,
-        [FromServices] ICacheKeyFactory keyFactory,
-        CancellationToken ct)
+    /// <summary>Invalidates a whole category by tag.</summary>
+    /// <param name="categoryId">Category identifier.</param>
+    /// <param name="cancellationToken">Request cancellation token.</param>
+    [HttpDelete("category/{categoryId:int}")]
+    public async Task<IActionResult> InvalidateCategoryAsync(int categoryId, CancellationToken cancellationToken)
     {
-        var key = keyFactory.For<Product>(id).Build();
-
-        var product = await cache.GetOrCreateAsync(
-            key,
-            _ =>
-            {
-                var found = AllProducts.FirstOrDefault(p => p.Id == id);
-                return Task.FromResult(found ?? throw new KeyNotFoundException($"Product '{id}' not found."));
-            },
-            callOptions: new CacheCallOptions
-            {
-                AbsoluteExpiration = TimeSpan.FromMinutes(2),
-                AllowStaleFor = TimeSpan.FromSeconds(30),
-                JitterPercentage = 0.05,
-            },
-            cancellationToken: ct);
-
-        return Ok(product);
+        await _cache.RemoveByTagAsync($"category:{categoryId}", token: cancellationToken);
+        return NoContent();
     }
 
-    /// <summary>
-    /// Validates round-trip Redis connectivity by writing, reading, and removing a probe value
-    /// using a per-call Redis mode override.
-    /// </summary>
-    /// <param name="cache">Cache service injected per-request via <c>[FromServices]</c>.</param>
-    /// <param name="ct">Request cancellation token.</param>
-    /// <returns>Round-trip validation details when Redis is reachable and writable.</returns>
-    [HttpPost("redis/validate")]
-    public async Task<IActionResult> ValidateRedisRoundTrip(
-        [FromServices] ICacheService cache,
-        CancellationToken ct)
+    /// <summary>Rate-limit style counter stored in the short-lived named cache.</summary>
+    /// <param name="clientId">Caller identifier.</param>
+    /// <param name="cancellationToken">Request cancellation token.</param>
+    [HttpGet("quota/{clientId}")]
+    public async Task<ActionResult<int>> GetQuotaAsync(string clientId, CancellationToken cancellationToken)
     {
-        var probe = new RedisValidationProbe(
-            Id: Guid.NewGuid().ToString("N"),
-            CreatedUtc: DateTimeOffset.UtcNow);
-        var key = $"redis:validation:{probe.Id}";
-        var redisOnly = new CacheCallOptions { Mode = CacheMode.Redis };
+        var remaining = await _shortLived.GetOrSetAsync<int>(
+            $"quota:{clientId}",
+            async (_, _) => 100,
+            token: cancellationToken);
 
-        await cache.SetAsync(
-            key,
-            probe,
-            callOptions: redisOnly,
-            expiration: TimeSpan.FromMinutes(1),
-            cancellationToken: ct);
-
-        var cached = await cache.GetOrCreateAsync(
-            key,
-            _ => Task.FromResult(new RedisValidationProbe("unexpected-factory-hit", DateTimeOffset.MinValue)),
-            callOptions: redisOnly,
-            expiration: TimeSpan.FromMinutes(1),
-            cancellationToken: ct);
-
-        await cache.RemoveAsync(key, ct);
-        var existsAfterDelete = await cache.ExistsAsync(key, ct);
-
-        return Ok(new RedisValidationResult(
-            Key: key,
-            ProbeId: probe.Id,
-            RoundTripMatches: string.Equals(cached.Id, probe.Id, StringComparison.Ordinal),
-            Removed: !existsAfterDelete));
+        return Ok(remaining);
     }
 
-    /// <summary>Represents a product in the sample catalog.</summary>
-    /// <param name="Id">Unique product identifier (e.g. <c>"p-100"</c>).</param>
-    /// <param name="Name">Display name of the product.</param>
-    /// <param name="Category">Category tag used for Hybrid-mode cache invalidation.</param>
-    /// <param name="Price">Retail price in the default currency.</param>
-    [CacheSchema("v2-product-catalog")]
-    public record Product(string Id, string Name, string Category, decimal Price);
-
-    private sealed record RedisValidationProbe(string Id, DateTimeOffset CreatedUtc);
-
-    private sealed record RedisValidationResult(string Key, string ProbeId, bool RoundTripMatches, bool Removed);
+    /// <summary>Reports how often the sample data source was actually read — cache effectiveness.</summary>
+    [HttpGet("stats")]
+    public ActionResult<object> GetStats() => Ok(new { SourceLoads = _repository.LoadCount });
 }
-

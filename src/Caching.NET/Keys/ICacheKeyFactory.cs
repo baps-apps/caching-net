@@ -1,13 +1,14 @@
 namespace Caching.NET.Keys;
 
 /// <summary>
-/// Produces <see cref="CacheKeyBuilder"/> instances for type-safe cache keys. Register a custom
-/// implementation when you need tenant, region, or other segments injected for every key
-/// (e.g. wrap <see cref="CacheKeyBuilder.WithSegment(string)"/>). The default
-/// <see cref="DefaultCacheKeyFactory"/> mirrors <see cref="CacheKey.For{T}(object)"/>.
+/// Produces <see cref="CacheKeyBuilder"/> instances. Register a custom implementation before
+/// <c>AddCaching</c> when every key needs an injected segment (tenant, region, schema version).
+/// The default implementation mirrors <see cref="CacheKey.For{T}(object)"/>.
 /// </summary>
 public interface ICacheKeyFactory
 {
-    /// <summary>Same contract as <see cref="CacheKey.For{T}(object)"/> — begins a key for <typeparamref name="T"/>.</summary>
+    /// <summary>Begins a key for <typeparamref name="T"/>, same contract as <see cref="CacheKey.For{T}(object)"/>.</summary>
+    /// <typeparam name="T">The cached entity type.</typeparam>
+    /// <param name="id">Entity identifier.</param>
     CacheKeyBuilder For<T>(object id);
 }

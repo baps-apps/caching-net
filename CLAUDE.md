@@ -4,98 +4,176 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Caching.NET is a shared .NET caching NuGet package exposing a single `ICacheService` abstraction with three modes: **InMemory**, **Redis**, and **Hybrid** (in-memory + optional Redis with stampede protection). Consumers reference the NuGet package, not a project reference.
+Caching.NET is a shared .NET caching NuGet package with three modes: **InMemory**, **Redis**, and
+**Hybrid** (L1 memory + L2 Redis + backplane). Consumers reference the NuGet package, not a project
+reference.
+
+**v3.0.0 uses [FusionCache](https://github.com/ZiggyCreatures/FusionCache) as its internal cache
+engine and exposes its own `ICacheService` as the cache operation contract — the engine is never
+named in a public signature.** Caching.NET owns registration, configuration, security, connection
+management and observability; consuming applications never register, configure or reference
+FusionCache, and `Internal/FusionCacheService` is the only type that calls an engine operation. Read
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing anything structural — it records why
+the composition is hand-rolled rather than using the engine's DI helpers.
 
 ## Repository Layout
 
-- `src/Caching.NET` — main library (NuGet package)
-- `samples/Caching.NET.Sample` — ASP.NET sample app demonstrating DI registration, controllers, telemetry wiring
+- `src/Caching.NET` — the library (NuGet package)
+- `src/Caching.NET.Analyzers` — the `CACHENET001` analyzer, shipped **inside** the Caching.NET
+  package under `analyzers/dotnet/cs`; never packed separately
+- `samples/Caching.NET.Sample` — ASP.NET sample: registration, controllers, named caches, health checks
+- `benchmark/Caching.NET.Benchmark` — BenchmarkDotNet suites
+- `aot/Caching.NET.AotSmoke` — native-AOT smoke test
 - `tests/`:
   - `Caching.NET.Tests` — unit tests
-  - `Caching.NET.Tests.Properties` — property-based tests (FsCheck-style)
+  - `Caching.NET.Tests.Properties` — property-based tests (FsCheck)
   - `Caching.NET.Tests.Integration` — **requires Docker** (Testcontainers spins up Redis)
-  - `Caching.NET.Tests.Chaos` — **requires Docker** (Testcontainers; resilience/fault-injection)
+  - `Caching.NET.Tests.Chaos` — **requires Docker**; outage, restart and fail-safe behaviour
+  - `Caching.NET.Tests.Pod` — not a test project: a console "pod" the integration suite launches as a
+    separate OS process to test backplane behaviour across real processes
+- `docs/` — ARCHITECTURE, SECURITY, TELEMETRY, OPERATIONS, HEALTH-CHECKS, BENCHMARKS,
+  MIGRATION-V2-TO-V3. `MIGRATION-V1-TO-V2.md` and `V2.0.0-RELEASE-IMPACT.md` are **historical**: they
+  document the v2 surface and carry a banner saying so — do not rewrite them into v3 shape.
 
 ## Build & Test Commands
 
 ```bash
-dotnet restore              # restore all packages
-dotnet build                # build entire solution
-dotnet test                 # run all tests
-dotnet test --filter "FullyQualifiedName~ClassName.MethodName"  # run a single test
-dotnet pack src/Caching.NET/Caching.NET.csproj -c Release -o nupkgs  # create NuGet package
+dotnet restore
+dotnet build
+dotnet test                 # Docker required for the integration and chaos suites
+dotnet test --filter "FullyQualifiedName~ClassName.MethodName"
+dotnet pack src/Caching.NET/Caching.NET.csproj -c Release -o nupkgs
+```
+
+Benchmarks:
+
+```bash
+cd benchmark/Caching.NET.Benchmark
+dotnet run -c Release -- --filter '*InMemoryBenchmarks*'
+CACHINGNET_BENCH_REDIS="127.0.0.1:63790,abortConnect=false" dotnet run -c Release -- --filter '*RedisBenchmarks*'
 ```
 
 ## Key Build Settings
 
-- **Target frameworks:** `net8.0`, `net9.0`, and `net10.0` (multi-target NuGet package); SDK version pinned in `global.json`
-- **TreatWarningsAsErrors** is enabled globally via `Directory.Build.props` — all warnings must be resolved
-- **Central package management** via `Directory.Packages.props` — add/update package versions there, not in individual `.csproj` files
-- **CodeStyle.NET** analyzer is enabled on both src and test projects
-- Tests use **xUnit** with **Moq** for mocking
+- **Target framework:** `net10.0` only; SDK pinned in `global.json`
+- **TreatWarningsAsErrors** globally via `Directory.Build.props` — including NuGet audit warnings, so
+  a transitively-resolved vulnerable package must be pinned in `Directory.Packages.props`
+- **Central package management** via `Directory.Packages.props` — versions go there, never in a `.csproj`
+- **CodeStyle.NET** analyzer on src and test projects
+- **GenerateDocumentationFile** is on for `src` — every public member needs XML docs
+- Tests use **xUnit**; **Moq** is available but rarely needed (prefer a real in-memory cache)
 
 ## Architecture
 
-### DI Registration & Builder API
+### Registration
 
-`ServiceCollectionExtensions` provides four `AddCaching` overloads:
+`Caching.NET.Extensions.ServiceCollectionExtensions`:
 
-- `AddCaching()` — **InMemory** mode + enabled defaults (10-minute expiration). Startup validation still requires a non-empty `KeyPrefix` when `Enabled=true` (`KeyPrefix` must not contain `':'`; routing reserves it as the delimiter after the prefix), so production apps normally use `AddCaching(IConfiguration)` or `AddCaching(s => … WithKeyPrefix(...))`.
-- `AddCaching(IConfiguration)` — reads `CacheOptions` from config section
-- `AddCaching(Action<CachingBuilder>)` — fluent code-first configuration
-- `AddCaching(IConfiguration, Action<CachingBuilder>)` — config base + fluent overrides (fluent wins on conflict)
+- `AddCaching(IConfiguration)` — binds `CacheOptions`, plus anything under `CacheOptions:NamedCaches`
+- `AddCaching(IConfiguration, Action<CachingBuilder>)` — fluent overrides win over configuration
+- `AddCaching(Action<CachingBuilder>)` — code-first
+- `AddCachingOptions(Action<CachingOptions>)` — strongly typed
+- `AddCaching(string cacheName, …)` — additional named caches
+- `AddCachingHealthChecks(…)`, `ValidateCachingRegistration()`
 
-All overloads delegate to a shared `AddCachingCore` that:
+Per cache the registration claims the name in `CacheRegistrationTracker` (duplicate names throw at
+registration), sets up named options with `ValidateOnStart`, and registers a keyed `CacheInstance`
+plus keyed `ICacheService` / `ICacheGuard` projections. There is no `IFusionCache` registration
+anywhere in the container. The default cache also gets non-keyed aliases resolved **through
+`CacheInstance`**, never through the keyed `ICacheService` — see docs/ARCHITECTURE.md §2 for the
+resolution cycle that motivates this.
 
-1. Binds config (if provided), then applies fluent overrides via `PostConfigure`
-2. When `Enabled=true`, registers cache infrastructure based on the resolved `Mode` (memory cache, Redis/Hybrid services, serializer, Polly registry, TLS validator as applicable)
-3. **Always** registers `RoutingCacheService` as the `ICacheService` singleton
-4. **Always** registers `ICacheKeyFactory` via `TryAddSingleton` (`DefaultCacheKeyFactory` mirrors `CacheKey.For`); register a custom `ICacheKeyFactory` **before** `AddCaching` to replace the default
+### CacheEngineFactory
 
-There is no `NoOpCacheService`. When `Enabled=false`, **no backends are registered** (no `IMemoryCache`, Redis multiplexer, hybrid stack, serializer, or Polly registry), `IValidateOptions<CacheOptions>` skips validation, and `RoutingCacheService` still short-circuits: `GetOrCreateAsync` runs the factory directly, all other operations return completed tasks / defaults. Health checks registered via `WithHealthChecks()` still run and report healthy when caching is disabled.
+`Internal/CacheEngineFactory` is the single place engine setup happens: option mapping, memory cache,
+Redis connection, serializer, backplane, key guard, logger adapter, event bridge. Nothing else in the
+codebase touches engine configuration.
 
-### Hot-Reloadable Enabled Flag
+Mode mapping:
 
-`RoutingCacheService` reads `Enabled` from `IOptionsMonitor<CacheOptions>.CurrentValue` on every call. Flipping `Enabled` to **false** takes effect immediately (calls short-circuit to the factory or no-op). Flipping to **true** only uses real backends if they were registered at startup: if the process started with `Enabled=false`, **no** memory/Redis/hybrid services were registered—restart after enabling so `AddCaching` wires backends. If the host started with `Enabled=true`, toggling `Enabled` off and on at runtime continues to use the existing backends. Mode and connection strings remain startup-only (read from `IOptions<CacheOptions>` at construction time).
+| Mode | Entry options (`DefaultEntryOptions`) | Tag/`Clear` markers (`TagsDefaultEntryOptions`) |
+|---|---|---|
+| `InMemory` | `SetSkipDistributedCache(true, skipBackplaneNotifications: true)` | same |
+| `Redis` | `SetSkipMemoryCache(true)` — memory locker still active, memory cache bypassed | `SetSkipMemoryCache(true)` |
+| `Hybrid` | neither | `MemoryCacheDuration = Entry.LocalExpiration ?? DefaultExpiration` |
 
-### Service Resolution Flow
+`MapTagsEntryOptions` is not optional detail: the engine implements `RemoveByTag`/`Clear` as marker
+entries with their own ten-day, memory-layer-included defaults, so a mode applied only to
+`DefaultEntryOptions` silently loses invalidation across instances. See docs/ARCHITECTURE.md §3.1.
 
-**`RoutingCacheService`** is the central dispatcher registered as `ICacheService`. It resolves to the correct concrete service (`InMemoryCacheService`, `RedisCacheService`, or `HybridCacheService`) based on the configured mode. It also handles per-call overrides via `CacheCallOptions` (mode override, bypass, force refresh, concurrency coalescing) through the internal `IRoutingCacheService` interface.
+### Public surface
 
-### CachingBuilder
+| Type | Namespace | Purpose |
+|---|---|---|
+| `ICacheService` | `Caching.NET` | The cache operation contract — eight verbs (`GetOrSet`, `GetOrDefault`, `TryGet`, `Set`, `Remove`, `Expire`, `RemoveByTag`, `Clear`), each with async/sync forms |
+| `CacheValue<T>` | `Caching.NET` | Result of a read: a found value vs. an absence, distinguishing a cached `null` from a miss |
+| `CacheFactoryContext<T>` | `Caching.NET` | Passed to a context-taking factory: stale value, ETag/`LastModified`, adaptive `Overrides` |
+| `CacheEntryOverrides` | `Caching.NET.Options` | Per-call overrides, additive by construction — see docs/ARCHITECTURE.md §3 |
+| `CacheEntryPriority` | `Caching.NET.Options` | In-process eviction priority |
+| `ICacheProvider` | `Caching.NET` | Named-cache resolution |
+| `ICacheGuard` | `Caching.NET` | Key/tag limits, key fingerprints |
+| `CachingBuilder` | `Caching.NET` | Fluent configuration |
+| `CachingOptions` (+ nested) | `Caching.NET.Options` | Configuration model |
+| `CacheExtensions` | `Caching.NET.Extensions` | Batch/convenience operations |
+| `CacheKey`, `CacheKeyBuilder`, `ICacheKeyFactory` | `Caching.NET.Keys` | Guarded key construction |
+| `CacheTelemetry`, `CacheTelemetryAttributes`, `CacheResults`, `CacheLayers` | `Caching.NET.Telemetry` | Instrumentation names, and the `cache.result` / `cache.layer` value constants |
+| `CachingHealthCheck`, `CachingLivenessHealthCheck` | `Caching.NET.Health` | Probes |
+| `CachingDefaults`, `CacheConfigurationKeys` | `Caching.NET`, `Caching.NET.Configuration` | Registration and configuration-section constants |
+| `CachingOptionsValidator` | `Caching.NET.Validation` | The `IValidateOptions<CachingOptions>` implementation |
 
-Fluent API. Method groups (see source for full list — adding a knob? extend the matching group):
+### API design rules
 
-- **Mode:** `UseInMemory()`, `UseRedis(conn|Action<ConfigurationOptions>)`, `UseHybrid(...)`
-- **Toggle / presets:** `Enable()`, `Disable()`, `UseDevelopmentDefaults()`, `UseProductionDefaults()`
-- **Expiration & payload caps:** `WithDefaultExpiration`, `WithDefaultLocalExpiration`, `WithMaximumPayloadBytes`, `WithMaximumKeyLength`, `WithMemorySizeLimit`, `WithFactoryTimeout`
-- **Stampede / jitter / coalescing:** `WithStripedLocks`, `WithTtlJitter`, `WithStaleRefreshConcurrency`
-- **Keys:** `WithKeyPrefix`, `WithKeyValidator`, `WithKeyTransformer`
-- **Serialization:** `WithSerializer<T>()`, `WithSerializer(ICacheSerializer)`, `WithMessagePackSerializer()`
-- **Resilience / Redis:** `WithResilience(Action<CacheResilienceOptions>)`, `WithRedisOperationTimeout`, `WithStrictCertificateValidation`, `WithPermissiveRedisTls`
-- **Tags / observability:** `RequireTagSupport()`, `WithOpenTelemetry()`, `WithHealthChecks(name, splitLivenessReadiness)`
+1. **Never expose the cache engine.** No engine type appears in any public signature — not the
+   operation contract, not per-call options, not telemetry names, not connection configuration.
+   `ICacheService` is the API. `Internal/FusionCacheService` is the only type that calls an engine
+   operation; `Internal/CacheEngineFactory` is the only type that configures one.
+2. **The contract is eight verbs, permanently.** A new engine capability lands as a `CachingOptions`
+   knob or a `CacheEntryOverrides` field, never a ninth verb on `ICacheService`. `CacheExtensions` may
+   add a method only when it does something the eight verbs genuinely do not (batching, existence
+   probing, forced refresh) — never a rename or a pass-through.
+3. **Everything Caching.NET emits is branded `Caching.NET`**: logging categories, meter, activity
+   source, metric names, package name, configuration section.
 
-Use via `AddCaching(Action<CachingBuilder>)`; each method returns `this` for chaining.
+### Adding a feature
 
-### Extension Methods for Per-Call Options
+- **A knob** → `CachingOptions` group + `CacheEngineFactory` mapping + `CacheEntryOverrides` field (if
+  it is per-call) + `CachingOptionsValidator` rule + `CachingBuilder` method + a
+  `CacheEngineMappingTests` assertion.
+- **A metric** → instrument in `CacheTelemetry`, recorder in `CacheTelemetryContext`, and a producer
+  chosen from the one-producer-per-signal split: `Internal/FusionCacheService` for anything on the
+  caller's synchronous path (hits, misses, operations, foreground invalidations), `CacheEventBridge`
+  for anything that can only be told apart on the engine's own event pump (factory executions
+  foreground and background, fail-safe, eager refresh, backplane publish/receive, evictions), or the
+  layer decorators (`InstrumentedMemoryCache`, `InstrumentedDistributedCache`,
+  `InstrumentedCacheSerializer`) for per-layer duration and payload size. Recording the same signal
+  from two producers double-counts it. Keep the dimension inside the allow-list asserted by
+  `CacheTelemetryTests`.
+- **A validation rule** → `CachingOptionsValidator`, with a message that names the property and
+  the fix, plus a test in `CachingOptionsValidatorTests`.
 
-`CacheServiceCallExtensions` provides overloads that accept `CacheCallOptions`. These cast `ICacheService` to `IRoutingCacheService` internally — new per-call features go here, not on `ICacheService`.
+### Public API
 
-### API Stability Contract
+`tests/Caching.NET.Tests/Api/PublicApi.approved.txt` is the approved public surface. Any change to a
+public type or member fails `PublicApiTests`. To accept an intended change:
 
-`ICacheService` is the stable public interface. New capabilities are added via:
+```bash
+CACHINGNET_APPROVE_API=1 dotnet test tests/Caching.NET.Tests -f net10.0 --filter PublicApiTests
+```
 
-1. Extension methods (`CacheServiceCallExtensions`)
-2. Per-call options (`CacheCallOptions`)
-3. Configuration (`CacheOptions`)
-4. Builder methods (`CachingBuilder`)
+Then review the diff to the approved file as part of the change — that diff is the breaking-change
+review.
 
-Avoid adding new members to `ICacheService` directly.
+### Testing conventions
 
-### Telemetry
-
-Static `CacheInstruments` (`Meter` / `ActivitySource`) — subscribe with `AddMeter(CacheInstruments.MeterName)` / `AddSource(CacheInstruments.ActivitySourceName)`; both names are **`Caching.NET`**. `WithOpenTelemetry()` remains an API-compatibility hook for apps that already call it.
+- Prefer a real in-memory Caching.NET cache over a mock — `TestHost.BuildInMemory()`.
+- Integration and chaos tests poll for the observable outcome instead of sleeping, except where a TTL
+  is the thing under test.
+- Tests asserting the *absence* of metrics must be in the `caching-net-metrics` xUnit collection
+  (a `MeterListener` observes the whole process) and filter by cache name.
+- Chaos tests that restart a container must bind a fixed host port — Docker re-randomises published
+  ports across stop/start.
 
 ## Publishing
 
-Scripts in `scripts/` use PowerShell Core (`pwsh`) to publish to GitHub Packages. Requires `GITHUB_PAT` env var. See `scripts/README.md` for details.
+Scripts in `scripts/` use PowerShell Core (`pwsh`) to publish to GitHub Packages. Requires the
+`GITHUB_PAT` env var. See `scripts/README.md`.

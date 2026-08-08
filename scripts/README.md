@@ -5,7 +5,7 @@ Local-only build, test, bench, and pack tooling, plus GitHub Packages publishing
 ## Prerequisites
 
 - PowerShell Core 7.4+ (`pwsh`)
-- .NET 10 SDK (with .NET 8 + 9 targeting packs installed via the SDK's multi-target support)
+- .NET 10 SDK
 - Docker (only for `test:integration`)
 
 ## dev.ps1 — local CI gate
@@ -15,25 +15,29 @@ Local-only build, test, bench, and pack tooling, plus GitHub Packages publishing
 ```bash
 pwsh scripts/dev.ps1 help
 pwsh scripts/dev.ps1 build
-pwsh scripts/dev.ps1 test                  # unit tests, all TFMs
-pwsh scripts/dev.ps1 test -Tfm net10.0     # single TFM iteration
+pwsh scripts/dev.ps1 test                  # unit tests (net10.0)
 pwsh scripts/dev.ps1 test:integration      # requires Docker
-pwsh scripts/dev.ps1 test:chaos            # Polly fault-injection suite
+pwsh scripts/dev.ps1 test:chaos            # outage/restart suite (Testcontainers; requires Docker)
 pwsh scripts/dev.ps1 test:property         # FsCheck property suite
 pwsh scripts/dev.ps1 aot                   # PublishAot smoke
 pwsh scripts/dev.ps1 bench                 # run BenchmarkDotNet; write combined.json
 pwsh scripts/dev.ps1 bench:gate            # compare combined.json vs bench-baseline.json
-pwsh scripts/dev.ps1 pack                  # nupkg + snupkg into ./nupkgs/
+pwsh scripts/dev.ps1 pack                  # nupkg into ./nupkgs/
 pwsh scripts/dev.ps1 all                   # full pre-tag gate
 ```
+
+`pack` produces a `.nupkg` only. There is no `.snupkg`: `Directory.Build.props` sets
+`DebugType=embedded`, so the PDB already ships inside the assembly and `IncludeSymbols` is off.
 
 ### Perf gate
 
 `benchmark/perf-gate.ps1` compares `BenchmarkDotNet.Artifacts/results/combined.json` against `benchmark/Caching.NET.Benchmark/bench-baseline.json`. Benchmarks with > 10% mean or allocation regression fail the gate.
 
-### Pre-tag gate (acceptance criterion §15.2)
+**That baseline file is not currently checked in**, so `bench:gate` (and therefore `dev.ps1 all`) fails until one is generated: run `dev.ps1 bench` on the reference machine and commit the resulting `combined.json` as `bench-baseline.json`. Published v3.0.0 numbers live in [docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
 
-`scripts/dev.ps1 all` must be green on at least one Windows host AND at least one Linux/macOS host before tagging `v2.0.0`. Capture the run output and attach to the release notes.
+### Pre-tag gate
+
+`scripts/dev.ps1 all` must be green on at least one Windows host AND at least one Linux/macOS host before tagging a release. Capture the run output and attach it to the release notes.
 
 ---
 
@@ -66,7 +70,7 @@ Ensure the project is packable. In `Caching.NET.csproj`:
 ```xml
 <PropertyGroup>
   <PackageId>Caching.NET</PackageId>
-  <Version>1.0.0</Version>
+  <Version>3.0.0</Version>
   <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
   <!-- Optional: Description, Authors, PackageReadmeFile, etc. -->
 </PropertyGroup>

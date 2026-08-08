@@ -3,118 +3,109 @@ using Microsoft.Extensions.Logging;
 namespace Caching.NET.Internal;
 
 /// <summary>
-/// Source-generated zero-allocation logger messages for hot-path cache operations.
-/// EventId ranges: 1000–1099 info/debug, 1100–1199 warn, 1200–1299 error.
+/// Source-generated log messages. No cached value, serialized payload, raw cache key, Redis
+/// endpoint, connection string or credential is ever passed to these methods.
 /// </summary>
 internal static partial class CacheLogMessages
 {
-    // ── Info/Debug (1000–1099) ────────────────────────────────────────────────
+    [LoggerMessage(
+        EventId = 3000,
+        Level = LogLevel.Information,
+        Message = "Caching.NET initialized. CacheName: {CacheName} Mode: {Mode} MemoryLayer: {MemoryLayer} RedisLayer: {RedisLayer} Backplane: {Backplane} FailSafe: {FailSafe} Serializer: {Serializer} Compression: {Compression} Tracing: {Tracing} Metrics: {Metrics}")]
+    public static partial void StartupSummary(
+        ILogger logger,
+        string cacheName,
+        string mode,
+        string memoryLayer,
+        string redisLayer,
+        string backplane,
+        string failSafe,
+        string serializer,
+        string compression,
+        string tracing,
+        string metrics);
 
-    [LoggerMessage(EventId = 1000, Level = LogLevel.Debug,
-        Message = "Cache disabled or unavailable — executing factory for key {Key}.")]
-    public static partial void HybridCacheDisabled(this ILogger logger, string key);
+    [LoggerMessage(
+        EventId = 3001,
+        Level = LogLevel.Information,
+        Message = "Caching.NET is disabled for cache {CacheName}. Reads miss, writes are discarded and factories run on every call.")]
+    public static partial void CachingDisabled(ILogger logger, string cacheName);
 
-    [LoggerMessage(EventId = 1001, Level = LogLevel.Debug,
-        Message = "RemoveByTagAsync is not supported in this mode; no-op for tag {Tag}. Use Hybrid mode for tag support.")]
-    public static partial void TagNotSupported(this ILogger logger, string tag);
+    [LoggerMessage(
+        EventId = 3010,
+        Level = LogLevel.Warning,
+        Message = "Cache key exceeds the configured maximum of {MaximumKeyLength} characters (actual {ActualLength}) on cache {CacheName}. Key: {KeyReference}.")]
+    public static partial void KeyTooLong(ILogger logger, string cacheName, int maximumKeyLength, int actualLength, string keyReference);
 
-    [LoggerMessage(EventId = 1002, Level = LogLevel.Debug,
-        Message = "Server-side Redis {Operation} failed; falling back to fan-out.")]
-    public static partial void RedisMultiplexerFailed(this ILogger logger, string operation, Exception ex);
+    [LoggerMessage(
+        EventId = 3011,
+        Level = LogLevel.Warning,
+        Message = "Serialized payload of {PayloadBytes} bytes exceeds the configured maximum of {MaximumPayloadBytes} bytes on cache {CacheName}. The entry was not cached.")]
+    public static partial void PayloadTooLarge(ILogger logger, string cacheName, long payloadBytes, long maximumPayloadBytes);
 
-    [LoggerMessage(EventId = 1003, Level = LogLevel.Debug,
-        Message = "ClearAsync is not supported for the current backend in {Mode} mode; no-op.")]
-    public static partial void ClearNotSupported(this ILogger logger, string mode);
+    [LoggerMessage(
+        EventId = 3012,
+        Level = LogLevel.Warning,
+        Message = "Rejected an unreadable cache payload on cache {CacheName} ({Reason}). The entry is treated as a miss and will be rewritten by the next factory execution.")]
+    public static partial void CorruptPayload(ILogger logger, string cacheName, string reason);
 
-    [LoggerMessage(EventId = 1004, Level = LogLevel.Debug,
-        Message = "Cleared {Count} cache entries matching pattern {Pattern}.")]
-    public static partial void RedisCleared(this ILogger logger, long count, string pattern);
+    [LoggerMessage(
+        EventId = 3020,
+        Level = LogLevel.Information,
+        Message = "Redis TLS handshake for cache {CacheName}: subject={CertificateSubject} issuer={CertificateIssuer} thumbprint={CertificateThumbprint} notAfter={CertificateNotAfter:o}")]
+    public static partial void RedisTlsHandshake(
+        ILogger logger,
+        string cacheName,
+        string certificateSubject,
+        string certificateIssuer,
+        string certificateThumbprint,
+        DateTime certificateNotAfter);
 
-    // ── Warning (1100–1199) ───────────────────────────────────────────────────
+    [LoggerMessage(
+        EventId = 3021,
+        Level = LogLevel.Error,
+        Message = "Rejected the Redis TLS certificate for cache {CacheName}: {PolicyErrors}. Strict validation is {StrictValidation}.")]
+    public static partial void RedisTlsRejected(ILogger logger, string cacheName, string policyErrors, bool strictValidation);
 
-    [LoggerMessage(EventId = 1100, Level = LogLevel.Warning,
-        Message = "Redis get failed for key {Key}; executing factory (fail-open).")]
-    public static partial void RedisGetFailed(this ILogger logger, string key, Exception ex);
+    [LoggerMessage(
+        EventId = 3022,
+        Level = LogLevel.Warning,
+        Message = "Accepted a Redis TLS certificate name mismatch for cache {CacheName} because strict certificate validation is disabled. Enable Redis.StrictCertificateValidation in production.")]
+    public static partial void RedisTlsNameMismatchAccepted(ILogger logger, string cacheName);
 
-    [LoggerMessage(EventId = 1101, Level = LogLevel.Warning,
-        Message = "Redis set failed for key {Key}.")]
-    public static partial void RedisSetFailed(this ILogger logger, string key, Exception ex);
+    [LoggerMessage(
+        EventId = 3030,
+        Level = LogLevel.Warning,
+        Message = "Redis connection for cache {CacheName} reported an error on {Endpoint}: {FailureType}.")]
+    public static partial void RedisConnectionFailed(ILogger logger, string cacheName, string endpoint, string failureType);
 
-    [LoggerMessage(EventId = 1102, Level = LogLevel.Warning,
-        Message = "Redis remove failed for key {Key}.")]
-    public static partial void RedisRemoveFailed(this ILogger logger, string key, Exception ex);
+    [LoggerMessage(
+        EventId = 3031,
+        Level = LogLevel.Information,
+        Message = "Redis connection for cache {CacheName} was restored on {Endpoint}.")]
+    public static partial void RedisConnectionRestored(ILogger logger, string cacheName, string endpoint);
 
-    [LoggerMessage(EventId = 1103, Level = LogLevel.Warning,
-        Message = "Key length ({Length}) exceeds MaximumKeyLength ({Max}); skipping cache for {Operation}.")]
-    public static partial void RedisKeyTooLong(this ILogger logger, int length, int max, string operation);
+    [LoggerMessage(
+        EventId = 3032,
+        Level = LogLevel.Critical,
+        Message = "Caching.NET could not open the Redis connection for cache {CacheName}. Configuration: {RedactedConfiguration}.")]
+    public static partial void RedisConnectionUnavailable(ILogger logger, Exception exception, string cacheName, string redactedConfiguration);
 
-    [LoggerMessage(EventId = 1104, Level = LogLevel.Warning,
-        Message = "Payload for key {Key} exceeds MaximumPayloadBytes ({Size} bytes); not caching.")]
-    public static partial void RedisPayloadTooLarge(this ILogger logger, string key, int size);
+    [LoggerMessage(
+        EventId = 3040,
+        Level = LogLevel.Warning,
+        Message = "Cache entry tag rejected on cache {CacheName}: {Reason}.")]
+    public static partial void TagRejected(ILogger logger, string cacheName, string reason);
 
-    [LoggerMessage(EventId = 1105, Level = LogLevel.Warning,
-        Message = "Hybrid get failed for key {Key}; executing factory (fail-open).")]
-    public static partial void HybridGetFailed(this ILogger logger, string key, Exception ex);
+    [LoggerMessage(
+        EventId = 3050,
+        Level = LogLevel.Warning,
+        Message = "Cache {CacheName} has Resilience.AllowBackgroundDistributedOperations disabled, so the distributed write runs on the caller's path. A serialization failure — including an entry over Serialization.MaximumPayloadBytes ({MaximumPayloadBytes} bytes) — will surface to the caller as an exception even though Resilience.ThrowOnSerializationErrors is false. Re-enable background distributed operations, or handle the exception at the call site.")]
+    public static partial void ForegroundSerializationFailuresSurface(ILogger logger, string cacheName, long maximumPayloadBytes);
 
-    [LoggerMessage(EventId = 1106, Level = LogLevel.Warning,
-        Message = "Envelope invalid for key {Key}; treating as miss.")]
-    public static partial void RedisEnvelopeInvalid(this ILogger logger, string key);
-
-    [LoggerMessage(EventId = 1107, Level = LogLevel.Warning,
-        Message = "Format drift for key {Key}; treating as miss.")]
-    public static partial void RedisFormatDrift(this ILogger logger, string key);
-
-    [LoggerMessage(EventId = 1108, Level = LogLevel.Warning,
-        Message = "Schema drift for key {Key}; treating as miss.")]
-    public static partial void RedisSchemaDrift(this ILogger logger, string key);
-
-    [LoggerMessage(EventId = 1109, Level = LogLevel.Warning,
-        Message = "Caching option {OptionName} changed at runtime but is startup-only. Restart required.")]
-    public static partial void StartupOnlyOptionChanged(this ILogger logger, string optionName);
-
-    [LoggerMessage(EventId = 1110, Level = LogLevel.Warning,
-        Message = "Redis set failed after factory for key {Key}; returning value without caching.")]
-    public static partial void RedisSetFailedAfterFactory(this ILogger logger, string key, Exception ex);
-
-    [LoggerMessage(EventId = 1111, Level = LogLevel.Warning,
-        Message = "Background stale refresh failed for key {Key}; stale entry will expire naturally.")]
-    public static partial void StaleRefreshFailed(this ILogger logger, string key, Exception ex);
-
-    [LoggerMessage(EventId = 1112, Level = LogLevel.Warning,
-        Message = "Background stale refresh skipped for key {Key}: could not acquire stripe lock within {TimeoutMs}ms.")]
-    public static partial void StaleRefreshLockTimeout(this ILogger logger, string key, double timeoutMs);
-
-    [LoggerMessage(EventId = 1113, Level = LogLevel.Warning,
-        Message = "Cache key rejected by KeyValidator; skipping cache for {Operation}.")]
-    public static partial void RoutingKeyRejectedByValidator(this ILogger logger, string operation);
-
-    [LoggerMessage(EventId = 1114, Level = LogLevel.Warning,
-        Message = "KeyTransformer produced an empty key; skipping cache for {Operation}.")]
-    public static partial void RoutingKeyRejectedByTransformer(this ILogger logger, string operation);
-
-    [LoggerMessage(EventId = 1115, Level = LogLevel.Warning,
-        Message = "Redis clear failed for pattern {Pattern}.")]
-    public static partial void RedisClearFailed(this ILogger logger, string pattern, Exception ex);
-
-    // ── Error (1200–1299) ─────────────────────────────────────────────────────
-
-    [LoggerMessage(EventId = 1200, Level = LogLevel.Error,
-        Message = "Serialization failed for key {Key}.")]
-    public static partial void RedisSerializationFailed(this ILogger logger, string key, Exception ex);
-
-    [LoggerMessage(EventId = 1201, Level = LogLevel.Error,
-        Message = "Hybrid set failed for key {Key}.")]
-    public static partial void HybridSetFailed(this ILogger logger, string key, Exception ex);
-
-    [LoggerMessage(EventId = 1202, Level = LogLevel.Error,
-        Message = "Hybrid remove failed for key {Key}.")]
-    public static partial void HybridRemoveFailed(this ILogger logger, string key, Exception ex);
-
-    [LoggerMessage(EventId = 1203, Level = LogLevel.Error,
-        Message = "Hybrid tag-remove failed for tag {Tag}.")]
-    public static partial void HybridTagRemoveFailed(this ILogger logger, string tag, Exception ex);
-
-    [LoggerMessage(EventId = 1204, Level = LogLevel.Error,
-        Message = "Hybrid clear failed.")]
-    public static partial void HybridClearFailed(this ILogger logger, Exception ex);
+    [LoggerMessage(
+        EventId = 3051,
+        Level = LogLevel.Warning,
+        Message = "Cache {CacheName} is in Hybrid mode with the backplane disabled. Writes and removals made by one instance do not evict the in-process copy held by any other instance, so every replica can serve a stale value for up to its local lifetime ({LocalExpiration}). Set Backplane.Enabled to true for any deployment with more than one replica, or accept that window deliberately.")]
+    public static partial void HybridWithoutBackplane(ILogger logger, string cacheName, TimeSpan localExpiration);
 }
