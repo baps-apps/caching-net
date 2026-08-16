@@ -19,6 +19,15 @@ public sealed class CacheObservabilityOptions
     public bool EnableMetrics { get; set; } = true;
 
     /// <summary>
+    /// When a single layer probe produces a span. Default
+    /// <see cref="CacheLayerTracing.WhenParented"/>, which keeps request-path probes traced and drops
+    /// the single-span root traces that backplane and background work would otherwise produce — a
+    /// span that has already ended does not count as a parent. Gates spans only: every layer metric
+    /// is recorded either way.
+    /// </summary>
+    public CacheLayerTracing LayerTracing { get; set; } = CacheLayerTracing.WhenParented;
+
+    /// <summary>
     /// Include <c>cache.name</c> as a metric dimension. Turn off when an application registers a
     /// large or unbounded number of named caches. Default <c>true</c>.
     /// </summary>

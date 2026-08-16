@@ -230,7 +230,7 @@ Caching.NET adds, in its own namespaces:
 ## 4. Installation
 
 ```bash
-dotnet add package Caching.NET --version 3.0.0
+dotnet add package Caching.NET --version 3.1.0
 ```
 
 That is the only package an application installs. Redis client, serializers, backplane and memory
@@ -706,6 +706,15 @@ values, tenant or user ids, URLs, request ids, exception messages, or Redis endp
 A unit test asserts that no dimension outside the allow-list is ever emitted and that no key
 fragment reaches a tag value.
 
+**Layer spans.** A probe of the memory or Redis layer produces a span only when it runs under a span
+that is still running — `Observability.LayerTracing`, default `WhenParented`. Cache calls are
+unaffected, because Caching.NET's own operation span parents their probes; what it drops is the
+single-span root traces the engine's own threads produced when applying a backplane invalidation or
+writing after a background refresh. An *ended* span does not count as a parent, which matters because
+ambient trace context flows into background work from the request that scheduled it. Set it to
+`Always` for the pre-3.1 behaviour, or `Never` to drop layer spans entirely. Metrics are recorded
+identically at every setting — see [docs/TELEMETRY.md](docs/TELEMETRY.md) §3.
+
 ## 19. Structured logging
 
 Categories: `Caching.NET`, `Caching.NET.Redis`, `Caching.NET.Backplane`, `Caching.NET.Security`,
@@ -940,6 +949,7 @@ key and tag guards are now enforced on every call, not only calls using the conf
 | One pod serves stale data | Backplane off | Enable it, or lower `Entry.LocalExpiration` |
 | Cold cache after deploying v3 | Key layout and wire format changed | Expected once; entries repopulate on demand |
 | No traces appear | `CacheTelemetry.ActivitySourceName` not registered, `Observability.EnableTracing: false`, or no listener attached | Register `CacheTelemetry.ActivitySourceName` and confirm `Observability.EnableTracing` is `true` (the default); spans are created only when a listener is attached |
+| `cache.memory.*` / `cache.redis.*` spans disappeared after upgrading to 3.1.0 | `Observability.LayerTracing` defaults to `WhenParented`, which drops layer spans that are not running under a live span — backplane and background-refresh probes | Expected. Spans inside a cache call are unaffected. Set `LayerTracing: Always` for the pre-3.1 behaviour; `caching.net.layer.duration` records those probes either way |
 | Redis `WRONGTYPE` or garbage keys | Another application shares the prefix | Give each application a unique `ApplicationPrefix` |
 
 ## 27. Feature matrix
@@ -979,7 +989,9 @@ key and tag guards are now enforced on every call, not only calls using the conf
 | Plugins | ➖ | ➖ | ➖ | Not part of `ICacheService`; the engine is never reachable to add one |
 | Caching.NET metrics | ✅ | ✅ | ✅ | |
 | Caching.NET serialize/deserialize spans | ➖ | ✅ | ✅ | |
-| Operation-level spans | ✅ | ✅ | ✅ | `Caching.NET`-branded (`cache.get_or_set`, `cache.set`, …) — see §17 |
+| Operation-level spans | ✅ | ✅ | ✅ | `Caching.NET`-branded (`cache.get_or_set`, `cache.set`, …) — see §17. Never gated by `LayerTracing` |
+| Layer-level spans | ✅ | ✅ | ✅ | `cache.memory.*` (InMemory, Hybrid), `cache.redis.*` (Redis, Hybrid). Emitted only under a live span by default — `Observability.LayerTracing`, see §17 |
+| Backplane spans | ➖ | ➖ | ✅ | `cache.backplane.publish` and `cache.backplane.receive`, both tagged `cache.background_operation=true`. Hybrid only, since it is the only mode that runs a backplane |
 | Health checks | ✅ | ✅ | ✅ | |
 
 ✅ supported · ➖ not applicable in this mode · ⛔ rejected at startup

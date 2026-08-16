@@ -73,10 +73,10 @@ jobs:
       - name: Pack
         run: dotnet pack src/Caching.NET/Caching.NET.csproj --configuration Release --no-build --output artifacts/nupkgs
 
-      - name: Verify the packed version is 3.0.0
+      - name: Verify the packed version is 3.1.0
         run: |
           set -euo pipefail
-          test -f artifacts/nupkgs/Caching.NET.3.0.0.nupkg
+          test -f artifacts/nupkgs/Caching.NET.3.1.0.nupkg
           # The analyzer ships inside this package and must never be published on its own.
           test "$(ls artifacts/nupkgs/*.nupkg | wc -l)" -eq 1
 
@@ -118,7 +118,7 @@ jobs:
           mkdir -p consumer && cd consumer
           dotnet new console --force
           dotnet nuget add source "$GITHUB_WORKSPACE/local-feed" --name local
-          dotnet add package Caching.NET --version 3.0.0
+          dotnet add package Caching.NET --version 3.1.0
           dotnet add package Microsoft.Extensions.DependencyInjection
           dotnet add package Microsoft.Extensions.Logging
           cat > Program.cs <<'PROGRAM'

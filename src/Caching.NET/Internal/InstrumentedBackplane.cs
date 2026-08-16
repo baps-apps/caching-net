@@ -49,7 +49,7 @@ internal sealed class InstrumentedBackplane : IFusionCacheBackplane
     {
         try
         {
-            _inner.Subscribe(options);
+            _inner.Subscribe(Instrument(options));
         }
         catch (Exception ex)
         {
@@ -62,7 +62,7 @@ internal sealed class InstrumentedBackplane : IFusionCacheBackplane
     {
         try
         {
-            await _inner.SubscribeAsync(options).ConfigureAwait(false);
+            await _inner.SubscribeAsync(Instrument(options)).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -99,7 +99,7 @@ internal sealed class InstrumentedBackplane : IFusionCacheBackplane
 
     public void Publish(BackplaneMessage message, FusionCacheEntryOptions options, CancellationToken token = default)
     {
-        using var activity = _telemetry.StartActivity("cache.backplane.publish");
+        using var activity = _telemetry.StartLayerActivity("cache.backplane.publish");
         activity?.SetTag(CacheTelemetryAttributes.BackgroundOperation, true);
 
         try
@@ -116,7 +116,7 @@ internal sealed class InstrumentedBackplane : IFusionCacheBackplane
 
     public async ValueTask PublishAsync(BackplaneMessage message, FusionCacheEntryOptions options, CancellationToken token = default)
     {
-        using var activity = _telemetry.StartActivity("cache.backplane.publish");
+        using var activity = _telemetry.StartLayerActivity("cache.backplane.publish");
         activity?.SetTag(CacheTelemetryAttributes.BackgroundOperation, true);
 
         try
@@ -129,6 +129,138 @@ internal sealed class InstrumentedBackplane : IFusionCacheBackplane
             Record("publish", ex);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Rebuilds the subscription with the engine's incoming-message handlers wrapped in a
+    /// <c>cache.backplane.receive</c> span, so the local invalidation work a remote message causes
+    /// has a parent instead of scattering into one root trace per evicted entry.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The span is a <i>local root</i>, not a remote link. The message's causal parent is a span in
+    /// the publishing process, and the engine's wire format — source id, timestamp, action, cache key
+    /// — has no field for trace context, so there is nothing to continue a trace from. Tagging it as
+    /// a background operation says so rather than implying it belongs to a request.
+    /// </para>
+    /// <para>
+    /// Root by construction rather than by luck: the subscriber callback runs on a thread whose
+    /// ambient context flowed in from wherever the subscription was established, so
+    /// <see cref="Activity.Current"/> there can hold a long-finished request span. Inheriting it would
+    /// attach every invalidation this instance receives, forever, to one arbitrary request.
+    /// <see cref="Telemetry.CacheTelemetryContext.StartRootActivity"/> is what prevents that.
+    /// </para>
+    /// <para>
+    /// Every property on <see cref="BackplaneSubscriptionOptions"/> is read-only, so instrumenting it
+    /// means constructing a new one. That makes this the one place in the file that depends on the
+    /// engine's constructor shape rather than only on its interface: a property added by a future
+    /// engine version would be dropped silently here, so
+    /// <c>InstrumentedBackplaneReceiveTests.Subscription_HasNoPropertyTheRebuildCouldDrop</c> asserts
+    /// the type's property set against the one this rebuild copies.
+    /// </para>
+    /// <para>
+    /// With tracing off, the original instance is handed through untouched — no rebuild, no wrapper
+    /// delegate, nothing for the engine to call through on a path that can never produce a span.
+    /// </para>
+    /// </remarks>
+    private BackplaneSubscriptionOptions Instrument(BackplaneSubscriptionOptions options)
+    {
+        if (!_telemetry.TracingEnabled)
+        {
+            return options;
+        }
+
+        var incoming = options.IncomingMessageHandler;
+        var incomingAsync = options.IncomingMessageHandlerAsync;
+
+        return new BackplaneSubscriptionOptions(
+            options.CacheName,
+            options.CacheInstanceId,
+            options.ChannelName,
+            options.ConnectHandler,
+            incoming is null ? null : message => Receive(incoming, message),
+            options.ConnectHandlerAsync,
+            incomingAsync is null ? null : message => ReceiveAsync(incomingAsync, message));
+    }
+
+    private void Receive(Action<BackplaneMessage> incoming, BackplaneMessage message)
+    {
+        var activity = StartReceiveActivity();
+        if (activity is null)
+        {
+            incoming(message);
+            return;
+        }
+
+        try
+        {
+            incoming(message);
+        }
+        catch (Exception ex)
+        {
+            MarkError(activity, ex);
+            throw;
+        }
+        finally
+        {
+            activity.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Deliberately not an <c>async</c> method. Tracing can be enabled with no listener attached — the
+    /// steady state of any process that has not been asked for traces — and on that path this returns
+    /// the engine's own <see cref="ValueTask"/> straight through, so delivery costs a call and nothing
+    /// else. An <c>async</c> wrapper would build a state machine per received message whether or not a
+    /// span was ever created.
+    /// </summary>
+    private ValueTask ReceiveAsync(Func<BackplaneMessage, ValueTask> incomingAsync, BackplaneMessage message)
+    {
+        var activity = StartReceiveActivity();
+        if (activity is null)
+        {
+            return incomingAsync(message);
+        }
+
+        // Invoked inside its own try: a handler that throws synchronously would otherwise escape
+        // before the await, leaving the span started and ambient on a pooled thread forever.
+        ValueTask pending;
+        try
+        {
+            pending = incomingAsync(message);
+        }
+        catch (Exception ex)
+        {
+            MarkError(activity, ex);
+            activity.Dispose();
+            throw;
+        }
+
+        return AwaitReceive(activity, pending);
+    }
+
+    private static async ValueTask AwaitReceive(Activity activity, ValueTask pending)
+    {
+        try
+        {
+            await pending.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            MarkError(activity, ex);
+            throw;
+        }
+        finally
+        {
+            activity.Dispose();
+        }
+    }
+
+    private Activity? StartReceiveActivity()
+    {
+        var activity = _telemetry.StartRootActivity("cache.backplane.receive");
+        activity?.SetTag(CacheTelemetryAttributes.BackgroundOperation, true);
+        return activity;
     }
 
     // A cancelled operation is a caller or shutdown decision, not a backplane fault, and counting it

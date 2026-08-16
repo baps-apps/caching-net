@@ -65,6 +65,17 @@ public sealed partial class CachingOptionsValidator : IValidateOptions<CachingOp
     {
         var observability = options.Observability;
 
+        // Configuration binding rejects an unknown enum name by itself, but an undefined value can
+        // still arrive by cast from code. Picking a behaviour for it would silently decide how much
+        // tracing an application emits.
+        if (!Enum.IsDefined(observability.LayerTracing))
+        {
+            failures.Add(
+                $"Observability.LayerTracing is {(int)observability.LayerTracing}, which is not a defined "
+                + $"{nameof(CacheLayerTracing)} value. Set it to {nameof(CacheLayerTracing.Always)}, "
+                + $"{nameof(CacheLayerTracing.WhenParented)} or {nameof(CacheLayerTracing.Never)}.");
+        }
+
         if (observability.EngineOperationLogLevel == LogLevel.Information)
         {
             return;

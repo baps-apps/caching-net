@@ -1,6 +1,6 @@
 # Benchmarks
 
-Measured numbers for Caching.NET v3.0.0. Nothing in this repository claims a performance improvement
+Measured numbers for Caching.NET v3.1.0. Nothing in this repository claims a performance improvement
 without a run behind it.
 
 ## How to reproduce
@@ -13,6 +13,7 @@ dotnet run -c Release -- --filter '*InMemoryBenchmarks*'
 dotnet run -c Release -- --filter '*SerializationBenchmarks*'
 dotnet run -c Release -- --filter '*TelemetryOverheadBenchmarks*'
 dotnet run -c Release -- --filter '*LayerDecoratorBenchmarks*'
+dotnet run -c Release -- --filter '*BackplaneDispatchBenchmarks*'
 
 # Redis and Hybrid suites
 docker run -d --name bench-redis -p 63790:6379 redis:7.4-alpine
@@ -39,24 +40,36 @@ choice turns on.
 
 ## In-memory mode
 
-Re-verified at the v3.0.0 release gate (`IterationCount=8`, `WarmupCount=3`, Gen1 and Gen2 zero
-throughout):
+Measured as a **paired run** (`IterationCount=8`, `WarmupCount=3`, Gen1 and Gen2 zero throughout): a
+worktree at v3.0.0 and the 3.1.0 tree, same harness, back to back on one machine. The v3.0.0 column
+is a fresh measurement of that tree rather than a quote of the release-gate run, so the two columns
+differ only by the code under test — the point of the table is the comparison, and figures carried
+across sessions cannot support one.
 
-| Method | Concurrency | Mean | Gen0 | Allocated |
-|---|---:|---:|---:|---:|
-| L1 hit | 1 | 144.6 ns | 0.0014 | 160 B |
-| L1 miss (no factory) | 1 | 108.9 ns | 0.0017 | 176 B |
-| Factory execution | 1 | 2,159.7 ns | 0.0076 | 4,208 B |
-| Concurrent get-or-set on one key | 1 | 172.1 ns | 0.0036 | 384 B |
-| L1 hit | 64 | 142.1 ns | 0.0014 | 160 B |
-| L1 miss (no factory) | 64 | 106.5 ns | 0.0017 | 176 B |
-| Factory execution | 64 | 1,803.6 ns | 0.0076 | 4,208 B |
-| Concurrent get-or-set on one key | 64 | 11,121.1 ns | 0.2136 | 23,136 B |
+| Method | Concurrency | v3.0.0 | v3.1.0 | Gen0 | Allocated |
+|---|---:|---:|---:|---:|---:|
+| L1 hit | 1 | 145.6 ns | 140.9 ns | 0.0014 | 160 B |
+| L1 miss (no factory) | 1 | 103.5 ns | 102.5 ns | 0.0017 | 176 B |
+| Factory execution | 1 | 3,295.0 ns | 3,128.2 ns | 0.0076 | 4,208 B |
+| Concurrent get-or-set on one key | 1 | 172.7 ns | 176.4 ns | 0.0036 | 384 B |
+| L1 hit | 64 | 142.9 ns | 140.6 ns | 0.0014 | 160 B |
+| L1 miss (no factory) | 64 | 103.0 ns | 104.0 ns | 0.0017 | 176 B |
+| Factory execution | 64 | 2,673.8 ns | 2,544.5 ns | 0.0076 | 4,208 B |
+| Concurrent get-or-set on one key | 64 | 10,983.1 ns | 10,912.9 ns | 0.2136 | 23,136 B |
 
-Reading: a hit costs ~145 ns and **does not degrade from 1 to 64 concurrent callers** (144.6 ns →
-142.1 ns), so there is no contention on the read path. The "concurrent get-or-set" row fans out N
-awaits over one already-cached key, so its cost scales with N (64 × ~174 ns, which is the same
-per-caller cost as the single-caller row) — it measures the fan-out, not lock contention.
+Gen0 and allocation are identical column to column, byte for byte. Every timing row is inside its
+error bars, which is the intended result rather than a pleasant surprise: 3.1.0 changes *when a span
+is created*, and nothing on this path creates one.
+
+**The two `Factory execution` rows carry ±1,300 ns in both trees and should not be read as a 5%
+improvement** — they measure a user-supplied delegate, not cache machinery, and at that error they
+cannot support a claim in either direction. They are shown because omitting the slowest rows from a
+regression table is how a regression gets missed, not because their difference means anything.
+
+Reading: a hit costs ~141 ns and **does not degrade from 1 to 64 concurrent callers** (140.9 ns →
+140.6 ns), so there is no contention on the read path. The "concurrent get-or-set" row fans out N
+awaits over one already-cached key, so its cost scales with N (64 × ~171 ns, the same per-caller cost
+as the single-caller row) — it measures the fan-out, not lock contention.
 
 These numbers are roughly **2× faster and 2–3× lower-allocating** than the table that stood here
 before, which was carried over from an earlier task rather than re-measured. Re-runs of this suite on
@@ -152,20 +165,31 @@ Conclusions that drove the defaults:
 
 ## Telemetry overhead
 
+Measured at `IterationCount=15  WarmupCount=5`, on a quiescent machine.
+
 | Method | Mean | Ratio | Allocated |
 |---|---:|---:|---:|
-| Hit, telemetry disabled | 133.2 ns | 1.00 | 192 B |
-| Hit, metrics enabled, no trace listener | 153.4 ns | 1.15 | 192 B |
-| Hit, trace listener attached | 439.0 ns | 3.30 | 1,464 B |
-| Miss, telemetry disabled | 88.8 ns | 1.00 | 200 B |
-| Miss, metrics enabled, no trace listener | 105.4 ns | 1.19 | 192 B |
-| Miss, trace listener attached | 437.5 ns | 4.93 | 1,456 B |
+| Hit, telemetry disabled | 137.6 ns | 1.00 | 192 B |
+| Hit, metrics enabled, no trace listener | 154.7 ns | 1.12 | 192 B |
+| Hit, trace listener attached, no parent span | 483.1 ns | 3.51 | 1,464 B |
+| Hit, trace listener attached, under parent span | 479.5 ns | 3.48 | 1,520 B |
+| Miss, telemetry disabled | 90.6 ns | 0.66 | 200 B |
+| Miss, metrics enabled, no trace listener | 105.7 ns | 0.77 | 184 B |
+| Miss, trace listener attached, no parent span | 466.5 ns | 3.39 | 1,456 B |
+| Miss, trace listener attached, under parent span | 467.9 ns | 3.40 | 1,512 B |
 
 Hit and miss are measured separately (a pre-warmed key vs. a key that is never populated) because
 they build different metric/trace attributes and can regress independently. On this run, metrics-only
-cost is small — roughly 20 ns and no extra allocation on a hit — and a live trace listener is the
-expensive tier, at ~300–350 ns and a bit over 1 KB, because it is the only tier that actually walks
+cost is small — roughly 17 ns and no extra allocation on a hit — and a live trace listener is the
+expensive tier, at ~330–380 ns and a bit over 1 KB, because it is the only tier that actually walks
 the span's tag list.
+
+**The two listener rows are the same measurement within error, and that is the point.**
+`Observability.LayerTracing` defaults to suppressing a layer span that has no parent, and a cache verb
+never produces one: Caching.NET's own operation span sits above every probe the verb issues, whether
+or not the application has a request span. So the caller's path costs what it always cost. The setting
+only reaches probes the engine issues on its own threads, which no end-to-end row can exercise — see
+the decorator table below.
 
 `EnableTracing` and `EnableMetrics` still default to `true`. `ActivitySource.HasListeners()` and the
 metrics-enabled flag are checked before any attribute value is built, so no *attribute* is allocated
@@ -187,13 +211,81 @@ decorator against a bare `MemoryCache` probe, because that is where a regression
 
 | Method | Mean | Ratio | Allocated |
 |---|---:|---:|---:|
-| Raw `MemoryCache.TryGetValue` | 17.57 ns | 1.00 | 0 B |
-| `InstrumentedMemoryCache.TryGetValue`, no listener | 18.53 ns | 1.06 | 0 B |
-| `InstrumentedMemoryCache.TryGetValue`, `MeterListener` attached | 58.17 ns | 3.31 | 0 B |
+| Raw `MemoryCache.TryGetValue` | 17.34 ns | 1.00 | 0 B |
+| `InstrumentedMemoryCache.TryGetValue`, no listener | 19.32 ns | 1.11 | 0 B |
+| `InstrumentedMemoryCache.TryGetValue`, `MeterListener` attached | 57.96 ns | 3.34 | 0 B |
+| `InstrumentedMemoryCache.TryGetValue`, no trace listener | 19.62 ns | 1.13 | 0 B |
+| `InstrumentedMemoryCache.TryGetValue`, `ActivityListener` attached, no parent span | 20.91 ns | 1.21 | 0 B |
+| `InstrumentedMemoryCache.TryGetValue`, `ActivityListener` attached, under parent span | 151.50 ns | 8.74 | 600 B |
+| `InstrumentedMemoryCache.TryGetValue`, `ActivityListener` attached, ended parent span | 22.83 ns | 1.32 | 0 B |
+| `InstrumentedMemoryCache.TryGetValue`, `ActivityListener` attached, ended parent span, `LayerTracing=Always` | 159.51 ns | 9.20 | 600 B |
+| `InstrumentedMemoryCache.TryGetValue`, `ActivityListener` attached, no parent span, `LayerTracing=Always` | 141.23 ns | 8.15 | 616 B |
 
-Instrumentation costs about **1 ns per probe when nothing is listening**, and allocates nothing in
-any of the three arms. The engine issues several probes per logical operation, so that per-probe
-figure is what matters rather than the ratio.
+Instrumentation costs about **2 ns per probe when nothing is listening**, and allocates nothing. The
+engine issues several probes per logical operation, so that per-probe figure is what matters rather
+than the ratio.
+
+### What suppressing an unparented layer span is worth
+
+The **ended parent span** pair is the whole case for `Observability.LayerTracing`, measured against one
+baseline in one run. `Always` is exactly the pre-3.1 behaviour, so those two rows are the before and
+after of the same probe:
+
+| Probe with an `ActivityListener` attached | Mean | Allocated |
+|---|---:|---:|
+| Ended parent, `LayerTracing=Always` (pre-3.1) | 159.51 ns | 600 B |
+| Ended parent, `LayerTracing=WhenParented` (default) | **22.83 ns** | **0 B** |
+| Under a live parent (unchanged either way) | 151.50 ns | 600 B |
+
+A suppressed probe costs **7× less and allocates nothing** — and at 22.83 ns it is within a couple of
+nanoseconds of the 19.62 ns "no trace listener" row, the remainder being the `ExecutionContext` restore
+the row pays to set the scenario up. That is the real statement: a probe whose span is suppressed
+costs what it would cost if nobody were listening at all. A traced probe still costs its ~130 ns and
+600 B whenever it has a live parent, which is every probe on a caller's path.
+
+**Why the parent is *ended* rather than absent, and why that is the row that matters.** Background
+work does not begin from a blank ambient context — trace context flows with the `ExecutionContext`
+captured when the work was scheduled, so an engine callback typically runs holding the span of the
+request that triggered it, which has since finished. The "no parent span" rows are the easier
+scenario; the "ended parent span" rows are the one production actually produces, and a gate written as
+`Activity.Current is null` would emit a span on every one of them. Setting this up requires a captured
+context: assigning a finished activity to `Activity.Current` is rejected by the runtime outright
+(measured at ~7.6 µs and 192 B for the rejected assignment), so a benchmark or test written that way
+silently measures the parentless case instead. `TracingScope.RunUnderStaleParent` and
+`LayerSpanParentingTests.EndedAmbientSpan_CountsAsNoParent` both go through
+`ExecutionContext.Run` for that reason — ~11 ns and no allocation, paid equally by both rows.
+
+This is per *probe*, and the engine issues several per operation — but only on its own threads does
+the suppression apply, so the saving is proportional to background and backplane activity rather than
+to request traffic. The larger win is not CPU: it is the exporter batches, ingest volume and
+trace-store cardinality that those single-span root traces were consuming.
+
+### Backplane message dispatch
+
+Delivering one incoming backplane message through `InstrumentedBackplane`, which wraps the engine's
+handler in the `cache.backplane.receive` span. The handler here only increments a counter, so these
+rows are delivery cost alone — the eviction work a real message triggers is the table above.
+
+| Method | Before | After | Allocated (after) |
+|---|---:|---:|---:|
+| Incoming message dispatch, no trace listener | 1.909 ns | 3.353 ns | 0 B |
+| Incoming message dispatch, trace listener attached | 2.147 ns | 145.390 ns | 640 B |
+| Incoming message dispatch (async), no trace listener | 9.473 ns | 9.938 ns | 72 B |
+| Incoming message dispatch (async), trace listener attached | 9.455 ns | 149.250 ns | 712 B |
+
+The span costs ~145 ns and ~640 B per *received message* — not per operation. Backplane traffic is
+invalidations across the cluster, orders of magnitude below cache-call volume, and it buys the thing
+the evictions underneath it had no way to get: a parent. With tracing enabled but nothing listening
+the cost is the wrapper delegate alone — 1.4 ns on the sync path, and 0.5 ns on the async one.
+
+The async wrapper is deliberately not an `async` method: it starts the span, and when there is no
+listener it returns the engine's own `ValueTask` straight through rather than awaiting it, so no state
+machine is built on a path that will never produce a span. Its 72 B is the engine's `ValueTask`, not
+the wrapper's — the same 72 B the undecorated path allocates. Written as `async`, that row measured
+21.7 ns and carried a state machine on every received message regardless.
+
+With `Observability.EnableTracing: false` the subscription is passed through unrebuilt and the wrapper
+does not exist at all.
 
 This benchmark exists because the decorator regressed here once and nothing noticed. An early
 revision took two `Stopwatch` timestamps and built a `TagList` on every probe regardless of whether a
@@ -345,6 +437,28 @@ There is no separate "Hybrid L2 hit" row. Producing one meant asking the cache t
 layer for a single call — something Caching.NET's additive per-call overrides deliberately cannot
 express, because an override must never escape its cache's mode. The only way to issue that read is a
 Redis-mode cache, which is what **Redis mode hit** already measures.
+
+### Hybrid under a trace listener
+
+Hybrid is the only mode that runs a backplane, so it is the mode where the parented/parentless
+distinction exists at all. Measured in a separate session from the table above — read the rows against
+each other, not against it:
+
+| Method | Mean | Ratio | Allocated |
+|---|---:|---:|---:|
+| Hybrid L1 hit | 433.4 ns | 1.00 | 624 B |
+| Hybrid L1 hit, trace listener attached, no parent span | 1,028.1 ns | 2.37 | 3,096 B |
+| Hybrid L1 hit, trace listener attached, under parent span | 1,061.6 ns | 2.45 | 3,152 B |
+
+The two listener rows are one measurement: both go through a cache verb, so both are fully parented by
+the operation span whatever the caller's ambient context is. A live trace listener costs a Hybrid L1
+hit roughly 600 ns and ~2.5 KB, at either setting. What `LayerTracing` changes is not visible from a
+cache verb by construction — see the decorator table.
+
+An earlier revision of this table reported these two rows as 1,281 ns and 1,631 ns with a ±541 ns
+interval on the second, and flagged that no mechanism explained the gap. Re-measured on a quiet
+machine they land 33 ns apart with intervals of ±18 and ±26 ns, which is what the absence of a
+mechanism should look like. The earlier pair was measurement noise, not behaviour.
 
 ## Comparison with v2
 

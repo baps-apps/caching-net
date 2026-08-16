@@ -52,6 +52,7 @@ public class RedisBenchmarks
     [GlobalCleanup]
     public void Cleanup()
     {
+        TracingScope.Reset();
         _redisProvider.Dispose();
         _hybridProvider.Dispose();
     }
@@ -84,6 +85,25 @@ public class RedisBenchmarks
     [Benchmark(Description = "Hybrid L1 hit, 2 tags")]
     public async Task<CacheHostFactory.Payload?> HybridTaggedL1Hit()
         => await _hybrid.GetOrDefaultAsync<CacheHostFactory.Payload>("tagged-hit");
+
+    /// <remarks>
+    /// Hybrid is the mode where the parented/parentless split matters most: it is the only mode that
+    /// runs a backplane, so it is the only one that issues layer probes on a thread with no caller's
+    /// span above them. <see cref="TelemetryOverheadBenchmarks"/> carries the same pair for InMemory.
+    /// </remarks>
+    [Benchmark(Description = "Hybrid L1 hit, trace listener attached, no parent span")]
+    public async Task<CacheHostFactory.Payload?> HybridL1HitTracedParentless()
+    {
+        TracingScope.Parentless();
+        return await _hybrid.GetOrDefaultAsync<CacheHostFactory.Payload>("hit");
+    }
+
+    [Benchmark(Description = "Hybrid L1 hit, trace listener attached, under parent span")]
+    public async Task<CacheHostFactory.Payload?> HybridL1HitTracedParented()
+    {
+        TracingScope.Parented();
+        return await _hybrid.GetOrDefaultAsync<CacheHostFactory.Payload>("hit");
+    }
 
     [Benchmark(Description = "Hybrid full miss + factory")]
     public async Task<CacheHostFactory.Payload> HybridFullMiss()

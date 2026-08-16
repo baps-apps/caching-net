@@ -128,6 +128,13 @@ Both behaviours are pinned by `RedisModeTests.OversizedValue_*`.
   `Information` is now safe too: the engine's per-operation lines (measured at 2.04 per `GetOrSet`)
   are rewritten to `Observability.EngineOperationLogLevel`, `Debug` by default. Everything an
   operator needs during an incident is `Warning` or above.
+- **`Observability.LayerTracing`** at its `WhenParented` default keeps span volume proportional to
+  request traffic instead of to background and backplane activity. A probe the engine issues on its
+  own threads is measured but not traced, so it stops arriving at the collector as a single-span root
+  trace. Raise it to `Always` only while investigating background or invalidation behaviour, and
+  expect the extra spans to be roots with no request to correlate against. `Never` is the setting for
+  a service that wants Caching.NET's operation spans and nothing below them — every metric is
+  recorded identically at all three values.
 - **Distinct `ApplicationPrefix` per service** and **distinct `EnvironmentPrefix` per environment**
   when they share a Redis database.
 

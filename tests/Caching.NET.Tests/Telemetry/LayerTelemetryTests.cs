@@ -162,11 +162,19 @@ public class LayerTelemetryTests
                  && m.Tags[CacheTelemetryAttributes.Result] as string == CacheResults.Error);
     }
 
+    /// <summary>
+    /// Layer tracing is forced on rather than left at its default, because these tests probe the
+    /// decorator directly and so have no operation span above them — under
+    /// <see cref="CacheLayerTracing.WhenParented"/> there would be no span to assert an error on.
+    /// What the span carries when it exists and when it is created at all are separate concerns;
+    /// the second is <see cref="LayerSpanParentingTests"/>.
+    /// </summary>
     private static CacheTelemetryContext TelemetryContext(bool tracing, bool metrics, string cacheName = "default")
     {
         var options = new CachingOptions { CacheName = cacheName, ApplicationPrefix = "tests" };
         options.Observability.EnableTracing = tracing;
         options.Observability.EnableMetrics = metrics;
+        options.Observability.LayerTracing = CacheLayerTracing.Always;
         return new CacheTelemetryContext(options);
     }
 

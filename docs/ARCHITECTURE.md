@@ -154,6 +154,44 @@ boundary the same way a raw `FusionCacheEntryOptions` used to. `Health.CachingHe
 them instead through `FusionCacheService`'s internal `ProbeSetAsync`/`ProbeTryGetAsync`, which operate
 below the public contract on purpose (see docs/HEALTH-CHECKS.md).
 
+### 3.2 Backplane work cannot join the trace that caused it
+
+An invalidation published by one instance is applied by every other one, and the natural question is
+whether the applying instance's spans can hang off the publisher's request trace. They cannot, and the
+constraint is in the engine's wire format rather than in Caching.NET.
+
+A `BackplaneMessage` carries a source id, a timestamp, an action and a cache key. There is no header,
+no property bag and no extension point — `BackplaneMessage.ToByteArray`/`FromByteArray` encode exactly
+those four fields — so there is nowhere to put a `traceparent`, and the receiving instance is handed a
+message with no way to know which trace produced it. Adding one would mean changing a wire format
+Caching.NET does not own, on both ends of a rolling deployment.
+
+So the receive path gets a **local root** instead: `InstrumentedBackplane` rebuilds the subscription
+with the engine's incoming-message handlers wrapped in a `cache.backplane.receive` span, tagged
+`cache.background_operation=true` to say plainly that it is not part of a request. The evictions the
+message triggers become children of that span rather than one root trace each.
+
+**Root by construction, not by luck.** The span is started through
+`CacheTelemetryContext.StartRootActivity`, which passes an explicit empty `ActivityContext` rather than
+letting the runtime pick up `Activity.Current`. Ambient trace context flows with the
+`ExecutionContext`, and a cache is a singleton: if it is first resolved inside a request, that
+request's span is what the subscription — and therefore every callback the subscriber thread ever runs
+— captured. Inheriting it would attach every invalidation the instance receives, for the life of the
+process, to one arbitrary request that ended at startup.
+
+The rebuild is the fragile part: every property on `BackplaneSubscriptionOptions` is get-only, so
+instrumenting it means constructing a new one, and a constructor parameter added by a future engine
+version would be accepted by its default and dropped silently.
+`InstrumentedBackplaneReceiveTests.SubscriptionConstructor_TakesNothingTheRebuildDoesNotPass` asserts
+the constructor's parameter list, which is the only thing that can catch a parameter that does not
+exist yet — the field-by-field test next to it cannot, since it only checks what it already knows
+about. The symptom it prevents is a backplane that subscribes successfully and never delivers.
+
+This is also the reason layer spans are gated by parent rather than by name (§6): the receive span and
+the operation spans exist so that probes have something to attach to, and gating them would push the
+same orphan-root problem up one level instead of solving it. For the same `ExecutionContext` reason,
+that gate asks whether the ambient span is still *running*, not merely whether one exists — see §6.
+
 ## 4. Key layout
 
 The logical key Caching.NET builds:
@@ -211,8 +249,18 @@ the same outcome from two places double-counts it.
   factory actually runs). The layer decorators add child spans for their own layer
   (`InstrumentedMemoryCache` → `cache.memory.get`/`set`/`remove`; `InstrumentedDistributedCache` →
   `cache.redis.get`/`set`/`refresh`/`remove`). `InstrumentedCacheSerializer` emits `cache.serialize` /
-  `cache.deserialize`. All of it comes from the single `Caching.NET` activity source, only when a
-  listener is attached.
+  `cache.deserialize`. `InstrumentedBackplane` emits `cache.backplane.publish` and
+  `cache.backplane.receive`. All of it comes from the single `Caching.NET` activity source, only when
+  a listener is attached.
+- **Spans, the parent rule**: operation spans are unconditional; decorator spans go through
+  `CacheTelemetryContext.StartLayerActivity` and obey `Observability.LayerTracing`, which defaults to
+  emitting only when the probe already runs under a **live** span. Live, not merely present: ambient
+  context flows with the `ExecutionContext`, so engine background work still carries the span of
+  whichever request scheduled it, ended long before the probe runs — counting that would suppress
+  almost nothing and would parent each probe to an unrelated finished request. The split is expressed
+  by which method a caller reaches for (`StartActivity`, `StartLayerActivity`, `StartRootActivity`)
+  rather than by inspecting span names, so a new decorator inherits the rule by calling the same
+  method. See §3.2 for why the three are treated differently.
 - **Metrics, synchronous producer**: `FusionCacheService` records `caching.net.hits`,
   `caching.net.misses`, `caching.net.operations` and `caching.net.invalidations`
   (`remove`/`expire`/`remove_by_tag`/`clear`) directly, once per logical call, on the caller's own path — no engine event round trip.

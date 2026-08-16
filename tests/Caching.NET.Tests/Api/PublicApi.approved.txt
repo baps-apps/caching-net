@@ -38,6 +38,7 @@ class Caching.NET.CachingBuilder
     Caching.NET.CachingBuilder WithHealthChecks(System.String name = "caching-net", System.Boolean splitLivenessReadiness = false)
     Caching.NET.CachingBuilder WithJitter(System.TimeSpan jitter)
     Caching.NET.CachingBuilder WithJsonSerialization(System.Text.Json.JsonSerializerOptions? jsonSerializerOptions = null)
+    Caching.NET.CachingBuilder WithLayerTracing(Caching.NET.Options.CacheLayerTracing layerTracing)
     Caching.NET.CachingBuilder WithLocalExpiration(System.TimeSpan expiration)
     Caching.NET.CachingBuilder WithMaximumKeyLength(System.Int32 maximumKeyLength)
     Caching.NET.CachingBuilder WithMaximumPayloadBytes(System.Int64 maximumBytes)
@@ -177,6 +178,11 @@ enum Caching.NET.Options.CacheGuardPolicy
     Caching.NET.Options.CacheGuardPolicy Throw
     Caching.NET.Options.CacheGuardPolicy Warn
     System.Int32 value__
+enum Caching.NET.Options.CacheLayerTracing
+    Caching.NET.Options.CacheLayerTracing Always
+    Caching.NET.Options.CacheLayerTracing Never
+    Caching.NET.Options.CacheLayerTracing WhenParented
+    System.Int32 value__
 enum Caching.NET.Options.CacheMode
     Caching.NET.Options.CacheMode Hybrid
     Caching.NET.Options.CacheMode InMemory
@@ -184,6 +190,7 @@ enum Caching.NET.Options.CacheMode
     System.Int32 value__
 class Caching.NET.Options.CacheObservabilityOptions
     .ctor()
+    Caching.NET.Options.CacheLayerTracing LayerTracing { get; set; }
     Microsoft.Extensions.Logging.LogLevel BackplaneErrorLogLevel { get; set; }
     Microsoft.Extensions.Logging.LogLevel DistributedCacheErrorLogLevel { get; set; }
     Microsoft.Extensions.Logging.LogLevel EngineOperationLogLevel { get; set; }

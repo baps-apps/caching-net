@@ -59,7 +59,7 @@ internal sealed class InstrumentedDistributedCache : IDistributedCache
 
     public byte[]? Get(string key)
     {
-        using var activity = _telemetry.StartActivity("cache.redis.get");
+        using var activity = _telemetry.StartLayerActivity("cache.redis.get");
         var recordDuration = ShouldRecordDuration();
         var started = recordDuration ? Stopwatch.GetTimestamp() : default;
 
@@ -91,7 +91,7 @@ internal sealed class InstrumentedDistributedCache : IDistributedCache
 
     public async Task<byte[]?> GetAsync(string key, CancellationToken token = default)
     {
-        using var activity = _telemetry.StartActivity("cache.redis.get");
+        using var activity = _telemetry.StartLayerActivity("cache.redis.get");
         var recordDuration = ShouldRecordDuration();
         var started = recordDuration ? Stopwatch.GetTimestamp() : default;
 
@@ -123,7 +123,7 @@ internal sealed class InstrumentedDistributedCache : IDistributedCache
 
     public void Set(string key, byte[] value, DistributedCacheEntryOptions options)
     {
-        using var activity = _telemetry.StartActivity("cache.redis.set");
+        using var activity = _telemetry.StartLayerActivity("cache.redis.set");
         var recordDuration = ShouldRecordDuration();
         var started = recordDuration ? Stopwatch.GetTimestamp() : default;
 
@@ -149,7 +149,7 @@ internal sealed class InstrumentedDistributedCache : IDistributedCache
 
     public async Task SetAsync(string key, byte[] value, DistributedCacheEntryOptions options, CancellationToken token = default)
     {
-        using var activity = _telemetry.StartActivity("cache.redis.set");
+        using var activity = _telemetry.StartLayerActivity("cache.redis.set");
         var recordDuration = ShouldRecordDuration();
         var started = recordDuration ? Stopwatch.GetTimestamp() : default;
 
@@ -175,7 +175,7 @@ internal sealed class InstrumentedDistributedCache : IDistributedCache
 
     public void Refresh(string key)
     {
-        using var activity = _telemetry.StartActivity("cache.redis.refresh");
+        using var activity = _telemetry.StartLayerActivity("cache.redis.refresh");
         var recordDuration = ShouldRecordDuration();
         var started = recordDuration ? Stopwatch.GetTimestamp() : default;
 
@@ -201,7 +201,7 @@ internal sealed class InstrumentedDistributedCache : IDistributedCache
 
     public async Task RefreshAsync(string key, CancellationToken token = default)
     {
-        using var activity = _telemetry.StartActivity("cache.redis.refresh");
+        using var activity = _telemetry.StartLayerActivity("cache.redis.refresh");
         var recordDuration = ShouldRecordDuration();
         var started = recordDuration ? Stopwatch.GetTimestamp() : default;
 
@@ -227,7 +227,7 @@ internal sealed class InstrumentedDistributedCache : IDistributedCache
 
     public void Remove(string key)
     {
-        using var activity = _telemetry.StartActivity("cache.redis.remove");
+        using var activity = _telemetry.StartLayerActivity("cache.redis.remove");
         var recordDuration = ShouldRecordDuration();
         var started = recordDuration ? Stopwatch.GetTimestamp() : default;
 
@@ -253,7 +253,7 @@ internal sealed class InstrumentedDistributedCache : IDistributedCache
 
     public async Task RemoveAsync(string key, CancellationToken token = default)
     {
-        using var activity = _telemetry.StartActivity("cache.redis.remove");
+        using var activity = _telemetry.StartLayerActivity("cache.redis.remove");
         var recordDuration = ShouldRecordDuration();
         var started = recordDuration ? Stopwatch.GetTimestamp() : default;
 

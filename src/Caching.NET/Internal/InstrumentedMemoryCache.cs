@@ -54,7 +54,7 @@ internal sealed class InstrumentedMemoryCache : IMemoryCache
 
     public ICacheEntry CreateEntry(object key)
     {
-        using var activity = _telemetry.StartActivity("cache.memory.set");
+        using var activity = _telemetry.StartLayerActivity("cache.memory.set");
         var recordDuration = ShouldRecordDuration();
         var started = recordDuration ? Stopwatch.GetTimestamp() : default;
 
@@ -70,7 +70,7 @@ internal sealed class InstrumentedMemoryCache : IMemoryCache
 
     public bool TryGetValue(object key, out object? value)
     {
-        using var activity = _telemetry.StartActivity("cache.memory.get");
+        using var activity = _telemetry.StartLayerActivity("cache.memory.get");
         var recordDuration = ShouldRecordDuration();
         var started = recordDuration ? Stopwatch.GetTimestamp() : default;
 
@@ -89,7 +89,7 @@ internal sealed class InstrumentedMemoryCache : IMemoryCache
 
     public void Remove(object key)
     {
-        using var activity = _telemetry.StartActivity("cache.memory.remove");
+        using var activity = _telemetry.StartLayerActivity("cache.memory.remove");
         var recordDuration = ShouldRecordDuration();
         var started = recordDuration ? Stopwatch.GetTimestamp() : default;
 

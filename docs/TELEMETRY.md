@@ -236,9 +236,11 @@ Prometheus convention.
 | `cache.expire` | `FusionCacheService` | Every `ExpireAsync`/`Expire` call |
 | `cache.remove_by_tag` | `FusionCacheService` | Every `RemoveByTagAsync`/`RemoveByTag` call |
 | `cache.clear` | `FusionCacheService` | Every `ClearAsync`/`Clear` call. The one operation span with **no key attribute** — there is no key to attach |
-| `cache.memory.get` / `.set` / `.remove` | `InstrumentedMemoryCache` | Every physical probe of the in-process layer |
-| `cache.redis.get` / `.set` / `.refresh` / `.remove` | `InstrumentedDistributedCache` | Every physical probe of the distributed layer |
-| `cache.serialize` / `cache.deserialize` | `InstrumentedCacheSerializer` | A value crosses the wire boundary to or from the distributed layer |
+| `cache.backplane.receive` | `InstrumentedBackplane` | Every backplane message this instance receives, wrapping the local invalidation work it causes. Carries `cache.background_operation=true` |
+| `cache.backplane.publish` | `InstrumentedBackplane` | Every backplane message this instance publishes |
+| `cache.memory.get` / `.set` / `.remove` | `InstrumentedMemoryCache` | Every physical probe of the in-process layer, subject to `Observability.LayerTracing` |
+| `cache.redis.get` / `.set` / `.refresh` / `.remove` | `InstrumentedDistributedCache` | Every physical probe of the distributed layer, subject to `Observability.LayerTracing` |
+| `cache.serialize` / `cache.deserialize` | `InstrumentedCacheSerializer` | A value crosses the wire boundary to or from the distributed layer, subject to `Observability.LayerTracing` |
 
 Every span carries `cache.system`, `cache.mode`, `cache.name`. Operation spans (the `FusionCacheService`
 rows) also carry `cache.key.fingerprint` — or `cache.key` when `Security.AllowRawKeysInTelemetry` is
@@ -250,6 +252,66 @@ dimension, not a span tag — the operation is the span name — apart from `cac
 `cache.deserialize`, which carry it explicitly along with `cache.layer=redis` and
 `cache.payload.bytes`. All spans are created only when a listener is attached to the `Caching.NET`
 source; `Observability.EnableTracing: false` suppresses them even with a listener attached.
+
+### Layer spans and `Observability.LayerTracing`
+
+A layer span describes one physical probe, which only means something next to the operation that
+caused it. On a caller's path it always has that context: the operation span (`cache.get_or_set` and
+friends) sits above every probe, whether or not the application has a request span of its own.
+
+The engine also probes a layer on its own threads — evicting an entry when a backplane message
+arrives, writing one after a background factory completes. Those probes have no operation span above
+them, so each produced a **root trace containing a single sub-millisecond span** and nothing saying
+what caused it. A busy cluster generates these in bursts, one per invalidated key.
+
+`Observability.LayerTracing` decides which of the two gets a span:
+
+| Value | Behaviour |
+|---|---|
+| `Always` | Every probe produces a span. The pre-3.1 behaviour |
+| `WhenParented` | **Default.** A probe produces a span only when it runs under a span that is still running — the caller's path is fully traced, engine-thread probes are not |
+| `Never` | No layer spans at all |
+
+**"Under a span" means under a span that has not ended.** This is the whole of the rule, and reading
+it as "`Activity.Current` is not null" gets the behaviour backwards. Ambient trace context flows with
+the `ExecutionContext`, so work the engine schedules onto its own threads does not start from a blank
+context — it starts holding the span of whatever request scheduled it, which has usually finished by
+the time the probe runs. Counting a finished span as a parent would suppress almost none of the noise
+this setting exists to remove, and would file each probe under an unrelated request as a child that
+starts after its parent ended.
+
+One consequence worth knowing: a background refresh that the engine kicks off and that completes
+*while its triggering request is still open* does have a live parent, and its probes are traced. That
+is the correct answer — there is a real caller to attribute the work to — but it means the suppressed
+set is "probes with no live caller", not "probes on engine threads".
+
+Two things this does **not** affect:
+
+- **Metrics.** `caching.net.layer.duration`, `caching.net.serialization.duration`,
+  `caching.net.payload.size` and every counter record identically under all three values. Suppressing
+  a span drops trace noise, never a measurement.
+- **Operation spans.** `cache.get_or_set`, `cache.factory`, `cache.backplane.receive` and the rest are
+  never gated by this setting — they are precisely the spans a suppressed probe would have hung from,
+  so gating them would recreate the problem one level up.
+
+**What a backplane invalidation looks like.** Before, six evicted keys meant six root traces named
+`cache.memory.remove`. Now they are one trace:
+
+```text
+cache.backplane.receive     cache.background_operation=true
+└── cache.memory.remove     (one per key the message invalidated)
+```
+
+The parent is *local*, and it is a **root** — started with an explicitly empty parent context rather
+than picking up whatever the subscriber thread was carrying. A backplane message's true causal parent
+is a span in the publishing process, and the engine's wire format carries no trace context, so
+cross-process correlation is not available at any setting — see
+[ARCHITECTURE.md](ARCHITECTURE.md) §3.2.
+
+**Background writes are the one thing that gets quieter rather than better organised.** `cache.factory`
+covers the factory delegate; the L1/L2 write that follows it happens after that span closes, on a
+thread carrying at most an already-finished request span, so under the default those writes are
+measured but no longer traced. Set `LayerTracing: Always` to get them back as root spans.
 
 ### Worked examples
 

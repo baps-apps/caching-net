@@ -488,6 +488,32 @@ public class CachingOptionsValidatorTests
         AssertFails(options, $"Observability.{propertyName} is Information");
     }
 
+    /// <summary>
+    /// Configuration binding rejects an unknown enum name on its own, but nothing stops code from
+    /// assigning an undefined value by cast. Silently treating it as one of the three modes would
+    /// decide an operator's tracing volume for them.
+    /// </summary>
+    [Fact]
+    public void UndefinedLayerTracingValue_Fails()
+    {
+        var options = Valid();
+        options.Observability.LayerTracing = (CacheLayerTracing)99;
+
+        AssertFails(options, "Observability.LayerTracing");
+    }
+
+    [Theory]
+    [InlineData(CacheLayerTracing.Always)]
+    [InlineData(CacheLayerTracing.WhenParented)]
+    [InlineData(CacheLayerTracing.Never)]
+    public void DefinedLayerTracingValue_Passes(CacheLayerTracing layerTracing)
+    {
+        var options = Valid();
+        options.Observability.LayerTracing = layerTracing;
+
+        Assert.True(Validate(options).Succeeded);
+    }
+
     [Fact]
     public void DiagnosticLevelAtInformation_WithNativeEngineVerbosity_Passes()
     {

@@ -13,6 +13,13 @@ internal sealed class CacheTelemetryContext
     private readonly KeyValuePair<string, object?> _modeTag;
     private readonly KeyValuePair<string, object?>? _nameTag;
 
+    // Both gates are folded into plain booleans at construction so a layer probe costs one field
+    // read rather than an enum comparison plus a second flag. Layer probes are the highest-frequency
+    // call into this type — several per logical operation — so the check in front of them is the one
+    // place where a branch that could have been precomputed is worth precomputing.
+    private readonly bool _layerSpansEnabled;
+    private readonly bool _layerSpansRequireParent;
+
     public CacheTelemetryContext(CachingOptions options)
     {
         CacheName = options.CacheName;
@@ -20,7 +27,11 @@ internal sealed class CacheTelemetryContext
         MetricsEnabled = options.Observability.EnableMetrics;
         TracingEnabled = options.Observability.EnableTracing;
         LayerMetricsEnabled = options.Observability.EnableLayerMetrics;
+        LayerTracing = options.Observability.LayerTracing;
         AllowRawKeysInTelemetry = options.Security.AllowRawKeysInTelemetry;
+
+        _layerSpansEnabled = TracingEnabled && LayerTracing != CacheLayerTracing.Never;
+        _layerSpansRequireParent = LayerTracing == CacheLayerTracing.WhenParented;
 
         _systemTag = new KeyValuePair<string, object?>(CacheTelemetryAttributes.System, CacheTelemetry.SystemName);
         _modeTag = new KeyValuePair<string, object?>(CacheTelemetryAttributes.Mode, Mode);
@@ -38,6 +49,8 @@ internal sealed class CacheTelemetryContext
     public bool TracingEnabled { get; }
 
     public bool LayerMetricsEnabled { get; }
+
+    public CacheLayerTracing LayerTracing { get; }
 
     public bool AllowRawKeysInTelemetry { get; }
 
@@ -282,7 +295,77 @@ internal sealed class CacheTelemetryContext
             return null;
         }
 
-        var activity = CacheTelemetry.Activity.StartActivity(name, kind);
+        return Brand(CacheTelemetry.Activity.StartActivity(name, kind));
+    }
+
+    /// <summary>
+    /// Starts a span with no parent, whatever <see cref="Activity.Current"/> happens to hold. For work
+    /// that is genuinely the start of something — a received backplane message — rather than a step
+    /// inside a caller's operation.
+    /// </summary>
+    /// <remarks>
+    /// The explicit <c>default</c> <see cref="ActivityContext"/> is the point of this overload, not an
+    /// omission. Ambient context flows with the <see cref="ExecutionContext"/>, so a thread that runs
+    /// engine callbacks can be holding the span of whichever request happened to trigger the
+    /// subscription — long since finished. Inheriting it would file backplane work under an unrelated
+    /// request and leave a child span starting after its parent ended.
+    /// </remarks>
+    public Activity? StartRootActivity(string name)
+    {
+        if (!TracingEnabled || !CacheTelemetry.Activity.HasListeners())
+        {
+            return null;
+        }
+
+        return Brand(CacheTelemetry.Activity.StartActivity(name, ActivityKind.Internal, parentContext: default));
+    }
+
+    /// <summary>
+    /// Starts a span for one physical layer probe, subject to <see cref="LayerTracing"/>. Returns
+    /// <c>null</c> when the probe should not be traced, so callers must not build attribute values
+    /// before checking the result.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Separate from <see cref="StartActivity"/> so the rule is expressed by which method a caller
+    /// reaches for, rather than by inspecting span names after the fact. The four infrastructure
+    /// decorators call this one; <see cref="Internal.FusionCacheService"/> calls
+    /// <see cref="StartActivity"/> and the backplane receive path calls
+    /// <see cref="StartRootActivity"/>, and neither is gated — those are the spans a gated probe
+    /// would otherwise have had as a parent.
+    /// </para>
+    /// <para>
+    /// The parent check deliberately sits after the enabled and listener checks: a process with no
+    /// listener attached must not pay an <see cref="Activity.Current"/> read it cannot use.
+    /// </para>
+    /// <para>
+    /// A <i>stopped</i> ambient span counts as no parent. Ambient context flows with the
+    /// <see cref="ExecutionContext"/>, so work the engine schedules onto its own threads — a write
+    /// following a background factory, an eviction on a subscriber thread — often still holds the span
+    /// of the request that triggered it, already ended. Treating that as a parent is what the naive
+    /// null check gets wrong: it would keep emitting exactly the probes this setting exists to drop,
+    /// and file each one as a child that starts after its parent finished. The test for it is
+    /// <c>LayerSpanParentingTests.StoppedAmbientSpan_CountsAsNoParent</c>.
+    /// </para>
+    /// </remarks>
+    public Activity? StartLayerActivity(string name)
+    {
+        if (!_layerSpansEnabled || !CacheTelemetry.Activity.HasListeners())
+        {
+            return null;
+        }
+
+        if (_layerSpansRequireParent && Activity.Current is not { IsStopped: false })
+        {
+            return null;
+        }
+
+        return Brand(CacheTelemetry.Activity.StartActivity(name, ActivityKind.Internal));
+    }
+
+    /// <summary>Applies the three per-cache span tags. Shared by every span-starting method.</summary>
+    private Activity? Brand(Activity? activity)
+    {
         if (activity is null)
         {
             return null;

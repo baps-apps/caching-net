@@ -59,9 +59,15 @@ CACHINGNET_BENCH_REDIS="127.0.0.1:63790,abortConnect=false" dotnet run -c Releas
 - **TreatWarningsAsErrors** globally via `Directory.Build.props` — including NuGet audit warnings, so
   a transitively-resolved vulnerable package must be pinned in `Directory.Packages.props`
 - **Central package management** via `Directory.Packages.props` — versions go there, never in a `.csproj`
-- **CodeStyle.NET** analyzer on src and test projects
+- **CodeStyle.NET** analyzer on **every** project — src, tests, analyzer, benchmark and AOT smoke.
+  A new project gets the `PackageReference` too; the point is that no code in the repository is
+  exempt from the style rules, not that most of it is
+- **coverlet.collector** on every test project. `Caching.NET.Tests.Pod` deliberately has neither it
+  nor the test SDK: it is a console pod the integration suite launches as a process, not a test project
 - **GenerateDocumentationFile** is on for `src` — every public member needs XML docs
-- Tests use **xUnit**; **Moq** is available but rarely needed (prefer a real in-memory cache)
+- Tests use **xUnit**. There is deliberately **no mocking library** — it was referenced and never
+  used once, so it was removed. Build a real in-memory Caching.NET cache instead (`TestHost.BuildInMemory()`);
+  if a test genuinely needs a seam, hand-write a stub, as `InstrumentedBackplaneReceiveTests` does
 
 ## Architecture
 
@@ -110,6 +116,7 @@ entries with their own ten-day, memory-layer-included defaults, so a mode applie
 | `CacheFactoryContext<T>` | `Caching.NET` | Passed to a context-taking factory: stale value, ETag/`LastModified`, adaptive `Overrides` |
 | `CacheEntryOverrides` | `Caching.NET.Options` | Per-call overrides, additive by construction — see docs/ARCHITECTURE.md §3 |
 | `CacheEntryPriority` | `Caching.NET.Options` | In-process eviction priority |
+| `CacheLayerTracing` | `Caching.NET.Options` | When a single layer probe emits a span — `Always`, `WhenParented` (default), `Never`. Spans only; layer metrics are unaffected |
 | `ICacheProvider` | `Caching.NET` | Named-cache resolution |
 | `ICacheGuard` | `Caching.NET` | Key/tag limits, key fingerprints |
 | `CachingBuilder` | `Caching.NET` | Fluent configuration |
@@ -138,7 +145,12 @@ entries with their own ten-day, memory-layer-included defaults, so a mode applie
 
 - **A knob** → `CachingOptions` group + `CacheEngineFactory` mapping + `CacheEntryOverrides` field (if
   it is per-call) + `CachingOptionsValidator` rule + `CachingBuilder` method + a
-  `CacheEngineMappingTests` assertion.
+  `CacheEngineMappingTests` assertion. A knob that configures *Caching.NET's own* behaviour rather
+  than the engine's — `Observability.LayerTracing` is the example — has no `CacheEngineFactory`
+  mapping and therefore no `CacheEngineMappingTests` assertion; it is read from
+  `CacheTelemetryContext` (or whichever type owns it) and tested there instead. Everything else in
+  the list still applies, the validator rule included: an `enum` knob needs an `Enum.IsDefined` check,
+  because configuration binding rejects an unknown *name* but nothing stops a cast from code.
 - **A metric** → instrument in `CacheTelemetry`, recorder in `CacheTelemetryContext`, and a producer
   chosen from the one-producer-per-signal split: `Internal/FusionCacheService` for anything on the
   caller's synchronous path (hits, misses, operations, foreground invalidations), `CacheEventBridge`
@@ -148,6 +160,14 @@ entries with their own ten-day, memory-layer-included defaults, so a mode applie
   `InstrumentedCacheSerializer`) for per-layer duration and payload size. Recording the same signal
   from two producers double-counts it. Keep the dimension inside the allow-list asserted by
   `CacheTelemetryTests`.
+- **A span** → start it through the `CacheTelemetryContext` method that matches what the span *is*,
+  not by naming it and hoping: `StartActivity` for an operation on the caller's path (never gated),
+  `StartLayerActivity` for one physical layer probe (obeys `Observability.LayerTracing`, and a probe
+  is only "parented" when the ambient span is still running — trace context flows with the
+  `ExecutionContext`, so engine background work carries the finished span of whatever scheduled it),
+  and `StartRootActivity` for work that genuinely begins something, like a received backplane message,
+  which must not inherit an unrelated request's span. A new decorator inherits the right rule by
+  calling the right method. See docs/ARCHITECTURE.md §3.2 and §6.
 - **A validation rule** → `CachingOptionsValidator`, with a message that names the property and
   the fix, plus a test in `CachingOptionsValidatorTests`.
 

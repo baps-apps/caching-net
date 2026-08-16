@@ -4,6 +4,89 @@ All notable changes to Caching.NET are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## 3.1.0 — 2026-08-16
+
+**Your traces get quieter. Nothing else changes.** Bump the package and you are done — no code
+change, no configuration change, no API removal, and every metric reports exactly what it did in
+3.0.0.
+
+### What you will notice
+
+**Your cache traces are unchanged.** A cache call still produces its operation span with the layer
+work nested underneath:
+
+```text
+GET /orders/42                        ← your request span
+└── cache.get_or_set                  ← unchanged
+    ├── cache.memory.get              ← unchanged  (L1 miss…)
+    └── cache.redis.get               ← unchanged  (…so Hybrid falls through to L2)
+```
+
+**The single-span traces beside them are gone.** Cache work the engine does on its own threads —
+applying an invalidation another pod published, writing an entry after a background refresh — used to
+emit one root trace per operation, each holding a single sub-millisecond span with nothing indicating
+what caused it. In a multi-pod deployment those arrived in bursts, one per invalidated key:
+
+```text
+Before                          After
+trace A: cache.memory.remove    trace A: cache.backplane.receive
+trace B: cache.memory.remove             ├── cache.memory.remove
+trace C: cache.memory.remove             ├── cache.memory.remove
+… one root trace per key                 └── … one trace for the whole message
+```
+
+**Nothing stops being measured.** `caching.net.layer.duration`, `caching.net.payload.size` and every
+counter record those operations exactly as before. Dashboards and alerts built on metrics are
+unaffected; only the trace stream is smaller.
+
+**If you had a dashboard or saved search keyed on those root spans**, it will go empty. One setting
+restores the old behavior:
+
+```jsonc
+// appsettings.json
+"CacheOptions": {
+  "Observability": {
+    "LayerTracing": "Always"   // "WhenParented" (default) | "Always" | "Never"
+  }
+}
+```
+
+```csharp
+// or in code
+services.AddCaching(config, cache => cache.WithLayerTracing(CacheLayerTracing.Always));
+```
+
+`Never` drops layer spans entirely, keeping operation spans — useful if you want cache calls visible
+in traces but not their internals.
+
+### Added
+
+- **`Observability.LayerTracing`** (`Always` | `WhenParented` | `Never`) and
+  `CachingBuilder.WithLayerTracing(...)` — controls when one physical layer probe emits a span. Spans
+  only; layer metrics are identical at all three values.
+- **`cache.backplane.receive` span**, one per backplane message this instance receives, tagged
+  `cache.background_operation=true`. It is the parent in the "After" diagram above. It starts a new
+  trace rather than continuing the publisher's: the message format carries no trace context, so
+  cross-process correlation is not available at any setting — see
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.2.
+
+### Changed
+
+- **`LayerTracing` defaults to `WhenParented`**, which is the behavior described above. Set it to
+  `Always` for the 3.0.0 behavior.
+- **Cost.** A suppressed probe costs 22.5 ns and allocates nothing, against 144 ns and 600 B before —
+  but read that per-probe, not as a throughput win: it only applies to background work, so the
+  aggregate CPU saving is small. What you actually save is exporter batches, ingest volume and
+  trace-store cardinality. The receive span costs ~126–144 ns per received message. Your request path
+  is unchanged, confirmed by a paired benchmark against 3.0.0 (L1 hit 145.6 → 140.9 ns, identical
+  allocations). Full numbers: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+### Security
+
+- Pinned **SSH.NET to 2026.0.0** for `GHSA-q939-rpr3-3284` (high). **This does not affect your
+  application** — SSH.NET is a test-only transitive dependency of Testcontainers and never appears in
+  the published package's dependency graph. Listed for completeness of the repository's audit trail.
+
 ## 3.0.0 — 2026-08-12
 
 **Major redesign.** Caching.NET v3 replaces three hand-written cache implementations with a single

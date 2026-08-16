@@ -44,7 +44,7 @@ internal sealed class InstrumentedCacheSerializer : IFusionCacheSerializer
     public byte[] Serialize<T>(T? obj)
     {
         var timestamp = Stopwatch.GetTimestamp();
-        using var activity = _telemetry.StartActivity("cache.serialize");
+        using var activity = _telemetry.StartLayerActivity("cache.serialize");
 
         var payload = _inner.Serialize(obj);
         EnforceWriteLimit(payload.Length);
@@ -57,7 +57,7 @@ internal sealed class InstrumentedCacheSerializer : IFusionCacheSerializer
     public async ValueTask<byte[]> SerializeAsync<T>(T? obj, CancellationToken token = default)
     {
         var timestamp = Stopwatch.GetTimestamp();
-        using var activity = _telemetry.StartActivity("cache.serialize");
+        using var activity = _telemetry.StartLayerActivity("cache.serialize");
 
         var payload = await _inner.SerializeAsync(obj, token).ConfigureAwait(false);
         EnforceWriteLimit(payload.Length);
@@ -70,7 +70,7 @@ internal sealed class InstrumentedCacheSerializer : IFusionCacheSerializer
     public T? Deserialize<T>(byte[] data)
     {
         var timestamp = Stopwatch.GetTimestamp();
-        using var activity = _telemetry.StartActivity("cache.deserialize");
+        using var activity = _telemetry.StartLayerActivity("cache.deserialize");
 
         EnforceReadLimit(data.Length);
         var payload = Decode(data);
@@ -83,7 +83,7 @@ internal sealed class InstrumentedCacheSerializer : IFusionCacheSerializer
     public async ValueTask<T?> DeserializeAsync<T>(byte[] data, CancellationToken token = default)
     {
         var timestamp = Stopwatch.GetTimestamp();
-        using var activity = _telemetry.StartActivity("cache.deserialize");
+        using var activity = _telemetry.StartLayerActivity("cache.deserialize");
 
         EnforceReadLimit(data.Length);
         var payload = Decode(data);

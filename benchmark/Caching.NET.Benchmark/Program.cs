@@ -20,7 +20,8 @@ public static class Program
             typeof(InMemoryBenchmarks),
             typeof(SerializationBenchmarks),
             typeof(TelemetryOverheadBenchmarks),
-            typeof(LayerDecoratorBenchmarks)
+            typeof(LayerDecoratorBenchmarks),
+            typeof(BackplaneDispatchBenchmarks)
         };
 
         if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(RedisBenchmarks.ConnectionStringVariable)))

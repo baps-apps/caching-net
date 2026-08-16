@@ -5,17 +5,17 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <PackageId>Caching.NET</PackageId>
-    <Version>3.0.0</Version>
-    <AssemblyVersion>3.0.0.0</AssemblyVersion>
-    <FileVersion>3.0.0.0</FileVersion>
-    <InformationalVersion>3.0.0</InformationalVersion>
+    <Version>3.1.0</Version>
+    <AssemblyVersion>3.1.0.0</AssemblyVersion>
+    <FileVersion>3.1.0.0</FileVersion>
+    <InformationalVersion>3.1.0</InformationalVersion>
     <Authors>BAPS Dev Team</Authors>
     <Description>Caching.NET v3: one branded cache API with InMemory, Redis and Hybrid (L1 memory + L2 Redis) modes. Stampede protection, fail-safe, eager refresh, tags, backplane invalidation, auto-recovery, OpenTelemetry and hardened key/payload limits — configured entirely through Caching.NET.</Description>
     <PackageTags>cache;caching;memory;redis;hybrid;distributed;l1;l2;backplane;stampede;fail-safe;opentelemetry</PackageTags>
     <PackageProjectUrl>https://github.com/baps-apps/caching-net/</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
-    <PackageReleaseNotes>v3.0.0 is a major redesign. Migration guide: https://github.com/baps-apps/caching-net/blob/main/docs/MIGRATION-V2-TO-V3.md</PackageReleaseNotes>
+    <PackageReleaseNotes>v3.1.0 adds Observability.LayerTracing and a cache.backplane.receive span, and reduces default trace volume; no code or configuration change is needed from 3.0.0. Full notes: https://github.com/baps-apps/caching-net/blob/main/CHANGELOG.md. Upgrading from v2 is a major redesign — migration guide: https://github.com/baps-apps/caching-net/blob/main/docs/MIGRATION-V2-TO-V3.md</PackageReleaseNotes>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryUrl>https://github.com/baps-apps/caching-net.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

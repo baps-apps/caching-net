@@ -423,6 +423,22 @@ public sealed class CachingBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets when a single layer probe produces a span. Spans only — every layer metric is recorded
+    /// regardless.
+    /// </summary>
+    /// <param name="layerTracing">
+    /// <see cref="CacheLayerTracing.WhenParented"/> (default) traces probes running under a live
+    /// span and drops the ones backplane and background work produce;
+    /// <see cref="CacheLayerTracing.Always"/> traces every probe;
+    /// <see cref="CacheLayerTracing.Never"/> traces none.
+    /// </param>
+    public CachingBuilder WithLayerTracing(CacheLayerTracing layerTracing)
+    {
+        _options.Observability.LayerTracing = layerTracing;
+        return this;
+    }
+
     /// <summary>Registers Caching.NET health checks.</summary>
     /// <param name="name">Health-check name. Suffixed with <c>-liveness</c> and <c>-readiness</c> when split.</param>
     /// <param name="splitLivenessReadiness">Register separate liveness and readiness checks.</param>

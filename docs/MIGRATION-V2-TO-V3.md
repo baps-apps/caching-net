@@ -369,8 +369,9 @@ var cache = services.BuildServiceProvider().GetRequiredService<ICacheService>();
 
 ## 8. Checklist
 
-- [ ] Retarget the application to `net10.0` — 3.0.0 does not ship `net8.0` or `net9.0`.
-- [ ] Bump the package reference to `3.0.0`.
+- [ ] Retarget the application to `net10.0` — v3 does not ship `net8.0` or `net9.0`.
+- [ ] Bump the package reference to `3.1.0` (the current v3 release; everything in this guide applies
+      unchanged from `3.0.0` onwards).
 - [ ] Restructure the `CacheOptions` section into groups (§3). The section name is unchanged, so a
       stale v2 section will not be flagged as missing — compare it against §3 key by key.
 - [ ] Rename `KeyPrefix` → `ApplicationPrefix`; add `EnvironmentPrefix`.

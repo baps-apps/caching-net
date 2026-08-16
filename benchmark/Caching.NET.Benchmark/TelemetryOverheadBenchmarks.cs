@@ -1,6 +1,4 @@
-using System.Diagnostics;
 using BenchmarkDotNet.Attributes;
-using Caching.NET.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Caching.NET.Benchmark;
@@ -10,6 +8,12 @@ namespace Caching.NET.Benchmark;
 /// measured on a pre-warmed key (hit path) and a cold key that is never populated (miss path), since
 /// the two paths build different metric/trace attributes and can regress independently.
 /// </summary>
+/// <remarks>
+/// The listener-attached tiers are split by whether the call runs under a caller's span. A cache
+/// call made from a request handler leaves the layer decorators with a parent to attach to; the same
+/// call made on a backplane or background thread does not. Those are separately reported because
+/// they are separately optimisable — see <see cref="TracingScope"/>.
+/// </remarks>
 [MemoryDiagnoser]
 [SimpleJob(warmupCount: 3, iterationCount: 8)]
 public class TelemetryOverheadBenchmarks
@@ -18,7 +22,6 @@ public class TelemetryOverheadBenchmarks
     private ServiceProvider _withoutTelemetry = null!;
     private ICacheService _instrumented = null!;
     private ICacheService _silent = null!;
-    private ActivityListener? _listener;
     private int _missCounter;
 
     [GlobalSetup]
@@ -39,7 +42,7 @@ public class TelemetryOverheadBenchmarks
     [GlobalCleanup]
     public void Cleanup()
     {
-        _listener?.Dispose();
+        TracingScope.Reset();
         _withTelemetry.Dispose();
         _withoutTelemetry.Dispose();
     }
@@ -52,10 +55,17 @@ public class TelemetryOverheadBenchmarks
     public async Task<CacheHostFactory.Payload?> MetricsEnabledNoListener()
         => await _instrumented.GetOrDefaultAsync<CacheHostFactory.Payload>("hit");
 
-    [Benchmark(Description = "Hit, trace listener attached")]
+    [Benchmark(Description = "Hit, trace listener attached, no parent span")]
     public async Task<CacheHostFactory.Payload?> TracingWithListener()
     {
-        EnsureListener();
+        TracingScope.Parentless();
+        return await _instrumented.GetOrDefaultAsync<CacheHostFactory.Payload>("hit");
+    }
+
+    [Benchmark(Description = "Hit, trace listener attached, under parent span")]
+    public async Task<CacheHostFactory.Payload?> TracingWithListenerParented()
+    {
+        TracingScope.Parented();
         return await _instrumented.GetOrDefaultAsync<CacheHostFactory.Payload>("hit");
     }
 
@@ -67,25 +77,17 @@ public class TelemetryOverheadBenchmarks
     public async Task<CacheHostFactory.Payload?> MetricsEnabledNoListenerColdKey()
         => await _instrumented.GetOrDefaultAsync<CacheHostFactory.Payload>($"cold-{Interlocked.Increment(ref _missCounter)}");
 
-    [Benchmark(Description = "Miss, trace listener attached")]
+    [Benchmark(Description = "Miss, trace listener attached, no parent span")]
     public async Task<CacheHostFactory.Payload?> TracingWithListenerColdKey()
     {
-        EnsureListener();
+        TracingScope.Parentless();
         return await _instrumented.GetOrDefaultAsync<CacheHostFactory.Payload>($"cold-{Interlocked.Increment(ref _missCounter)}");
     }
 
-    private void EnsureListener()
+    [Benchmark(Description = "Miss, trace listener attached, under parent span")]
+    public async Task<CacheHostFactory.Payload?> TracingWithListenerParentedColdKey()
     {
-        if (_listener is not null)
-        {
-            return;
-        }
-
-        _listener = new ActivityListener
-        {
-            ShouldListenTo = source => source.Name == CacheTelemetry.ActivitySourceName,
-            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
-        };
-        ActivitySource.AddActivityListener(_listener);
+        TracingScope.Parented();
+        return await _instrumented.GetOrDefaultAsync<CacheHostFactory.Payload>($"cold-{Interlocked.Increment(ref _missCounter)}");
     }
 }

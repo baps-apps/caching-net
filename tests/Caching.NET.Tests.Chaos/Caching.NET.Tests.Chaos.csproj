@@ -8,11 +8,14 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="CodeStyle.NET" />
+    <PackageReference Include="coverlet.collector" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="Microsoft.Extensions.Logging" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
-    <PackageReference Include="StackExchange.Redis" />
+    <!-- Direct reference so the vulnerable SSH.NET 2025.1.0 that Testcontainers resolves
+         transitively is upgraded. See Directory.Packages.props. -->
+    <PackageReference Include="SSH.NET" />
     <PackageReference Include="Testcontainers.Redis" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
