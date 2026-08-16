@@ -236,7 +236,7 @@ Prometheus convention.
 | `cache.expire` | `FusionCacheService` | Every `ExpireAsync`/`Expire` call |
 | `cache.remove_by_tag` | `FusionCacheService` | Every `RemoveByTagAsync`/`RemoveByTag` call |
 | `cache.clear` | `FusionCacheService` | Every `ClearAsync`/`Clear` call. The one operation span with **no key attribute** — there is no key to attach |
-| `cache.backplane.receive` | `InstrumentedBackplane` | Every backplane message this instance receives, wrapping the local invalidation work it causes. Carries `cache.background_operation=true` |
+| `cache.backplane.receive` | `InstrumentedBackplane` | Every backplane message this instance receives **from another instance**, wrapping the local invalidation work it causes. Carries `cache.background_operation=true`. A message this instance published itself — Redis pub/sub delivers those back to the publisher, and the engine discards them by source id — gets no span |
 | `cache.backplane.publish` | `InstrumentedBackplane` | Every backplane message this instance publishes |
 | `cache.memory.get` / `.set` / `.remove` | `InstrumentedMemoryCache` | Every physical probe of the in-process layer, subject to `Observability.LayerTracing` |
 | `cache.redis.get` / `.set` / `.refresh` / `.remove` | `InstrumentedDistributedCache` | Every physical probe of the distributed layer, subject to `Observability.LayerTracing` |

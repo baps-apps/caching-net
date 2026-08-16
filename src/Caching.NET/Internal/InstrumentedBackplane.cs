@@ -151,6 +151,18 @@ internal sealed class InstrumentedBackplane : IFusionCacheBackplane
     /// <see cref="Telemetry.CacheTelemetryContext.StartRootActivity"/> is what prevents that.
     /// </para>
     /// <para>
+    /// A message this instance published itself gets no span. Redis pub/sub delivers a publish back to
+    /// the connection that made it, and the engine drops those with
+    /// <c>message.SourceId == _cache.InstanceId</c> — a check that sits <i>inside</i> the handler wrapped
+    /// here, so a span around it would time an early return. Skipping them removes one dead trace per
+    /// local write (half of all receive spans in a two-replica deployment) and keeps the span count in
+    /// step with <c>caching.net.background.operations{cache.operation=backplane_receive}</c>, which the
+    /// event bridge records from an engine event raised only after the same check. The source id is
+    /// compared against <see cref="BackplaneSubscriptionOptions.CacheInstanceId"/>, which is the same
+    /// value the engine compares against. Delivery is untouched: dropping the message stays the engine's
+    /// decision, made on auto-recovery state this decorator cannot see.
+    /// </para>
+    /// <para>
     /// Every property on <see cref="BackplaneSubscriptionOptions"/> is read-only, so instrumenting it
     /// means constructing a new one. That makes this the one place in the file that depends on the
     /// engine's constructor shape rather than only on its interface: a property added by a future
@@ -172,20 +184,21 @@ internal sealed class InstrumentedBackplane : IFusionCacheBackplane
 
         var incoming = options.IncomingMessageHandler;
         var incomingAsync = options.IncomingMessageHandlerAsync;
+        var instanceId = options.CacheInstanceId;
 
         return new BackplaneSubscriptionOptions(
             options.CacheName,
             options.CacheInstanceId,
             options.ChannelName,
             options.ConnectHandler,
-            incoming is null ? null : message => Receive(incoming, message),
+            incoming is null ? null : message => Receive(incoming, message, instanceId),
             options.ConnectHandlerAsync,
-            incomingAsync is null ? null : message => ReceiveAsync(incomingAsync, message));
+            incomingAsync is null ? null : message => ReceiveAsync(incomingAsync, message, instanceId));
     }
 
-    private void Receive(Action<BackplaneMessage> incoming, BackplaneMessage message)
+    private void Receive(Action<BackplaneMessage> incoming, BackplaneMessage message, string? instanceId)
     {
-        var activity = StartReceiveActivity();
+        var activity = StartReceiveActivity(message, instanceId);
         if (activity is null)
         {
             incoming(message);
@@ -214,9 +227,9 @@ internal sealed class InstrumentedBackplane : IFusionCacheBackplane
     /// else. An <c>async</c> wrapper would build a state machine per received message whether or not a
     /// span was ever created.
     /// </summary>
-    private ValueTask ReceiveAsync(Func<BackplaneMessage, ValueTask> incomingAsync, BackplaneMessage message)
+    private ValueTask ReceiveAsync(Func<BackplaneMessage, ValueTask> incomingAsync, BackplaneMessage message, string? instanceId)
     {
-        var activity = StartReceiveActivity();
+        var activity = StartReceiveActivity(message, instanceId);
         if (activity is null)
         {
             return incomingAsync(message);
@@ -256,8 +269,13 @@ internal sealed class InstrumentedBackplane : IFusionCacheBackplane
         }
     }
 
-    private Activity? StartReceiveActivity()
+    private Activity? StartReceiveActivity(BackplaneMessage message, string? instanceId)
     {
+        if (string.Equals(message.SourceId, instanceId, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
         var activity = _telemetry.StartRootActivity("cache.backplane.receive");
         activity?.SetTag(CacheTelemetryAttributes.BackgroundOperation, true);
         return activity;

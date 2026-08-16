@@ -32,6 +32,11 @@ public class InstrumentedBackplaneReceiveTests
     private static readonly BackplaneMessage Message =
         BackplaneMessage.CreateForEntryRemove("source-1", "Order:42", DateTimeOffset.UtcNow.UtcTicks);
 
+    // Published by the instance that is about to receive it back off the channel: same source id as
+    // the subscription's cache instance id.
+    private static readonly BackplaneMessage OwnMessage =
+        BackplaneMessage.CreateForEntryRemove("instance-1", "Order:42", DateTimeOffset.UtcNow.UtcTicks);
+
     private static IFusionCacheBackplane Wrap(CapturingBackplane inner, string cacheName)
         => InstrumentedBackplane.Wrap(
             inner,
@@ -106,6 +111,82 @@ public class InstrumentedBackplaneReceiveTests
 
         Assert.NotNull(ambient);
         Assert.Equal("cache.backplane.receive", ambient.OperationName);
+    }
+
+    /// <summary>
+    /// Redis pub/sub delivers a published message back to the connection that published it, and the
+    /// engine drops those by source id — so a span around one would time an early return.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The decorator wraps the engine's handler, and the engine's
+    /// <c>message.SourceId == _cache.InstanceId</c> check lives <i>inside</i> that handler, so without
+    /// this the wrapper spans every write the local instance makes. In a two-replica deployment that
+    /// is half of all <c>cache.backplane.receive</c> traces doing nothing.
+    /// </para>
+    /// <para>
+    /// It also puts the span back in step with the metric: <c>caching.net.background.operations</c>
+    /// with <c>cache.operation=backplane_receive</c> comes off the engine's <c>MessageReceived</c>
+    /// event, which the engine raises only after the same source-id check. Two Caching.NET signals for
+    /// one event must not disagree about how many there were.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void SelfPublishedMessage_EmitsNoReceiveSpan()
+    {
+        const string CacheName = "backplane-receive-own";
+        using var recorder = new SpanRecorder(CacheTelemetry.ActivitySourceName);
+        var inner = new CapturingBackplane();
+
+        Wrap(inner, CacheName).Subscribe(Subscription());
+        inner.Subscription!.IncomingMessageHandler!(OwnMessage);
+
+        Assert.DoesNotContain(OwnSpans(recorder, CacheName), a => a.OperationName == "cache.backplane.receive");
+    }
+
+    [Fact]
+    public async Task AsyncSelfPublishedMessage_EmitsNoReceiveSpan()
+    {
+        const string CacheName = "backplane-receive-own-async";
+        using var recorder = new SpanRecorder(CacheTelemetry.ActivitySourceName);
+        var inner = new CapturingBackplane();
+
+        await Wrap(inner, CacheName).SubscribeAsync(Subscription());
+        await inner.Subscription!.IncomingMessageHandlerAsync!(OwnMessage);
+
+        Assert.DoesNotContain(OwnSpans(recorder, CacheName), a => a.OperationName == "cache.backplane.receive");
+    }
+
+    /// <summary>
+    /// Skipping the span must not skip the delivery: dropping the message is the engine's decision,
+    /// made on the same source id plus auto-recovery state the decorator cannot see.
+    /// </summary>
+    [Fact]
+    public void SelfPublishedMessage_StillReachesTheEngineExactlyOnce()
+    {
+        var inner = new CapturingBackplane();
+        var received = 0;
+
+        Wrap(inner, "backplane-receive-own-delivery").Subscribe(Subscription(incoming: _ => received++));
+        inner.Subscription!.IncomingMessageHandler!(OwnMessage);
+
+        Assert.Equal(1, received);
+    }
+
+    [Fact]
+    public async Task AsyncSelfPublishedMessage_StillReachesTheEngineExactlyOnce()
+    {
+        var inner = new CapturingBackplane();
+        var received = 0;
+
+        await Wrap(inner, "backplane-receive-own-delivery-async").SubscribeAsync(Subscription(incomingAsync: _ =>
+        {
+            received++;
+            return ValueTask.CompletedTask;
+        }));
+        await inner.Subscription!.IncomingMessageHandlerAsync!(OwnMessage);
+
+        Assert.Equal(1, received);
     }
 
     [Fact]

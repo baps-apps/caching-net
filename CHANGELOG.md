@@ -4,6 +4,28 @@ All notable changes to Caching.NET are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## 3.1.1 — 2026-08-16
+
+**Fewer empty `cache.backplane.receive` traces. Nothing else changes.** Patch bump, no code change,
+no configuration change, no API change.
+
+### Fixed
+
+- **A backplane message this instance published no longer emits a `cache.backplane.receive` span.**
+  Redis pub/sub delivers a publish back to the connection that made it, and the engine discards those
+  by source id — but that check runs *inside* the handler 3.1.0 wrapped, so the span was timing an
+  early return. Every local `Set`, `Remove`, `Expire`, `RemoveByTag` and `Clear` produced one
+  sub-millisecond trace that did nothing. With two replicas that was half of all receive spans.
+
+  It also removes a disagreement between two Caching.NET signals for the same event:
+  `caching.net.background.operations{cache.operation=backplane_receive}` is recorded from an engine
+  event raised only *after* the source-id check, so the metric already excluded self-published
+  messages while the span counted them.
+
+  **Nothing about delivery changes** — the message still reaches the engine exactly once, and whether
+  to act on it stays the engine's decision. Spans for messages from *other* instances are unchanged,
+  including the local invalidation work nested under them.
+
 ## 3.1.0 — 2026-08-16
 
 **Your traces get quieter. Nothing else changes.** Bump the package and you are done — no code

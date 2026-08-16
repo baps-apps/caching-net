@@ -991,7 +991,7 @@ key and tag guards are now enforced on every call, not only calls using the conf
 | Caching.NET serialize/deserialize spans | ➖ | ✅ | ✅ | |
 | Operation-level spans | ✅ | ✅ | ✅ | `Caching.NET`-branded (`cache.get_or_set`, `cache.set`, …) — see §17. Never gated by `LayerTracing` |
 | Layer-level spans | ✅ | ✅ | ✅ | `cache.memory.*` (InMemory, Hybrid), `cache.redis.*` (Redis, Hybrid). Emitted only under a live span by default — `Observability.LayerTracing`, see §17 |
-| Backplane spans | ➖ | ➖ | ✅ | `cache.backplane.publish` and `cache.backplane.receive`, both tagged `cache.background_operation=true`. Hybrid only, since it is the only mode that runs a backplane |
+| Backplane spans | ➖ | ➖ | ✅ | `cache.backplane.publish` and `cache.backplane.receive`, both tagged `cache.background_operation=true`. Hybrid only, since it is the only mode that runs a backplane. A message this instance published gets no receive span — Redis delivers it back to the publisher and the engine discards it |
 | Health checks | ✅ | ✅ | ✅ | |
 
 ✅ supported · ➖ not applicable in this mode · ⛔ rejected at startup

@@ -179,6 +179,16 @@ request's span is what the subscription — and therefore every callback the sub
 — captured. Inheriting it would attach every invalidation the instance receives, for the life of the
 process, to one arbitrary request that ended at startup.
 
+**A message this instance published gets no span.** Redis pub/sub delivers a publish back to the
+connection that made it, and the engine drops those with `message.SourceId == _cache.InstanceId` — a
+check that sits *inside* the handler being wrapped, so a span around it would time an early return.
+The decorator compares the same two values (`BackplaneSubscriptionOptions.CacheInstanceId` is the
+engine's own instance id) and skips the span. That removes one dead trace per local write — with two
+replicas, half of all receive spans — and keeps the span count in step with
+`caching.net.background.operations{cache.operation=backplane_receive}`, which the event bridge records
+from an engine event raised only after the same check. Delivery is untouched: whether to *act* on the
+message stays the engine's decision, made on auto-recovery state the decorator cannot see.
+
 The rebuild is the fragile part: every property on `BackplaneSubscriptionOptions` is get-only, so
 instrumenting it means constructing a new one, and a constructor parameter added by a future engine
 version would be accepted by its default and dropped silently.
