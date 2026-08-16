@@ -236,7 +236,7 @@ Prometheus convention.
 | `cache.expire` | `FusionCacheService` | Every `ExpireAsync`/`Expire` call |
 | `cache.remove_by_tag` | `FusionCacheService` | Every `RemoveByTagAsync`/`RemoveByTag` call |
 | `cache.clear` | `FusionCacheService` | Every `ClearAsync`/`Clear` call. The one operation span with **no key attribute** — there is no key to attach |
-| `cache.backplane.receive` | `InstrumentedBackplane` | Every backplane message this instance receives **from another instance**, wrapping the local invalidation work it causes. Carries `cache.background_operation=true`. A message this instance published itself — Redis pub/sub delivers those back to the publisher, and the engine discards them by source id — gets no span |
+| `cache.backplane.receive` | `InstrumentedBackplane` | Every backplane message this instance receives **from another instance**, wrapping the local invalidation work it causes. Carries `cache.background_operation=true`, `cache.result`, and the key the message is for. A message this instance published itself — Redis pub/sub delivers those back to the publisher, and the engine discards them by source id — gets no span |
 | `cache.backplane.publish` | `InstrumentedBackplane` | Every backplane message this instance publishes |
 | `cache.memory.get` / `.set` / `.remove` | `InstrumentedMemoryCache` | Every physical probe of the in-process layer, subject to `Observability.LayerTracing` |
 | `cache.redis.get` / `.set` / `.refresh` / `.remove` | `InstrumentedDistributedCache` | Every physical probe of the distributed layer, subject to `Observability.LayerTracing` |
@@ -244,7 +244,8 @@ Prometheus convention.
 
 Every span carries `cache.system`, `cache.mode`, `cache.name`. Operation spans (the `FusionCacheService`
 rows) also carry `cache.key.fingerprint` — or `cache.key` when `Security.AllowRawKeysInTelemetry` is
-set (see §4) — except `cache.clear`, which has no key. Most also carry `cache.result` and, where
+set (see §4) — except `cache.clear`, which has no key. `cache.backplane.receive` carries the same
+attribute, recovered from the message: see [what a received message says](#what-a-received-message-says). Most also carry `cache.result` and, where
 relevant, `cache.layer` and `cache.factory.executed`; the two exceptions are `cache.get_or_default`,
 which never carries `cache.result` on a successful read, and `cache.get_or_set` in Hybrid mode, which
 omits `cache.layer` on a hit (see the worked example below). `cache.operation` is a *metric*
@@ -307,6 +308,34 @@ than picking up whatever the subscriber thread was carrying. A backplane message
 is a span in the publishing process, and the engine's wire format carries no trace context, so
 cross-process correlation is not available at any setting — see
 [ARCHITECTURE.md](ARCHITECTURE.md) §3.2.
+
+### What a received message says
+
+`cache.backplane.receive` carries two attributes beyond the standard three, so a burst of
+identically-named spans is readable:
+
+| Attribute | Value |
+|---|---|
+| `cache.result` | `set` for an entry write, `removed` for a removal or an expiry — the same vocabulary `cache.set` and `cache.expire` use |
+| `cache.key.fingerprint` (or `cache.key`) | The key the message is for, under the same rule as every operation span: the fingerprint by default, the literal key only when `Security.AllowRawKeysInTelemetry` is set |
+
+**The fingerprint is the same value on both instances.** It is an unsalted xxHash64 of the key, so the
+one on the receiving instance's `cache.backplane.receive` equals the one on the publishing instance's
+`cache.remove`. Traces cannot be joined — the message format has no field for trace context — but the
+two sides can be *queried* by the same fingerprint, which answers "who invalidated this, and did every
+replica apply it?" That is the only cross-process correlation available.
+
+Two decodings make that work, both undoing something the engine did on the way out:
+
+- **The application prefix is stripped.** The engine prefixes before it publishes, so the wire carries
+  the physical key while `cache.key` is defined as the caller's.
+- **A tag invalidation is decoded back to its tag.** `RemoveByTag` and `Clear` travel as marker
+  entries under an engine-internal key, so an undecoded tag message would look like an entry message
+  for a key no caller ever wrote. Decoded, the fingerprint matches the publisher's
+  `cache.remove_by_tag`.
+
+`Clear` arrives as a marker under a reserved tag and carries **no key attribute**, matching
+`cache.clear` — the one operation span with none, because there is none to carry.
 
 **Background writes are the one thing that gets quieter rather than better organised.** `cache.factory`
 covers the factory delegate; the L1/L2 write that follows it happens after that span closes, on a

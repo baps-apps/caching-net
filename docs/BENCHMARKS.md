@@ -266,17 +266,27 @@ Delivering one incoming backplane message through `InstrumentedBackplane`, which
 handler in the `cache.backplane.receive` span. The handler here only increments a counter, so these
 rows are delivery cost alone — the eviction work a real message triggers is the table above.
 
-| Method | Before | After | Allocated (after) |
-|---|---:|---:|---:|
-| Incoming message dispatch, no trace listener | 1.909 ns | 3.353 ns | 0 B |
-| Incoming message dispatch, trace listener attached | 2.147 ns | 145.390 ns | 640 B |
-| Incoming message dispatch (async), no trace listener | 9.473 ns | 9.938 ns | 72 B |
-| Incoming message dispatch (async), trace listener attached | 9.455 ns | 149.250 ns | 712 B |
+| Method | 3.0.0 | 3.1.0 | 3.1.1 | Allocated (3.1.1) |
+|---|---:|---:|---:|---:|
+| Incoming message dispatch, no trace listener | 1.909 ns | 3.353 ns | 3.919 ns | 0 B |
+| Incoming message dispatch, trace listener attached | 2.147 ns | 145.390 ns | 188.216 ns | 816 B |
+| Incoming message dispatch (async), no trace listener | 9.473 ns | 9.938 ns | 10.433 ns | 72 B |
+| Incoming message dispatch (async), trace listener attached | 9.455 ns | 149.250 ns | 204.316 ns | 888 B |
 
-The span costs ~145 ns and ~640 B per *received message* — not per operation. Backplane traffic is
-invalidations across the cluster, orders of magnitude below cache-call volume, and it buys the thing
-the evictions underneath it had no way to get: a parent. With tracing enabled but nothing listening
-the cost is the wrapper delegate alone — 1.4 ns on the sync path, and 0.5 ns on the async one.
+The span costs ~190–205 ns and ~816–888 B per *received message* — not per operation. Backplane
+traffic is invalidations across the cluster, orders of magnitude below cache-call volume, and it buys
+the thing the evictions underneath it had no way to get: a parent. With tracing enabled but nothing
+listening the cost is the wrapper delegate alone — around 2 ns on the sync path, 0.5 ns on the async
+one.
+
+**What 3.1.1 added to the traced rows** is the `cache.result` tag plus decoding the message key back
+to its caller-facing form and fingerprinting it: about 45–55 ns and 176 B. That buys the attribute
+that makes a burst of identically-named spans readable, and the fingerprint that matches the
+publishing instance's span. The untraced rows moved by roughly half a nanosecond, which is the
+source-id comparison that skips the span for a message this instance published — deliberately ahead of
+the listener check, since a message that will not get a span should not reach span creation at all.
+It also means the traced rows are now measured on the path that *does* produce a span; the
+self-published path costs that half-nanosecond and nothing else.
 
 The async wrapper is deliberately not an `async` method: it starts the span, and when there is no
 listener it returns the engine's own `ValueTask` straight through rather than awaiting it, so no state

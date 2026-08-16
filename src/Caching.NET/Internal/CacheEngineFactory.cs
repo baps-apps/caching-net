@@ -93,7 +93,14 @@ internal static class CacheEngineFactory
                 // Wrapped so backplane failures reach caching.net.backplane.errors: the engine's
                 // event hub reports circuit-breaker transitions but not failures, which left the
                 // counter reading zero through a whole outage.
-                cache.SetupBackplane(InstrumentedBackplane.Wrap(backplane, telemetry));
+                cache.SetupBackplane(InstrumentedBackplane.Wrap(
+                    backplane,
+                    telemetry,
+                    new BackplaneKeyDecoder(
+                        engineOptions.CacheKeyPrefix ?? string.Empty,
+                        engineOptions.InternalStrings.TagCacheKeyPrefix,
+                        engineOptions.InternalStrings.ClearRemoveTag,
+                        engineOptions.InternalStrings.ClearExpireTag)));
             }
         }
 

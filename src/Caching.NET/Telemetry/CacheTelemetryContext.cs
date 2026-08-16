@@ -390,6 +390,18 @@ internal sealed class CacheTelemetryContext
             return null;
         }
 
+        TagKey(activity, key);
+        return activity;
+    }
+
+    /// <summary>
+    /// Applies the key identifier to an already-started span: the caller's key when
+    /// <see cref="Options.CacheSecurityOptions.AllowRawKeysInTelemetry"/> is set, a non-reversible
+    /// fingerprint otherwise. Shared with spans that do not start from a key, such as the backplane
+    /// receive span, which recovers one from the message it is handed.
+    /// </summary>
+    public void TagKey(Activity activity, string key)
+    {
         if (AllowRawKeysInTelemetry)
         {
             activity.SetTag(CacheTelemetryAttributes.Key, key);
@@ -398,8 +410,6 @@ internal sealed class CacheTelemetryContext
         {
             activity.SetTag(CacheTelemetryAttributes.KeyFingerprint, Internal.KeyFingerprint.Compute(key));
         }
-
-        return activity;
     }
 
     private TagList BaseTags()

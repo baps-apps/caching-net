@@ -6,8 +6,27 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## 3.1.1 — 2026-08-16
 
-**Fewer empty `cache.backplane.receive` traces. Nothing else changes.** Patch bump, no code change,
-no configuration change, no API change.
+**`cache.backplane.receive` now says which key it is for, and stops firing for messages this instance
+published.** Patch bump, no code change, no configuration change, no API change.
+
+### Added
+
+- **`cache.backplane.receive` carries the key the message was for** — `cache.key.fingerprint`, or
+  `cache.key` under `Security.AllowRawKeysInTelemetry`, exactly like every operation span. A burst of
+  identically-named receive spans now tells you *what* each one invalidated.
+
+  **The fingerprint matches the publishing instance's.** It is an unsalted xxHash64, so the value on
+  the receiving pod's `cache.backplane.receive` equals the one on the publishing pod's `cache.remove`
+  or `cache.remove_by_tag`. The traces still cannot be joined — the message format has no field for
+  trace context — but both sides answer the same query, which is as close to cross-process
+  correlation as this wire format allows.
+
+  Two decodings make that work: the application prefix is stripped (the wire carries the physical
+  key), and a tag invalidation is decoded back to its tag rather than the engine's internal marker
+  key. A `Clear` message carries no key, matching `cache.clear`.
+
+- **`cache.backplane.receive` carries `cache.result`** — `set` for a write, `removed` for a removal or
+  an expiry, the same vocabulary `cache.set` and `cache.expire` use.
 
 ### Fixed
 

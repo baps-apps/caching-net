@@ -48,7 +48,12 @@ public class BackplaneDispatchBenchmarks
             {
                 CacheName = "bench-backplane-dispatch",
                 ApplicationPrefix = "bench"
-            }));
+            }),
+            new BackplaneKeyDecoder(
+                "bench:",
+                FusionCacheInternalStrings.DefaultTagCacheKeyPrefix,
+                FusionCacheInternalStrings.DefaultClearRemoveTag,
+                FusionCacheInternalStrings.DefaultClearExpireTag));
 
         backplane.Subscribe(new BackplaneSubscriptionOptions(
             cacheName: "bench-backplane-dispatch",
@@ -66,9 +71,11 @@ public class BackplaneDispatchBenchmarks
         _subscription = stub.Subscription
             ?? throw new InvalidOperationException("the decorator did not pass a subscription through");
 
+        // Prefixed, as the wire carries it: the traced row includes decoding it back and fingerprinting
+        // the result, which is what a real received message costs.
         _message = BackplaneMessage.CreateForEntryRemove(
             "bench-source",
-            "bench-key",
+            "bench:bench-key",
             DateTimeOffset.UtcNow.UtcTicks);
     }
 

@@ -29,20 +29,25 @@ internal sealed class InstrumentedBackplane : IFusionCacheBackplane
 {
     private readonly IFusionCacheBackplane _inner;
     private readonly CacheTelemetryContext _telemetry;
+    private readonly BackplaneKeyDecoder _keys;
 
-    private InstrumentedBackplane(IFusionCacheBackplane inner, CacheTelemetryContext telemetry)
+    private InstrumentedBackplane(IFusionCacheBackplane inner, CacheTelemetryContext telemetry, BackplaneKeyDecoder keys)
     {
         _inner = inner;
         _telemetry = telemetry;
+        _keys = keys;
     }
 
     /// <summary>
     /// Wraps <paramref name="backplane"/>, or returns it unchanged when neither metrics nor tracing
     /// is enabled, so a cache with telemetry disabled pays nothing at all.
     /// </summary>
-    public static IFusionCacheBackplane Wrap(IFusionCacheBackplane backplane, CacheTelemetryContext telemetry)
+    public static IFusionCacheBackplane Wrap(
+        IFusionCacheBackplane backplane,
+        CacheTelemetryContext telemetry,
+        BackplaneKeyDecoder keys)
         => telemetry.MetricsEnabled || telemetry.TracingEnabled
-            ? new InstrumentedBackplane(backplane, telemetry)
+            ? new InstrumentedBackplane(backplane, telemetry, keys)
             : backplane;
 
     public void Subscribe(BackplaneSubscriptionOptions options)
@@ -277,7 +282,24 @@ internal sealed class InstrumentedBackplane : IFusionCacheBackplane
         }
 
         var activity = _telemetry.StartRootActivity("cache.backplane.receive");
-        activity?.SetTag(CacheTelemetryAttributes.BackgroundOperation, true);
+        if (activity is null)
+        {
+            return null;
+        }
+
+        activity.SetTag(CacheTelemetryAttributes.BackgroundOperation, true);
+
+        // An expiry is an invalidation from the receiving side's point of view: the local entry stops
+        // being served either way, so it reads as `removed` exactly like `cache.expire` does.
+        activity.SetTag(
+            CacheTelemetryAttributes.Result,
+            message.Action == BackplaneMessageAction.EntrySet ? CacheResults.Set : CacheResults.Removed);
+
+        if (_keys.TryDecode(message.CacheKey, out var key))
+        {
+            _telemetry.TagKey(activity, key);
+        }
+
         return activity;
     }
 

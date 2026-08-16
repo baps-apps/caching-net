@@ -162,7 +162,7 @@ Neither member has a dedicated `CachingBuilder` method; set them through `WithRe
 | Surface | Rule |
 |---|---|
 | Logs | No values, no full payloads, no connection strings, no credentials. Keys are logged as a fingerprint unless `Security.AllowRawKeysInLogs` is set (development only) — see [Key redaction in engine log lines](#key-redaction-in-engine-log-lines) |
-| Traces (`Caching.NET` operation spans) | Keys carry `cache.key.fingerprint` by default. `Security.AllowRawKeysInTelemetry` switches that cache instance's spans to `cache.key` (the literal key) instead — see §9 |
+| Traces (`Caching.NET` operation spans, plus `cache.backplane.receive`) | Keys carry `cache.key.fingerprint` by default. `Security.AllowRawKeysInTelemetry` switches that cache instance's spans to `cache.key` (the literal key) instead — see §9 |
 | Metrics | Fixed low-cardinality dimensions only. A unit test asserts nothing outside the allow-list is emitted |
 | Health output | Exception **type** only — a health endpoint is often reachable, and a message can carry an endpoint or a credential fragment |
 | Redis connection errors | Host only, never the full endpoint or connection string |
@@ -248,10 +248,16 @@ services.AddCaching(cache => cache
     .WithSecurity(security => security.AllowRawKeysInTelemetry = true));
 ```
 
-`CacheTelemetryContext.StartOperation` decides which attribute to attach once per span, inside
-Caching.NET's own code — there is no processor, collector step, or per-consumer opt-out needed
-either way, because the choice is made before the span is emitted rather than stripped from it
-afterward.
+`CacheTelemetryContext.TagKey` decides which attribute to attach once per span, inside Caching.NET's
+own code — there is no processor, collector step, or per-consumer opt-out needed either way, because
+the choice is made before the span is emitted rather than stripped from it afterward.
+
+**`cache.backplane.receive` follows the same rule.** It is not an operation span — it wraps an
+invalidation another instance published — but it carries the key that message was for, so it is
+covered by this setting exactly as the operation spans are. The key is recovered from the message and
+decoded back to the caller-facing form, which means the raw-key opt-in exposes the same string there
+as it does on the publishing instance's `cache.remove`. See
+[TELEMETRY.md](TELEMETRY.md#what-a-received-message-says).
 
 Decide as follows:
 
@@ -269,4 +275,6 @@ Decide as follows:
    also reaches Redis `MONITOR`, `SCAN` output, slow-log entries and RDB dumps.
 
 Both the guarantee (raw keys stay off spans by default) and the opt-in (`AllowRawKeysInTelemetry`
-switches them on) are asserted by `SpanKeyExposureTests`.
+switches them on) are asserted by `SpanKeyExposureTests`, and for the backplane receive span by
+`InstrumentedBackplaneReceiveTests.ReceiveSpan_CarriesTheKeyFingerprintWithoutTheApplicationPrefix`
+and `ReceiveSpan_CarriesTheRawKey_WhenRawKeysAreAllowed`.

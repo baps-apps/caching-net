@@ -37,10 +37,27 @@ public class InstrumentedBackplaneReceiveTests
     private static readonly BackplaneMessage OwnMessage =
         BackplaneMessage.CreateForEntryRemove("instance-1", "Order:42", DateTimeOffset.UtcNow.UtcTicks);
 
-    private static IFusionCacheBackplane Wrap(CapturingBackplane inner, string cacheName)
+    // What the engine would be configured with for ApplicationPrefix "tests": its own key prefix plus
+    // the tag-marker strings it builds internal keys from.
+    private static BackplaneKeyDecoder Decoder() => new(
+        "tests:",
+        FusionCacheInternalStrings.DefaultTagCacheKeyPrefix,
+        FusionCacheInternalStrings.DefaultClearRemoveTag,
+        FusionCacheInternalStrings.DefaultClearExpireTag);
+
+    private static IFusionCacheBackplane Wrap(CapturingBackplane inner, string cacheName, bool rawKeys = false)
         => InstrumentedBackplane.Wrap(
             inner,
-            new CacheTelemetryContext(new CachingOptions { CacheName = cacheName, ApplicationPrefix = "tests" }));
+            new CacheTelemetryContext(new CachingOptions
+            {
+                CacheName = cacheName,
+                ApplicationPrefix = "tests",
+                Security = { AllowRawKeysInTelemetry = rawKeys }
+            }),
+            Decoder());
+
+    private static BackplaneMessage Remote(string physicalKey)
+        => BackplaneMessage.CreateForEntryRemove("source-1", physicalKey, DateTimeOffset.UtcNow.UtcTicks);
 
     private static BackplaneSubscriptionOptions Subscription(
         Action<BackplaneMessage>? incoming = null,
@@ -73,6 +90,141 @@ public class InstrumentedBackplaneReceiveTests
         var span = Assert.Single(OwnSpans(recorder, CacheName), a => a.OperationName == "cache.backplane.receive");
         Assert.Equal(CacheTelemetry.SystemName, span.GetTagItem(CacheTelemetryAttributes.System));
         Assert.Equal(true, span.GetTagItem(CacheTelemetryAttributes.BackgroundOperation));
+    }
+
+    /// <summary>
+    /// Says <i>which</i> entry the message invalidated, under the same rules as every operation span:
+    /// a fingerprint by default, and the caller's key rather than the physical one.
+    /// </summary>
+    /// <remarks>
+    /// The wire carries the physical key — the engine prefixes before it publishes — so the
+    /// application prefix is stripped before tagging. The fingerprint is an unsalted xxHash64, so the
+    /// value here equals the one on the publishing instance's <c>cache.remove</c> span: the only
+    /// cross-process correlation available, since the message format has no field for trace context.
+    /// </remarks>
+    [Fact]
+    public void ReceiveSpan_CarriesTheKeyFingerprintWithoutTheApplicationPrefix()
+    {
+        const string CacheName = "backplane-receive-key";
+        using var recorder = new SpanRecorder(CacheTelemetry.ActivitySourceName);
+        var inner = new CapturingBackplane();
+
+        Wrap(inner, CacheName).Subscribe(Subscription());
+        inner.Subscription!.IncomingMessageHandler!(Remote("tests:Order:42"));
+
+        var span = Assert.Single(OwnSpans(recorder, CacheName), a => a.OperationName == "cache.backplane.receive");
+        Assert.Equal(KeyFingerprint.Compute("Order:42"), span.GetTagItem(CacheTelemetryAttributes.KeyFingerprint));
+        Assert.Null(span.GetTagItem(CacheTelemetryAttributes.Key));
+    }
+
+    [Fact]
+    public void ReceiveSpan_CarriesTheRawKey_WhenRawKeysAreAllowed()
+    {
+        const string CacheName = "backplane-receive-key-raw";
+        using var recorder = new SpanRecorder(CacheTelemetry.ActivitySourceName);
+        var inner = new CapturingBackplane();
+
+        Wrap(inner, CacheName, rawKeys: true).Subscribe(Subscription());
+        inner.Subscription!.IncomingMessageHandler!(Remote("tests:Order:42"));
+
+        var span = Assert.Single(OwnSpans(recorder, CacheName), a => a.OperationName == "cache.backplane.receive");
+        Assert.Equal("Order:42", span.GetTagItem(CacheTelemetryAttributes.Key));
+        Assert.Null(span.GetTagItem(CacheTelemetryAttributes.KeyFingerprint));
+    }
+
+    /// <summary>
+    /// A tag invalidation travels as a marker entry whose key is engine-internal, so the marker
+    /// decoration is stripped and the tag itself is tagged.
+    /// </summary>
+    /// <remarks>
+    /// <c>cache.remove_by_tag</c> puts the tag in this same attribute, so stripping is what makes the
+    /// two sides match. Left undecoded, the receiving span would carry a fingerprint of an internal
+    /// key that correlates with nothing, which is worse than carrying no key: the operator cannot see
+    /// that it is not a real one.
+    /// </remarks>
+    [Fact]
+    public void TagInvalidation_CarriesTheTagAsTheKey()
+    {
+        const string CacheName = "backplane-receive-key-tag";
+        using var recorder = new SpanRecorder(CacheTelemetry.ActivitySourceName);
+        var inner = new CapturingBackplane();
+
+        Wrap(inner, CacheName, rawKeys: true).Subscribe(Subscription());
+        inner.Subscription!.IncomingMessageHandler!(Remote("tests:__fc:t:orders"));
+
+        var span = Assert.Single(OwnSpans(recorder, CacheName), a => a.OperationName == "cache.backplane.receive");
+        Assert.Equal("orders", span.GetTagItem(CacheTelemetryAttributes.Key));
+    }
+
+    /// <summary>
+    /// <c>Clear</c> travels as a marker under a reserved tag, and <c>cache.clear</c> is the one
+    /// operation span with no key attribute — so its backplane counterpart has none either.
+    /// </summary>
+    [Theory]
+    [InlineData("tests:__fc:t:!")]
+    [InlineData("tests:__fc:t:*")]
+    public void ClearMarker_CarriesNoKey(string physicalKey)
+    {
+        const string CacheName = "backplane-receive-key-clear";
+        using var recorder = new SpanRecorder(CacheTelemetry.ActivitySourceName);
+        var inner = new CapturingBackplane();
+
+        Wrap(inner, CacheName, rawKeys: true).Subscribe(Subscription());
+        inner.Subscription!.IncomingMessageHandler!(Remote(physicalKey));
+
+        var span = Assert.Single(OwnSpans(recorder, CacheName), a => a.OperationName == "cache.backplane.receive");
+        Assert.Null(span.GetTagItem(CacheTelemetryAttributes.Key));
+        Assert.Null(span.GetTagItem(CacheTelemetryAttributes.KeyFingerprint));
+    }
+
+    /// <summary>
+    /// Six identically named spans in a burst are only readable if each says what it did, in the same
+    /// vocabulary the operation spans use.
+    /// </summary>
+    [Fact]
+    public void ReceiveSpan_ReportsAWriteAsSet()
+    {
+        const string CacheName = "backplane-receive-result-set";
+        using var recorder = new SpanRecorder(CacheTelemetry.ActivitySourceName);
+        var inner = new CapturingBackplane();
+
+        Wrap(inner, CacheName).Subscribe(Subscription());
+        inner.Subscription!.IncomingMessageHandler!(
+            BackplaneMessage.CreateForEntrySet("source-1", "tests:Order:42", DateTimeOffset.UtcNow.UtcTicks));
+
+        var span = Assert.Single(OwnSpans(recorder, CacheName), a => a.OperationName == "cache.backplane.receive");
+        Assert.Equal(CacheResults.Set, span.GetTagItem(CacheTelemetryAttributes.Result));
+    }
+
+    [Fact]
+    public void ReceiveSpan_ReportsAnInvalidationAsRemoved()
+    {
+        const string CacheName = "backplane-receive-result-removed";
+        using var recorder = new SpanRecorder(CacheTelemetry.ActivitySourceName);
+        var inner = new CapturingBackplane();
+
+        Wrap(inner, CacheName).Subscribe(Subscription());
+        inner.Subscription!.IncomingMessageHandler!(
+            BackplaneMessage.CreateForEntryExpire("source-1", "tests:Order:42", DateTimeOffset.UtcNow.UtcTicks));
+
+        var span = Assert.Single(OwnSpans(recorder, CacheName), a => a.OperationName == "cache.backplane.receive");
+        Assert.Equal(CacheResults.Removed, span.GetTagItem(CacheTelemetryAttributes.Result));
+    }
+
+    /// <summary>
+    /// The decoder reads the engine's internal key layout, which is configuration rather than
+    /// contract: a future version could change the marker prefix or the reserved clear tags, and the
+    /// decoder would silently stop recognising markers — tagging a fingerprint of an internal key as
+    /// though it were a caller's. This fails at the package bump instead.
+    /// </summary>
+    [Fact]
+    public void EngineTagStrings_AreStillWhatTheDecoderIsBuiltFrom()
+    {
+        var defaults = new FusionCacheInternalStrings();
+
+        Assert.Equal(FusionCacheInternalStrings.DefaultTagCacheKeyPrefix, defaults.TagCacheKeyPrefix);
+        Assert.Equal(FusionCacheInternalStrings.DefaultClearRemoveTag, defaults.ClearRemoveTag);
+        Assert.Equal(FusionCacheInternalStrings.DefaultClearExpireTag, defaults.ClearExpireTag);
     }
 
     /// <summary>
@@ -380,7 +532,7 @@ public class InstrumentedBackplaneReceiveTests
         });
         Action<BackplaneMessage> incoming = _ => { };
 
-        InstrumentedBackplane.Wrap(inner, telemetry).Subscribe(Subscription(incoming: incoming));
+        InstrumentedBackplane.Wrap(inner, telemetry, Decoder()).Subscribe(Subscription(incoming: incoming));
 
         Assert.Same(incoming, inner.Subscription!.IncomingMessageHandler);
     }

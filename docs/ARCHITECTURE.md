@@ -189,6 +189,26 @@ replicas, half of all receive spans — and keeps the span count in step with
 from an engine event raised only after the same check. Delivery is untouched: whether to *act* on the
 message stays the engine's decision, made on auto-recovery state the decorator cannot see.
 
+**The span says which key the message was for**, under the same rule as every operation span — a
+fingerprint by default, the literal key only under `Security.AllowRawKeysInTelemetry`.
+`BackplaneKeyDecoder` recovers it, undoing two things the engine did on the way out: the cache-key
+prefix it applies before publishing (the wire carries the physical key, `cache.key` is defined as the
+caller's), and the marker-entry encoding it uses for `RemoveByTag` and `Clear` (a tag invalidation
+would otherwise arrive looking like an entry message for a key no caller ever wrote). A `Clear` marker
+decodes to no key at all, matching `cache.clear`.
+
+The point of decoding rather than tagging the raw wire key is correlation. The fingerprint is an
+unsalted xxHash64, so the decoded value fingerprints identically on both instances: the receiving
+span's `cache.key.fingerprint` equals the publishing span's. Traces still cannot be *joined* — there is
+no `traceparent` to carry — but both sides answer the same query, which is as close to cross-process
+correlation as this wire format allows. Left undecoded the value would hash a string no other span
+ever hashes, correlating with nothing while looking exactly like a key that does.
+
+That decoder is built from engine *configuration* — the marker prefix and the two reserved clear tags —
+rather than from a contract, so `InstrumentedBackplaneReceiveTests.EngineTagStrings_AreStillWhatTheDecoderIsBuiltFrom`
+pins those strings. A renamed marker prefix in a future engine version would otherwise silently
+downgrade every tag message to an unrecognisable key instead of failing.
+
 The rebuild is the fragile part: every property on `BackplaneSubscriptionOptions` is get-only, so
 instrumenting it means constructing a new one, and a constructor parameter added by a future engine
 version would be accepted by its default and dropped silently.
