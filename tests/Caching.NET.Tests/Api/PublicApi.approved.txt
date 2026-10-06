@@ -38,6 +38,7 @@ class Caching.NET.CachingBuilder
     Caching.NET.CachingBuilder WithHealthChecks(System.String name = "caching-net", System.Boolean splitLivenessReadiness = false)
     Caching.NET.CachingBuilder WithJitter(System.TimeSpan jitter)
     Caching.NET.CachingBuilder WithJsonSerialization(System.Text.Json.JsonSerializerOptions? jsonSerializerOptions = null)
+    Caching.NET.CachingBuilder WithKeyVersionPlacement(Caching.NET.Options.CacheKeyVersionPlacement placement)
     Caching.NET.CachingBuilder WithLayerTracing(Caching.NET.Options.CacheLayerTracing layerTracing)
     Caching.NET.CachingBuilder WithLocalExpiration(System.TimeSpan expiration)
     Caching.NET.CachingBuilder WithMaximumKeyLength(System.Int32 maximumKeyLength)
@@ -178,6 +179,11 @@ enum Caching.NET.Options.CacheGuardPolicy
     Caching.NET.Options.CacheGuardPolicy Throw
     Caching.NET.Options.CacheGuardPolicy Warn
     System.Int32 value__
+enum Caching.NET.Options.CacheKeyVersionPlacement
+    Caching.NET.Options.CacheKeyVersionPlacement None
+    Caching.NET.Options.CacheKeyVersionPlacement Prefix
+    Caching.NET.Options.CacheKeyVersionPlacement Suffix
+    System.Int32 value__
 enum Caching.NET.Options.CacheLayerTracing
     Caching.NET.Options.CacheLayerTracing Always
     Caching.NET.Options.CacheLayerTracing Never
@@ -266,6 +272,7 @@ class Caching.NET.Options.CachingOptions
     System.TimeSpan DefaultExpiration { get; set; }
 class Caching.NET.Options.RedisOptions
     .ctor()
+    Caching.NET.Options.CacheKeyVersionPlacement KeyVersionPlacement { get; set; }
     System.Boolean AbortOnConnectFail { get; set; }
     System.Boolean StrictCertificateValidation { get; set; }
     System.Boolean UseTls { get; set; }

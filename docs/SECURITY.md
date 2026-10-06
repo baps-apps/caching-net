@@ -25,11 +25,11 @@ that are:
 
 ```text
 logical:  {ApplicationPrefix}[:{EnvironmentPrefix}][:{TenantPrefix}][:{CacheName}]:{caller key}
-physical: [{Redis.InstancePrefix}]v2:{ApplicationPrefix}[:{EnvironmentPrefix}][:{TenantPrefix}][:{CacheName}]:{caller key}
+physical: [{Redis.InstancePrefix}]{ApplicationPrefix}[:{EnvironmentPrefix}][:{TenantPrefix}][:{CacheName}]:{caller key}
 ```
 
-`v2` is the engine's wire-format segment; it is constant across applications and contributes nothing
-to isolation. Everything that does the isolating sits after it.
+`Redis.KeyVersionPlacement` can add the engine's wire-format segment (`v2`) in front of or behind the
+key; it is off by default. It is constant across applications and contributes nothing to isolation.
 
 - `ApplicationPrefix` is **required**; startup fails without it.
 - No prefix segment may contain `':'` — that character is the delimiter, and allowing it would let

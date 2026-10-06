@@ -514,6 +514,31 @@ public class CachingOptionsValidatorTests
         Assert.True(Validate(options).Succeeded);
     }
 
+    /// <summary>
+    /// Same reasoning as <see cref="UndefinedLayerTracingValue_Fails"/>: guessing a placement for an
+    /// undefined value would silently decide every physical Redis key the application writes.
+    /// </summary>
+    [Fact]
+    public void UndefinedKeyVersionPlacementValue_Fails()
+    {
+        var options = Valid();
+        options.Redis.KeyVersionPlacement = (CacheKeyVersionPlacement)99;
+
+        AssertFails(options, "Redis.KeyVersionPlacement");
+    }
+
+    [Theory]
+    [InlineData(CacheKeyVersionPlacement.None)]
+    [InlineData(CacheKeyVersionPlacement.Prefix)]
+    [InlineData(CacheKeyVersionPlacement.Suffix)]
+    public void DefinedKeyVersionPlacementValue_Passes(CacheKeyVersionPlacement placement)
+    {
+        var options = Valid();
+        options.Redis.KeyVersionPlacement = placement;
+
+        Assert.True(Validate(options).Succeeded);
+    }
+
     [Fact]
     public void DiagnosticLevelAtInformation_WithNativeEngineVerbosity_Passes()
     {

@@ -336,6 +336,16 @@ public sealed partial class CachingOptionsValidator : IValidateOptions<CachingOp
             failures.Add($"Redis.InstancePrefix '{redis.InstancePrefix}' must not contain whitespace.");
         }
 
+        // Same reasoning as Observability.LayerTracing: an undefined value can only arrive by cast,
+        // and picking a placement for it would silently decide every physical key the cache writes.
+        if (!Enum.IsDefined(redis.KeyVersionPlacement))
+        {
+            failures.Add(
+                $"Redis.KeyVersionPlacement is {(int)redis.KeyVersionPlacement}, which is not a defined "
+                + $"{nameof(CacheKeyVersionPlacement)} value. Set it to {nameof(CacheKeyVersionPlacement.None)}, "
+                + $"{nameof(CacheKeyVersionPlacement.Prefix)} or {nameof(CacheKeyVersionPlacement.Suffix)}.");
+        }
+
         // Keyed on UsesTls, not redis.UseTls alone: TLS can also be enabled through the connection
         // string (ssl=true), and a rule keyed only on the UseTls flag would fail that configuration
         // even though the connection is genuinely encrypted.

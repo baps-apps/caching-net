@@ -298,7 +298,8 @@ default size of `1` per entry it caps the **number of entries** held in memory:
       "UseTls": true,
       "StrictCertificateValidation": true,
       "ConnectTimeout": "00:00:05",
-      "CommandTimeout": "00:00:02"
+      "CommandTimeout": "00:00:02",
+      "KeyVersionPlacement": "None"
     }
   }
 }
@@ -306,6 +307,12 @@ default size of `1` per entry it caps the **number of entries** held in memory:
 
 Credentials belong in the connection string supplied by a secret, never in a checked-in file.
 Caching.NET redacts `password=` and `user=` before anything reaches a log.
+
+**Physical keys** start with the application prefix: `orders-api:prod:Order:1`.
+`Redis.KeyVersionPlacement` (`None` default, `Prefix`, `Suffix`) optionally adds the engine's
+wire-format version (`v2:orders-api:…` or `…:Order:1:v2`), which isolates entries across an engine
+upgrade that changes the stored format. `Prefix` is the 3.0.0–3.1.1 layout. Changing the placement
+changes every key — see [docs/OPERATIONS.md](docs/OPERATIONS.md) before rolling it out.
 
 ## 7. Hybrid configuration
 
@@ -948,6 +955,8 @@ key and tag guards are now enforced on every call, not only calls using the conf
 | Startup warning `is in Hybrid mode with the backplane disabled` | `Backplane.Enabled` defaults to `false` when bound from configuration | Set it to `true` for any deployment with more than one replica |
 | One pod serves stale data | Backplane off | Enable it, or lower `Entry.LocalExpiration` |
 | Cold cache after deploying v3 | Key layout and wire format changed | Expected once; entries repopulate on demand |
+| Cold cache after upgrading to 3.2.0, and stale reads during the rollout | Physical keys dropped the `v2:` segment (`Redis.KeyVersionPlacement` defaults to `None`); old and new replicas use different keys until the rollout finishes | Expected once. Use a recreate deployment, or set `KeyVersionPlacement: Prefix` to keep the old layout — see [docs/OPERATIONS.md](docs/OPERATIONS.md) |
+| Redis scan for `v2:*` finds no new keys | Same — keys now start with the application prefix | Scan `orders-api:*` instead, or set `KeyVersionPlacement: Prefix` |
 | No traces appear | `CacheTelemetry.ActivitySourceName` not registered, `Observability.EnableTracing: false`, or no listener attached | Register `CacheTelemetry.ActivitySourceName` and confirm `Observability.EnableTracing` is `true` (the default); spans are created only when a listener is attached |
 | `cache.memory.*` / `cache.redis.*` spans disappeared after upgrading to 3.1.0 | `Observability.LayerTracing` defaults to `WhenParented`, which drops layer spans that are not running under a live span — backplane and background-refresh probes | Expected. Spans inside a cache call are unaffected. Set `LayerTracing: Always` for the pre-3.1 behaviour; `caching.net.layer.duration` records those probes either way |
 | Redis `WRONGTYPE` or garbage keys | Another application shares the prefix | Give each application a unique `ApplicationPrefix` |

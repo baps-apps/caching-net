@@ -1,6 +1,7 @@
 using Caching.NET.Internal;
 using Caching.NET.Options;
 using Microsoft.Extensions.Caching.Memory;
+using ZiggyCreatures.Caching.Fusion;
 
 namespace Caching.NET.Tests.Internal;
 
@@ -266,6 +267,33 @@ public class CacheEngineMappingTests
         var engine = CacheEngineFactory.MapEngineOptions(options);
 
         Assert.Equal("custom-channel", engine.BackplaneChannelPrefix);
+    }
+
+    /// <summary>
+    /// By default a Redis key starts with the application prefix, not with the engine's wire-format
+    /// version: operators write eviction policies and key scans against <c>orders-api:*</c>.
+    /// </summary>
+    [Fact]
+    public void KeyVersionPlacement_DefaultsToNoVersionSegment()
+    {
+        var engine = CacheEngineFactory.MapEngineOptions(Options(CacheMode.Hybrid));
+
+        Assert.Equal(CacheKeyModifierMode.None, engine.DistributedCacheKeyModifierMode);
+    }
+
+    [Theory]
+    [InlineData(CacheKeyVersionPlacement.None, CacheKeyModifierMode.None)]
+    [InlineData(CacheKeyVersionPlacement.Prefix, CacheKeyModifierMode.Prefix)]
+    [InlineData(CacheKeyVersionPlacement.Suffix, CacheKeyModifierMode.Suffix)]
+    public void KeyVersionPlacement_MapsOntoTheDistributedKeyModifier(
+        CacheKeyVersionPlacement configured, CacheKeyModifierMode expected)
+    {
+        var options = Options(CacheMode.Hybrid);
+        options.Redis.KeyVersionPlacement = configured;
+
+        var engine = CacheEngineFactory.MapEngineOptions(options);
+
+        Assert.Equal(expected, engine.DistributedCacheKeyModifierMode);
     }
 
     [Fact]

@@ -129,6 +129,7 @@ internal static class CacheEngineFactory
         {
             CacheName = options.CacheName,
             CacheKeyPrefix = prefix.Length == 0 ? string.Empty : prefix + CachingDefaults.KeyPrefixSeparator,
+            DistributedCacheKeyModifierMode = MapKeyVersionPlacement(options.Redis.KeyVersionPlacement),
             DefaultEntryOptions = MapEntryOptions(options),
 
             DistributedCacheCircuitBreakerDuration = resilience.DistributedCircuitBreakerDuration,
@@ -294,6 +295,19 @@ internal static class CacheEngineFactory
 
         return markerOptions;
     }
+
+    /// <summary>
+    /// Maps where the engine's wire-format version goes in a distributed key. The engine's own default
+    /// is a prefix (<c>v2:orders-api:…</c>); Caching.NET's is none, so the physical key starts with the
+    /// application prefix — see <see cref="CacheKeyVersionPlacement"/> for what that trades away.
+    /// </summary>
+    private static CacheKeyModifierMode MapKeyVersionPlacement(CacheKeyVersionPlacement placement)
+        => placement switch
+        {
+            CacheKeyVersionPlacement.Prefix => CacheKeyModifierMode.Prefix,
+            CacheKeyVersionPlacement.Suffix => CacheKeyModifierMode.Suffix,
+            _ => CacheKeyModifierMode.None
+        };
 
     /// <summary>The cache's jitter policy, shared by startup mapping and per-call override mapping.</summary>
     internal static JitterPolicy JitterPolicyFor(CachingOptions options)

@@ -233,23 +233,38 @@ The logical key Caching.NET builds:
 `CacheName` is appended only for non-default caches — that is what keeps two named caches in one
 application from sharing a Redis key space.
 
-The **physical Redis key** is not that string. The engine prepends its wire-format segment, and the
-Redis adapter prepends `Redis.InstancePrefix` outside everything:
+The **physical Redis key** is that string, with `Redis.InstancePrefix` prepended by the Redis
+adapter outside everything. The engine can also write its wire-format version into the key;
+`Redis.KeyVersionPlacement` decides where, and by default it writes none:
 
 ```text
-[{Redis.InstancePrefix}]v2:{ApplicationPrefix}[:{EnvironmentPrefix}][:{TenantPrefix}][:{CacheName}]:{caller key}
+None   (default)  [{Redis.InstancePrefix}]{ApplicationPrefix}[:{EnvironmentPrefix}][:{TenantPrefix}][:{CacheName}]:{caller key}
+Prefix            [{Redis.InstancePrefix}]v2:{ApplicationPrefix}[:…]:{caller key}
+Suffix            [{Redis.InstancePrefix}]{ApplicationPrefix}[:…]:{caller key}:v2
 ```
 
 ```text
-orders-api, prod, key "Order:1"     ->  v2:orders-api:prod:Order:1
-named cache "hot" on orders-api     ->  v2:orders-api:hot:Order:1
-InstancePrefix "legacy::"           ->  legacy::v2:orders-api:Order:1
+orders-api, prod, key "Order:1"     ->  orders-api:prod:Order:1
+named cache "hot" on orders-api     ->  orders-api:hot:Order:1
+InstancePrefix "legacy::"           ->  legacy::orders-api:Order:1
+KeyVersionPlacement Prefix          ->  v2:orders-api:prod:Order:1     (the 3.0.0–3.1.1 layout)
+KeyVersionPlacement Suffix          ->  orders-api:prod:Order:1:v2
 ```
 
-`v2` is the engine's wire-format version, not something Caching.NET picks. An engine release that
-bumps it changes every key and therefore cold-starts the cache, which is why
-`PhysicalKeyLayoutTests` asserts the literal string rather than a wildcard: operators write eviction
-policies, key scans and runbooks against it.
+`v2` is the engine's wire-format version, not something Caching.NET picks. Its purpose is isolation
+across engine upgrades: a release that changes the stored entry format bumps it, so new code reads a
+fresh key space instead of entries written in the old format. The engine defaults to `Prefix`.
+Caching.NET defaults to `None` because operators scope eviction policies, key scans and runbooks to
+the application prefix, and a key that starts with a constant engine segment defeats that. The cost
+is that isolation: with `None`, an engine upgrade that changes the format reads old-format entries
+under the same keys until they expire, so such an upgrade has to be taken with a flush or a TTL wait.
+`Suffix` keeps both properties at the price of a less readable key.
+
+Changing the placement changes every physical key, so it deploys as a cold cache, and while replicas
+on both placements run side by side neither can invalidate the other's entries — see
+`CacheKeyVersionPlacement`. `PhysicalKeyLayoutTests` asserts each layout as a literal string rather
+than a wildcard, so an engine release that changes the segment fails CI instead of silently moving
+every key.
 
 The backplane channel prefix defaults to the same prefix (without the trailing separator), so
 applications sharing a Redis instance never receive each other's invalidations.

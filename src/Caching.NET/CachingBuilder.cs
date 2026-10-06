@@ -313,6 +313,22 @@ public sealed class CachingBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets where the engine's wire-format version appears in each physical Redis key. Changing it
+    /// changes every key, so it deploys as a cold cache — see <see cref="CacheKeyVersionPlacement"/>.
+    /// </summary>
+    /// <param name="placement">
+    /// <see cref="CacheKeyVersionPlacement.None"/> (default) writes <c>orders-api:Order:1</c>;
+    /// <see cref="CacheKeyVersionPlacement.Prefix"/> writes <c>v2:orders-api:Order:1</c>, the
+    /// 3.0.0–3.1.1 layout; <see cref="CacheKeyVersionPlacement.Suffix"/> writes
+    /// <c>orders-api:Order:1:v2</c>.
+    /// </param>
+    public CachingBuilder WithKeyVersionPlacement(CacheKeyVersionPlacement placement)
+    {
+        _options.Redis.KeyVersionPlacement = placement;
+        return this;
+    }
+
     /// <summary>Requires TLS and strict certificate validation.</summary>
     public CachingBuilder WithStrictRedisTls()
     {

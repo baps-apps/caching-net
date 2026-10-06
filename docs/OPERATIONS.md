@@ -233,6 +233,24 @@ Expected once when upgrading from v2 — key layout and wire format both changed
 on demand and v2 orphans expire by TTL. If the miss storm is a problem, deploy during a quiet
 period or pre-warm the hot keys.
 
+Also expected once when upgrading from 3.0.x/3.1.x to 3.2.0 or later in `Redis` or `Hybrid` mode,
+and whenever `Redis.KeyVersionPlacement` is changed: keys move from `v2:orders-api:…` to
+`orders-api:…` (the new default, `None`). The old `v2:` keys are never read again and expire by
+their distributed TTL; nothing needs deleting.
+
+**Rolling deploys serve stale data across the switch.** While old and new replicas run together they
+read and write different keys for the same entry. A `Remove`, `Set`, `RemoveByTag` or `Clear` on one
+side updates only its own keys; the backplane message evicts the other side's L1 copy, which then
+reloads its *own*, un-updated L2 entry. Each side can therefore serve a stale value until that
+entry's distributed expiration. Avoid it with one of:
+
+- a recreate (stop-all, then start) deployment for the release that changes the layout;
+- `Redis.KeyVersionPlacement: Prefix`, which keeps the 3.0.0–3.1.1 layout and changes nothing;
+- or accept a stale window bounded by `Entry.DistributedExpiration` (or `DefaultExpiration`).
+
+Key scans, eviction policies and memory reports written against `v2:*` must be rewritten against
+the application prefix (`orders-api:*`) at the same time.
+
 ### Miss burst in the first moments after a pod starts
 
 In `Redis` and `Hybrid` mode, reads issued while the Redis connection is still being established

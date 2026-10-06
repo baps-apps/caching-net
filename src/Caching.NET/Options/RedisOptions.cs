@@ -31,6 +31,18 @@ public sealed class RedisOptions
     /// </summary>
     public string InstancePrefix { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Where the engine's wire-format version appears in each physical Redis key. Default
+    /// <see cref="CacheKeyVersionPlacement.None"/>: keys start with the application prefix.
+    /// </summary>
+    /// <remarks>
+    /// Changing this changes every physical key, so it deploys as a cold cache, and replicas on
+    /// different placements cannot invalidate each other's entries while both run. Set
+    /// <see cref="CacheKeyVersionPlacement.Prefix"/> to keep the layout Caching.NET 3.0.0–3.1.1 wrote.
+    /// See <see cref="CacheKeyVersionPlacement"/>.
+    /// </remarks>
+    public CacheKeyVersionPlacement KeyVersionPlacement { get; set; } = CacheKeyVersionPlacement.None;
+
     /// <summary>Require TLS for the connection regardless of the connection string. Default <c>false</c>.</summary>
     public bool UseTls { get; set; }
 

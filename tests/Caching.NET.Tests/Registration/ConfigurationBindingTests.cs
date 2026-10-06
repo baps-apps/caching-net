@@ -22,6 +22,7 @@ public class ConfigurationBindingTests
             ["CacheOptions:DefaultExpiration"] = "00:10:00",
             ["CacheOptions:Redis:Configuration"] = "localhost:6379",
             ["CacheOptions:Redis:InstancePrefix"] = "myapp:",
+            ["CacheOptions:Redis:KeyVersionPlacement"] = "Suffix",
             ["CacheOptions:Backplane:Enabled"] = "true",
             ["CacheOptions:Serialization:Format"] = "MessagePack",
             ["CacheOptions:Serialization:MaximumPayloadBytes"] = "2048",
@@ -38,6 +39,7 @@ public class ConfigurationBindingTests
         Assert.Equal(TimeSpan.FromMinutes(10), options.DefaultExpiration);
         Assert.Equal("localhost:6379", options.Redis.Configuration);
         Assert.Equal("myapp:", options.Redis.InstancePrefix);
+        Assert.Equal(CacheKeyVersionPlacement.Suffix, options.Redis.KeyVersionPlacement);
         Assert.True(options.Backplane.Enabled);
         Assert.Equal(CacheSerializerFormat.MessagePack, options.Serialization.Format);
         Assert.Equal(2048, options.Serialization.MaximumPayloadBytes);

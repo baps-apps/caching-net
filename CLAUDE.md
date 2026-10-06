@@ -117,6 +117,7 @@ entries with their own ten-day, memory-layer-included defaults, so a mode applie
 | `CacheEntryOverrides` | `Caching.NET.Options` | Per-call overrides, additive by construction — see docs/ARCHITECTURE.md §3 |
 | `CacheEntryPriority` | `Caching.NET.Options` | In-process eviction priority |
 | `CacheLayerTracing` | `Caching.NET.Options` | When a single layer probe emits a span — `Always`, `WhenParented` (default), `Never`. Spans only; layer metrics are unaffected |
+| `CacheKeyVersionPlacement` | `Caching.NET.Options` | Where the engine's wire-format version (`v2`) sits in a physical Redis key — `None` (default), `Prefix` (the 3.0.0–3.1.1 layout), `Suffix`. Changing it changes every key |
 | `ICacheProvider` | `Caching.NET` | Named-cache resolution |
 | `ICacheGuard` | `Caching.NET` | Key/tag limits, key fingerprints |
 | `CachingBuilder` | `Caching.NET` | Fluent configuration |

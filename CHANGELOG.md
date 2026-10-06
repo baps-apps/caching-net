@@ -4,6 +4,64 @@ All notable changes to Caching.NET are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## 3.2.0 — 2026-10-05
+
+**Redis keys now start with your application prefix, not `v2:`.** No code change and no API removal,
+but in `Redis` and `Hybrid` mode **every physical key changes**, so the upgrade deploys as a cold
+cache. Read "Upgrading" before rolling it out. `InMemory` caches are unaffected.
+
+### What you will notice
+
+```text
+3.0.0 – 3.1.1                     3.2.0
+v2:orders-api:prod:Order:1   →    orders-api:prod:Order:1
+```
+
+`v2` was the cache engine's wire-format version, which the engine puts in front of every distributed
+key by default. Caching.NET never chose it, but it made `orders-api:*` scans, eviction policies and
+memory reports miss every key. It is now off by default, and one setting controls it:
+
+```jsonc
+// appsettings.json
+"CacheOptions": {
+  "Redis": {
+    "KeyVersionPlacement": "None"   // "None" (default) | "Prefix" (3.1.1 layout) | "Suffix"
+  }
+}
+```
+
+```csharp
+// or in code
+services.AddCaching(config, cache => cache.WithKeyVersionPlacement(CacheKeyVersionPlacement.Prefix));
+```
+
+### Upgrading
+
+- **Cold cache, once.** 3.2.0 never reads the old `v2:` keys. They expire by their distributed TTL;
+  nothing needs deleting. Entries repopulate on demand.
+- **Stale reads during a rolling deploy.** While 3.1.x and 3.2.0 replicas run together they use
+  different keys for the same entry. An invalidation on one side does not delete the other side's
+  copy, and the backplane message makes the other side reload its *own* stale L2 entry. Each side can
+  serve a stale value until the entry's distributed expiration. Use a recreate deployment for this
+  release, or set `KeyVersionPlacement: Prefix` to keep the 3.1.1 layout and skip all of this.
+- **Rewrite key scans and eviction policies** from `v2:orders-api:*` to `orders-api:*`.
+
+Full runbook: [docs/OPERATIONS.md](docs/OPERATIONS.md) → "Cold cache after a deploy".
+
+### Added
+
+- **`Redis.KeyVersionPlacement`** (`None` | `Prefix` | `Suffix`) and
+  `CachingBuilder.WithKeyVersionPlacement(...)` — where the engine's wire-format version appears in a
+  physical Redis key. An undefined value fails startup validation.
+
+### Changed
+
+- **`KeyVersionPlacement` defaults to `None`.** The trade-off: the version segment isolated entries
+  across an engine upgrade that changes the stored format. With `None`, such an upgrade reads
+  old-format entries under the same keys until they expire, so take it with a flush or a TTL wait.
+  `Suffix` (`orders-api:prod:Order:1:v2`) keeps that isolation and still lets `orders-api:*` scans
+  find every key. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §4.
+
 ## 3.1.1 — 2026-08-16
 
 **`cache.backplane.receive` now says which key it is for, and stops firing for messages this instance
