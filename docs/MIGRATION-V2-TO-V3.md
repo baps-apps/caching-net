@@ -349,7 +349,10 @@ var cache = services.BuildServiceProvider().GetRequiredService<ICacheService>();
    Raise `Entry.JitterMaxDuration` if you relied on that wider spread; short TTLs are unaffected,
    since the fraction binds there rather than the cap.
 5. **Fail-safe is on by default.** A failing factory now returns a stale value where one exists,
-   instead of throwing. Set `Resilience.FailSafeEnabled: false` to keep the old behaviour.
+   instead of throwing. Set `Resilience.FailSafeEnabled: false` to keep the old behaviour. It also
+   costs Redis memory: every entry is kept for at least `Resilience.FailSafeMaxDuration` (2 h)
+   however short its own TTL, so budget for that or lower it — see
+   [FEATURES.md §8](FEATURES.md#8-fail-safe).
 6. **Validation is stricter.** Configurations v2 accepted may now fail at startup — for example a
    `DefaultExpiration` longer than `FailSafeMaxDuration`, or `Redis.Configuration` set while
    `Mode: InMemory`. The message names the fix.
@@ -358,9 +361,9 @@ var cache = services.BuildServiceProvider().GetRequiredService<ICacheService>();
    duration falls back to `DefaultExpiration`). v2's `HybridLocalCacheExpiration` had no such rule,
    so a v2 configuration that set it above the shared TTL now fails the host until it is lowered.
 8. **Hybrid without a backplane logs a startup warning** (event 3051) naming the stale window.
-   `Backplane.Enabled` defaults to `false` when the cache is bound from configuration — only
-   `UseHybrid(...)` turns it on — so a v2 Hybrid section migrated verbatim runs without cross-pod
-   invalidation. Set it to `true` for anything with more than one replica.
+   As of 3.2.0 a Hybrid section that does not set `Backplane.Enabled` gets the backplane, like
+   `UseHybrid(...)`; on 3.0.0–3.1.1 it did not, so a v2 Hybrid section migrated verbatim ran without
+   cross-pod invalidation. Set it to `false` only for a single replica.
 9. **Named caches change key layout.** A named cache adds its name as a key segment.
 10. **`ClearAsync` semantics.** Still scoped to the application prefix, still never `FLUSHDB`, but
     implemented via the engine's tagging rather than a Redis `SCAN` sweep.
@@ -370,7 +373,7 @@ var cache = services.BuildServiceProvider().GetRequiredService<ICacheService>();
 ## 8. Checklist
 
 - [ ] Retarget the application to `net10.0` — v3 does not ship `net8.0` or `net9.0`.
-- [ ] Bump the package reference to `3.1.0` (the current v3 release; everything in this guide applies
+- [ ] Bump the package reference to `3.2.0` (the current v3 release; everything in this guide applies
       unchanged from `3.0.0` onwards).
 - [ ] Restructure the `CacheOptions` section into groups (§3). The section name is unchanged, so a
       stale v2 section will not be flagged as missing — compare it against §3 key by key.

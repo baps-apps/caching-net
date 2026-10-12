@@ -27,6 +27,160 @@ public class CacheEntryOverridesMapperTests
     }
 
     [Fact]
+    public void NullMarkerOverrides_ResolveToNull()
+        => Assert.Null(CacheEntryOverridesMapper.ResolveMarker(null, MarkerDefaults(CacheMode.Hybrid)));
+
+    /// <summary>
+    /// An empty override object on <c>RemoveByTag</c> or <c>Clear</c> must leave the marker exactly as
+    /// <c>null</c> would — the marker defaults, mode mapping included — not the entry defaults.
+    /// </summary>
+    [Theory]
+    [InlineData(CacheMode.InMemory)]
+    [InlineData(CacheMode.Redis)]
+    [InlineData(CacheMode.Hybrid)]
+    public void EmptyMarkerOverrides_KeepTheMarkerDefaults(CacheMode mode)
+    {
+        var defaults = MarkerDefaults(mode);
+
+        var resolved = CacheEntryOverridesMapper.ResolveMarker(new CacheEntryOverrides(), defaults);
+
+        Assert.NotNull(resolved);
+        Assert.NotSame(defaults, resolved);
+        AssertSameLifetimeAndPlacement(defaults, resolved!);
+    }
+
+    [Fact]
+    public void MarkerOverrides_ApplyTheOperationalSettings()
+    {
+        var resolved = CacheEntryOverridesMapper.ResolveMarker(
+            new CacheEntryOverrides
+            {
+                AllowBackgroundDistributedOperations = true,
+                AllowBackgroundBackplaneOperations = true,
+                SkipBackplaneNotification = true,
+                DistributedSoftTimeout = TimeSpan.FromMilliseconds(56),
+                DistributedHardTimeout = TimeSpan.FromMilliseconds(78)
+            },
+            MarkerDefaults(CacheMode.Hybrid));
+
+        Assert.True(resolved!.AllowBackgroundDistributedCacheOperations);
+        Assert.True(resolved.AllowBackgroundBackplaneOperations);
+        Assert.True(resolved.SkipBackplaneNotifications);
+        Assert.Equal(TimeSpan.FromMilliseconds(56), resolved.DistributedCacheSoftTimeout);
+        Assert.Equal(TimeSpan.FromMilliseconds(78), resolved.DistributedCacheHardTimeout);
+    }
+
+    /// <summary>
+    /// The marker's lifetime is what keeps an invalidation effective, so no per-call setting may
+    /// shorten it — or move it between layers.
+    /// </summary>
+    [Fact]
+    public void MarkerOverrides_IgnoreLifetimeSettings()
+    {
+        var defaults = MarkerDefaults(CacheMode.Hybrid);
+
+        var resolved = CacheEntryOverridesMapper.ResolveMarker(
+            new CacheEntryOverrides
+            {
+                LocalExpiration = TimeSpan.FromSeconds(1),
+                DistributedExpiration = TimeSpan.FromSeconds(1),
+                JitterMaxDuration = TimeSpan.FromSeconds(3),
+                JitterFraction = 0.5,
+                EagerRefreshThreshold = 0.5f,
+                FailSafe = false,
+                FailSafeMaxDuration = TimeSpan.FromSeconds(1),
+                FailSafeThrottleDuration = TimeSpan.FromSeconds(1),
+                FactorySoftTimeout = TimeSpan.FromMilliseconds(1),
+                FactoryHardTimeout = TimeSpan.FromMilliseconds(2),
+                EnableAutoClone = true,
+                Priority = CacheEntryPriority.Low,
+                Size = 99
+            },
+            defaults);
+
+        AssertSameLifetimeAndPlacement(defaults, resolved!);
+        Assert.Equal(defaults.JitterMaxDuration, resolved!.JitterMaxDuration);
+        Assert.Equal(defaults.EagerRefreshThreshold, resolved.EagerRefreshThreshold);
+        Assert.Equal(defaults.FailSafeThrottleDuration, resolved.FailSafeThrottleDuration);
+        Assert.Equal(defaults.FactorySoftTimeout, resolved.FactorySoftTimeout);
+        Assert.Equal(defaults.FactoryHardTimeout, resolved.FactoryHardTimeout);
+        Assert.Equal(defaults.EnableAutoClone, resolved.EnableAutoClone);
+        Assert.Equal(defaults.Priority, resolved.Priority);
+        Assert.Equal(defaults.Size, resolved.Size);
+    }
+
+    /// <summary>
+    /// A marker ignores an override silently unless <c>IgnoredMarkerOverrides</c> names it, so a new
+    /// <see cref="CacheEntryOverrides"/> property must land in exactly one place: applied by
+    /// <c>ResolveMarker</c>, or reported as ignored.
+    /// </summary>
+    [Fact]
+    public void MarkerOverrides_EveryPropertyIsAppliedOrReportedIgnored()
+    {
+        string[] applied =
+        [
+            nameof(CacheEntryOverrides.AllowBackgroundDistributedOperations),
+            nameof(CacheEntryOverrides.AllowBackgroundBackplaneOperations),
+            nameof(CacheEntryOverrides.SkipBackplaneNotification),
+            nameof(CacheEntryOverrides.DistributedSoftTimeout),
+            nameof(CacheEntryOverrides.DistributedHardTimeout)
+        ];
+
+        foreach (var property in typeof(CacheEntryOverrides).GetProperties())
+        {
+            var overrides = new CacheEntryOverrides();
+            property.SetValue(overrides, SampleValue(property.PropertyType));
+
+            var ignored = CacheEntryOverridesMapper.IgnoredMarkerOverrides(overrides);
+
+            if (applied.Contains(property.Name))
+            {
+                Assert.Equal(string.Empty, ignored);
+            }
+            else
+            {
+                Assert.Equal(property.Name, ignored);
+            }
+        }
+    }
+
+    private static object SampleValue(Type type) => Nullable.GetUnderlyingType(type) switch
+    {
+        { } t when t == typeof(TimeSpan) => TimeSpan.FromSeconds(1),
+        { } t when t == typeof(bool) => true,
+        { } t when t == typeof(double) => 0.5d,
+        { } t when t == typeof(float) => 0.5f,
+        { } t when t == typeof(long) => 1L,
+        { } t when t == typeof(CacheEntryPriority) => CacheEntryPriority.High,
+        _ => throw new InvalidOperationException($"No sample value for {type}; extend SampleValue.")
+    };
+
+    private static ZiggyCreatures.Caching.Fusion.FusionCacheEntryOptions MarkerDefaults(CacheMode mode)
+        => CacheEngineFactory.MapEngineOptions(new CachingOptions
+        {
+            CacheName = "default",
+            ApplicationPrefix = "tests",
+            Mode = mode,
+            Redis = { Configuration = mode == CacheMode.InMemory ? null : "localhost:6379" }
+        }).TagsDefaultEntryOptions;
+
+    private static void AssertSameLifetimeAndPlacement(
+        ZiggyCreatures.Caching.Fusion.FusionCacheEntryOptions expected,
+        ZiggyCreatures.Caching.Fusion.FusionCacheEntryOptions actual)
+    {
+        Assert.Equal(expected.Duration, actual.Duration);
+        Assert.Equal(expected.MemoryCacheDuration, actual.MemoryCacheDuration);
+        Assert.Equal(expected.DistributedCacheDuration, actual.DistributedCacheDuration);
+        Assert.Equal(expected.IsFailSafeEnabled, actual.IsFailSafeEnabled);
+        Assert.Equal(expected.FailSafeMaxDuration, actual.FailSafeMaxDuration);
+        Assert.Equal(expected.DistributedCacheFailSafeMaxDuration, actual.DistributedCacheFailSafeMaxDuration);
+        Assert.Equal(expected.SkipMemoryCacheRead, actual.SkipMemoryCacheRead);
+        Assert.Equal(expected.SkipMemoryCacheWrite, actual.SkipMemoryCacheWrite);
+        Assert.Equal(expected.SkipDistributedCacheRead, actual.SkipDistributedCacheRead);
+        Assert.Equal(expected.SkipDistributedCacheWrite, actual.SkipDistributedCacheWrite);
+    }
+
+    [Fact]
     public void InMemoryMode_PreservesSkipDistributedCache_WhenOverridesSupplied()
     {
         using var host = TestHost.BuildInMemory();

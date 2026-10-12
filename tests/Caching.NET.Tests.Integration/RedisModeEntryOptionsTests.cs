@@ -37,6 +37,42 @@ public class RedisModeEntryOptionsTests
         .WithJitter(TimeSpan.Zero)
         .WithResilience(r => r.AllowBackgroundDistributedOperations = false));
 
+    /// <summary>
+    /// <c>RemoveByTag</c> and <c>Clear</c> write a marker entry whose ten-day lifetime is what keeps
+    /// the invalidation effective. Overrides on those two verbs used to build the marker from the
+    /// <i>entry</i> defaults — a 2-hour marker under the defaults — so an invalidated entry could be
+    /// served again once the marker expired. An empty override object must change nothing.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InvalidationOverrides_KeepTheMarkersTenDayLifetime(bool clear)
+    {
+        var prefix = clear ? "redis-opts-clear-marker" : "redis-opts-tag-marker";
+        using var host = Host(prefix);
+
+        if (clear)
+        {
+            await host.Cache.ClearAsync(allowFailSafe: false, options: new CacheEntryOverrides());
+        }
+        else
+        {
+            await host.Cache.RemoveByTagAsync("category:tools", new CacheEntryOverrides());
+        }
+
+        var connection = await ConnectionMultiplexer.ConnectAsync(_redis.ConnectionString);
+        await using (connection.ConfigureAwait(false))
+        {
+            var marker = Assert.Single(await RedisModeTests.FindKeysAsync(connection, $"*{prefix}*__fc:t:*"));
+            var ttl = await connection.GetDatabase().KeyTimeToLiveAsync(marker);
+
+            Assert.NotNull(ttl);
+            Assert.True(
+                ttl!.Value > TimeSpan.FromDays(9),
+                $"marker {marker} TTL was {ttl.Value}; an invalidation marker must keep its ten-day lifetime");
+        }
+    }
+
     [Fact]
     public async Task PerCallOverrides_KeepRedisAuthoritative()
     {

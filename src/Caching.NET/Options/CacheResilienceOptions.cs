@@ -17,10 +17,15 @@ public sealed class CacheResilienceOptions
     public bool FailSafeEnabled { get; set; } = true;
 
     /// <summary>
-    /// How long past its logical expiration an entry stays usable as a fail-safe fallback.
-    /// Must be greater than or equal to <see cref="CachingOptions.DefaultExpiration"/>.
-    /// Default 2 hours.
+    /// How long, counted from the write, an entry is physically kept so it can serve as a fail-safe
+    /// fallback after its logical expiration. Must be greater than or equal to
+    /// <see cref="CachingOptions.DefaultExpiration"/>. Default 2 hours.
     /// </summary>
+    /// <remarks>
+    /// The physical lifetime is the <b>longer</b> of the entry's own duration and this value, not
+    /// their sum: under the defaults a one-minute entry stays in Redis for 2 hours, and an entry that
+    /// lives longer than this value has no fallback window at all.
+    /// </remarks>
     public TimeSpan FailSafeMaxDuration { get; set; } = TimeSpan.FromHours(2);
 
     /// <summary>
@@ -44,8 +49,8 @@ public sealed class CacheResilienceOptions
     public TimeSpan FactoryHardTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// When a factory exceeds <see cref="FactorySoftTimeout"/>, keep running it in the background
-    /// and store the result when it completes. Default <c>true</c>.
+    /// When a factory exceeds <see cref="FactorySoftTimeout"/> or <see cref="FactoryHardTimeout"/>,
+    /// keep running it in the background and store the result when it completes. Default <c>true</c>.
     /// </summary>
     public bool AllowTimedOutFactoryBackgroundCompletion { get; set; } = true;
 

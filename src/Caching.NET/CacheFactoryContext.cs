@@ -10,7 +10,9 @@ namespace Caching.NET;
 /// <typeparam name="TValue">The cached value type.</typeparam>
 /// <example>
 /// <code><![CDATA[
-/// var order = await cache.GetOrSetAsync("Order:42", async (ctx, ct) =>
+/// // The context-taking overload needs an explicit type argument: TValue cannot be inferred from a
+/// // lambda parameter type.
+/// var order = await cache.GetOrSetAsync<Order>("Order:42", async (ctx, ct) =>
 /// {
 ///     var response = await http.GetAsync($"/orders/42?etag={ctx.ETag}", ct);
 ///     if (response.StatusCode == HttpStatusCode.NotModified)

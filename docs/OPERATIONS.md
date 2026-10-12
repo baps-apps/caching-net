@@ -11,25 +11,25 @@ For every condition, what the caller sees and what shows up in telemetry.
 | L1 hit | cached value | no | no | — | — | — |
 | L1 miss, L2 hit (Hybrid) | cached value, L1 warmed | no | no | — | — | — |
 | L1 and L2 miss | factory result | yes | no | — | — | — |
-| Redis unreachable at startup | L1/factory results | yes | no | Critical on hard connect failure | `caching.net.errors{layer=redis}` | Background reconnect |
+| Redis unreachable at startup | L1/factory results | yes | no | Critical on hard connect failure | `caching.net.errors{cache.layer=redis}` | Background reconnect |
 | Redis unavailable at runtime | L1 value (Hybrid) or factory result | yes on miss | no¹ | Warning | `caching.net.redis.errors` | Circuit breaker, then auto-recovery |
 | Redis soft timeout | stale value if available, else continues | maybe | no | Debug | `caching.net.errors` | — |
 | Redis hard timeout | treated as a miss | yes | no¹ | Debug | `caching.net.errors` | — |
 | Redis restart | resumes automatically | — | no | Information (`connection restored`) | — | Shared multiplexer reconnects; queued ops replay |
-| Network partition | as "unavailable" | yes on miss | no¹ | Warning, then suppressed | `CircuitBreakerOpen` | Breaker closes on success |
+| Network partition | as "unavailable" | yes on miss | no¹ | Warning, then suppressed | `caching.net.redis.errors{cache.error.type=CircuitBreakerOpen}` | Breaker closes on success |
 | Redis auth failure | as "unavailable" | yes on miss | no¹ | Error | `caching.net.redis.errors` | Fix credentials and restart |
 | Redis TLS failure | connection rejected | yes on miss | no¹ | Error (policy errors only) | `caching.net.redis.tls.validations` | Fix the certificate |
-| Corrupt Redis payload | treated as a miss | yes | no¹ | Warning | `caching.net.errors{error.type=CorruptPayloadException}` | Overwritten by the next factory result |
+| Corrupt Redis payload | treated as a miss | yes | no¹ | Warning | `caching.net.errors{cache.error.type=CorruptPayloadException}` | Overwritten by the next factory result |
 | Oversized value on write, background distributed ops **on** (default) | caller still gets its value | yes | no | Warning | `caching.net.guard.violations` | Not cached |
 | Oversized value on write, background distributed ops **off** | — | yes | **yes** — `InvalidOperationException` | Warning | `caching.net.guard.violations` | See "Foreground writes surface serialization failures" below |
 | Oversized stored payload on read | treated as a miss | yes | no¹ | Warning | `caching.net.guard.violations` | Overwritten |
 | Backplane unavailable | operations continue | — | no² | Warning | `caching.net.backplane.errors` (only if a publish is attempted — a Redis outage shows on `caching.net.redis.errors` instead) | Auto-recovery replays notifications |
 | Serializer failure, background distributed ops **on** | not written to L2 | — | no | Warning | `caching.net.errors` | — |
 | Serializer failure, background distributed ops **off** | — | — | **yes** — the serializer's exception | Warning | `caching.net.errors` | See below |
-| Factory exception, stale value available | stale value | yes | no | Warning (fail-safe activation) | `caching.net.factory.executions{result=error}` | Retried after `FailSafeThrottleDuration` |
-| Factory exception, no stale value | — | yes | **yes** — the original exception | Warning | `caching.net.factory.executions{result=error}` | — |
-| Factory soft timeout | stale value | yes (continues in background) | no | Debug | — | Late result stored if `AllowTimedOutFactoryBackgroundCompletion` |
-| Factory hard timeout | stale value, else throws | yes (abandoned) | if no stale value | Debug | `SyntheticTimeoutException` | — |
+| Factory exception, stale value available | stale value | yes | no | Warning (fail-safe activation) | `caching.net.factory.executions{cache.result=error}` | Retried after `FailSafeThrottleDuration` |
+| Factory exception, no stale value | — | yes | **yes** — the original exception | Warning | `caching.net.factory.executions{cache.result=error}` | — |
+| Factory soft timeout | stale value | yes (continues in background) | no | Debug (timeout), Warning (fail-safe activation) | `caching.net.errors{cache.error.type=SyntheticTimeoutException}`, `caching.net.fail_safe.served` | Late result stored if `AllowTimedOutFactoryBackgroundCompletion` |
+| Factory hard timeout | stale value, else throws | yes (continues in background) | if no stale value | Debug | `caching.net.errors{cache.error.type=SyntheticTimeoutException}` | Late result stored if `AllowTimedOutFactoryBackgroundCompletion` |
 | Caller cancellation | — | maybe | **yes** — `OperationCanceledException` | — | **no** (not an error) | Nothing cached |
 | Key over the limit | — | no | **yes** — `ArgumentException` | Warning | `caching.net.guard.violations` | Fix the key |
 | Concurrent callers, same key | one factory result | once per instance | no | — | — | — |
@@ -121,9 +121,8 @@ Both behaviours are pinned by `RedisModeTests.OversizedValue_*`.
   ever down. It is the safety net behind the backplane, not a replacement for it. It may never
   exceed `Entry.DistributedExpiration`; startup validation rejects that, because the in-process copy
   would outlive the authoritative Redis entry.
-- **`Backplane.Enabled: true`** for anything with more than one replica. It defaults to `false` when
-  the cache is bound from configuration — only the `UseHybrid(...)` builder turns it on — so a
-  Hybrid cache without it logs a startup warning (event 3051) naming the stale window.
+- **Keep the backplane on** for anything with more than one replica — Hybrid gets it by default
+  ([FEATURES §18](FEATURES.md#18-backplane)); without it, startup warning 3051 names the stale window.
 - **`Logging:LogLevel:Caching.NET: Warning`** in production is still the tightest setting, but
   `Information` is now safe too: the engine's per-operation lines (measured at 2.04 per `GetOrSet`)
   are rewritten to `Observability.EngineOperationLogLevel`, `Debug` by default. Everything an
@@ -185,10 +184,11 @@ loses only its L1.
 
 1. Check `caching.net.invalidations` — is the application invalidating more than expected? This
    counter is caller-requested only: `Remove*`/`Expire*`/`RemoveByTag*`/`Clear*`, one record per call.
-2. Check `caching.net.evictions` — entries the in-process memory layer dropped on its own (expiry,
-   `Entry.MemorySizeLimit`, replacement). A rise here with a flat `caching.net.invalidations` means
-   memory pressure or a short local lifetime, not application code invalidating.
-3. Check `caching.net.errors{layer=redis}` — L2 failures turn every read into a miss.
+2. Check `caching.net.evictions` — every entry that left the in-process memory layer: expiry,
+   `Entry.MemorySizeLimit` pressure, replacement, and removal. A rise here with a flat
+   `caching.net.invalidations` means memory pressure, overwrites or a short local lifetime, not
+   application code invalidating.
+3. Check `caching.net.errors{cache.layer=redis}` — L2 failures turn every read into a miss.
 4. Check whether `Entry.LocalExpiration` or `DefaultExpiration` changed in a recent deploy.
 5. Check `caching.net.guard.violations` — oversized values are silently not cached (by design), so a
    payload that grew past the limit shows up here, not as an error.
@@ -330,12 +330,12 @@ once. See the [troubleshooting table](../README.md#26-troubleshooting).
     tags, still no round trip). **A service in `Redis` mode for latency rather than for cross-instance
     consistency should be in `Hybrid` mode.**
   - Fewer tags per entry is the direct lever: each tag is one more command on every hit.
-- **Redis.** With fail-safe on (the default) the **physical** Redis TTL is the entry's duration
-  **plus** `Resilience.FailSafeMaxDuration`, not the longer of the two: the stale copy has to outlive
-  logical expiry for fail-safe to have anything to serve. Under the defaults a one-minute entry
-  occupies Redis for two hours and one minute. Budget Redis memory against that sum, and lower
-  `Resilience.FailSafeMaxDuration` if it is the dominant term. Verified directly against `TTL` on a
-  live key.
+- **Redis.** With fail-safe on (the default) every entry occupies Redis for
+  `max(duration, FailSafeMaxDuration)` — two hours for anything shorter, under the defaults
+  ([FEATURES §8](FEATURES.md#8-fail-safe); measured TTLs in
+  [ARCHITECTURE §11](ARCHITECTURE.md#11-engine-facts-the-feature-guide-relies-on)). Budget Redis
+  memory against that, and lower `Resilience.FailSafeMaxDuration` — or turn fail-safe off for that
+  cache — if it is the dominant term.
 - **Payload size.** `Serialization.MaximumPayloadBytes` (1 MiB default) is a guardrail, not a target.
   Values close to it are a signal to cache a projection instead of a whole aggregate.
 - **Auto-recovery queue.** Bounded by `Resilience.AutoRecoveryMaxItems` (1000 default), which caps

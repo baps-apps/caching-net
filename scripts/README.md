@@ -33,7 +33,7 @@ pwsh scripts/dev.ps1 all                   # full pre-tag gate
 
 `benchmark/perf-gate.ps1` compares `BenchmarkDotNet.Artifacts/results/combined.json` against `benchmark/Caching.NET.Benchmark/bench-baseline.json`. Benchmarks with > 10% mean or allocation regression fail the gate.
 
-**That baseline file is not currently checked in**, so `bench:gate` (and therefore `dev.ps1 all`) fails until one is generated: run `dev.ps1 bench` on the reference machine and commit the resulting `combined.json` as `bench-baseline.json`. Published v3.0.0 numbers live in [docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
+**That baseline file is not currently checked in**, so `bench:gate` (and therefore `dev.ps1 all`) fails until one is generated: run `dev.ps1 bench` on the reference machine and commit the resulting `combined.json` as `bench-baseline.json`. Published benchmark numbers live in [docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
 
 ### Pre-tag gate
 

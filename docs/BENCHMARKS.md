@@ -1,7 +1,13 @@
 # Benchmarks
 
-Measured numbers for Caching.NET v3.1.0. Nothing in this repository claims a performance improvement
-without a run behind it.
+Measured numbers for Caching.NET. Nothing in this repository claims a performance improvement without
+a run behind it.
+
+**Re-measured for 3.2.x on 2026-10-12** — every suite, paired against v3.1.1 in the same session:
+[3.2.x against v3.1.1](#32x-against-v311). In short, nothing moved by more than ~8 ns: two rows are
+consistently 4–8 ns slower and both trace to upgraded dependencies, not Caching.NET code, and Redis
+mode allocates 96–400 B less per operation. The per-suite sections further down are the 3.1.x
+analyses; their numbers are within noise of today's, so their conclusions still hold.
 
 ## How to reproduce
 
@@ -25,16 +31,135 @@ docker rm -f bench-redis
 ## Environment
 
 ```text
-BenchmarkDotNet v0.15.8, macOS Tahoe 26.5.2 (25F84) [Darwin 25.5.0]
-Apple M4, 1 CPU, 10 logical and 10 physical cores
-.NET SDK 10.0.100, .NET 10.0.0, Arm64 RyuJIT armv8.0-a
-IterationCount=8  WarmupCount=3
-Redis 7.4-alpine in Docker on the same host (loopback)
+3.1.x sections                                   3.2.x re-measurement (2026-10-12)
+BenchmarkDotNet v0.15.8                          BenchmarkDotNet v0.15.8
+macOS Tahoe 26.5.2 (25F84) [Darwin 25.5.0]       macOS 27.0.1 (26A434) [Darwin 27.0.0]
+Apple M4, 10 cores                               Apple M4, 10 cores (load average ~3–4 during the runs)
+.NET SDK 10.0.100, .NET 10.0.0, Arm64 RyuJIT     .NET SDK 10.0.100, .NET 10.0.0, Arm64 RyuJIT
+IterationCount=8  WarmupCount=3                  IterationCount=8  WarmupCount=3 (each class's [SimpleJob])
+Redis 7.4-alpine in Docker, loopback             Redis 7.4-alpine in Docker, loopback
 ```
 
 A developer laptop over loopback Docker. Absolute Redis latencies are **not** representative of a
 production cluster; the useful signal is the *ratio* between layers, which is the thing the mode
 choice turns on.
+
+---
+
+## 3.2.x against v3.1.1
+
+**What was compared.** The working tree for 3.2.x against a `git worktree` of the `v3.1.1` tag, built
+`Release` with the identical benchmark harness (no file under `benchmark/` differs between them), on one
+machine in one session. Every suite ran twice in opposite orders — v3.1.1 then 3.2.x, then 3.2.x then
+v3.1.1 — so machine drift and run order cancel. A row is called faster or slower only when **both
+passes** move the same way with non-overlapping error intervals; anything else is reported as noise,
+whatever its percentage. The tables show the mean of the two passes.
+
+**What differs between the trees:** FusionCache 2.6.0 → 2.9.0, MessagePack 3.1.8 → 3.1.11,
+StackExchange.Redis 3.1.13 → 3.3.1, `Microsoft.Extensions.*` 10.0.11 → 10.0.12, and the 3.2.x
+Caching.NET changes (key layout, invalidation-override fix, InMemory serializer for auto-clone,
+backplane default, validation).
+
+**Findings.**
+
+- **Two rows are slower in both passes, by single nanoseconds.** An in-memory hit with telemetry off
+  is +3.5% (~4.7 ns), and a 256-byte MessagePack deserialize is +4.1% (~7.6 ns). A third paired run —
+  the published 3.2.0 commit against the 3.2.x tree, in A-B-B-A order — attributes the first one: 3.2.0
+  is already +2.6% to +2.9% over v3.1.1, and 3.2.x against 3.2.0 moved −0.6% in one order and +3.2% in
+  the other. So it arrived with the FusionCache 2.9 dependency set, not with Caching.NET code, and the
+  3.2.x changes (including the InMemory serializer) add nothing measurable. The MessagePack row is the
+  dependencies too: Caching.NET's codec and serializer decorator are byte-identical to v3.1.1.
+- **Redis mode allocates less**, the same amount in both passes: −~190 B per hit, −400 B per two-tag
+  hit, −96 B per miss. Redis- and Hybrid-mode latencies came out equal or faster in every comparison,
+  but with wide enough intervals that no single row clears the both-passes bar.
+- **Everything else is flat**, including every telemetry, layer-decorator and backplane row the 3.1.x
+  analyses below rest on.
+- **Two rows remain unmeasurable at this precision**, as in every earlier session: `Factory execution`
+  at concurrency 1 (±1–8 µs), and an occasional outlier on `Hybrid L1 hit, trace listener attached, no
+  parent span` (±599 ns in one baseline pass). Their large Δ values are noise.
+
+How noisy one session is, for scale: the same 3.2.x tree read 149.6 ns and then 140.5 ns for `L1 hit`
+in back-to-back runs during the attribution pass. A ±7% swing on a ~140 ns row is this machine's
+floor, which is why a single pass is never enough to call a few-nanosecond change.
+
+#### Backplane dispatch, 3.2.x vs v3.1.1
+
+| Method | v3.1.1 | 3.2.x | Δ | Allocated (v3.1.1 → 3.2.x) | Verdict |
+|---|---:|---:|---:|---:|---|
+| Incoming message dispatch (async), no trace listener | 10.0 ns | 10.1 ns | +1.4% | 72 B | within noise (+1.0%, +1.7%) |
+| Incoming message dispatch (async), trace listener attached | 192.0 ns | 193.4 ns | +0.7% | 888 B | within noise (+0.8%, +0.7%) |
+| Incoming message dispatch, no trace listener | 3.9 ns | 3.9 ns | +0.2% | 0 B | within noise (-0.3%, +0.8%) |
+| Incoming message dispatch, trace listener attached | 179.8 ns | 180.1 ns | +0.2% | 816 B | within noise (-0.8%, +1.1%) |
+
+#### In-memory, 3.2.x vs v3.1.1
+
+| Method | Param | v3.1.1 | 3.2.x | Δ | Allocated (v3.1.1 → 3.2.x) | Verdict |
+|---|---|---:|---:|---:|---:|---|
+| Concurrent get-or-set on one key | Concurrency=1 | 172.1 ns | 171.8 ns | -0.1% | 384 B | within noise (-0.4%, +0.1%) |
+| Concurrent get-or-set on one key | Concurrency=64 | 10.76 µs | 10.82 µs | +0.5% | 23,136 B | within noise (+0.1%, +0.9%) |
+| Factory execution | Concurrency=1 | 3,675.8 ns | 1,844.9 ns | -49.8% | 4,248 B → 4,208 B | within noise (-12.5%, -66.9%) |
+| Factory execution | Concurrency=64 | 1,713.2 ns | 1,704.6 ns | -0.5% | 4,208 B | within noise (-2.9%, +2.2%) |
+| L1 hit | Concurrency=1 | 139.0 ns | 142.7 ns | +2.6% | 160 B | within noise (+0.4%, +5.0%) |
+| L1 hit | Concurrency=64 | 142.8 ns | 141.6 ns | -0.9% | 160 B | within noise (-2.5%, +0.8%) |
+| L1 miss (no factory) | Concurrency=1 | 104.7 ns | 102.5 ns | -2.0% | 176 B | within noise (-4.6%, +0.7%) |
+| L1 miss (no factory) | Concurrency=64 | 103.2 ns | 102.3 ns | -0.8% | 176 B | within noise (+0.0%, -1.6%) |
+
+#### Layer decorator, 3.2.x vs v3.1.1
+
+| Method | v3.1.1 | 3.2.x | Δ | Allocated (v3.1.1 → 3.2.x) | Verdict |
+|---|---:|---:|---:|---:|---|
+| InstrumentedMemoryCache.TryGetValue, ActivityListener attached, ended parent span | 22.2 ns | 22.4 ns | +0.9% | 0 B | within noise (+2.1%, -0.3%) |
+| InstrumentedMemoryCache.TryGetValue, ActivityListener attached, ended parent span, LayerTracing=Always | 140.9 ns | 140.6 ns | -0.2% | 600 B | within noise (+0.2%, -0.6%) |
+| InstrumentedMemoryCache.TryGetValue, ActivityListener attached, no parent span | 20.0 ns | 20.2 ns | +1.1% | 0 B | within noise (+2.2%, -0.1%) |
+| InstrumentedMemoryCache.TryGetValue, ActivityListener attached, no parent span, LayerTracing=Always | 140.6 ns | 141.3 ns | +0.5% | 616 B | within noise (+1.8%, -0.8%) |
+| InstrumentedMemoryCache.TryGetValue, ActivityListener attached, under parent span | 146.3 ns | 147.5 ns | +0.8% | 600 B | within noise (+3.0%, -1.2%) |
+| InstrumentedMemoryCache.TryGetValue, MeterListener attached | 57.6 ns | 58.1 ns | +0.8% | 0 B | within noise (+1.0%, +0.7%) |
+| InstrumentedMemoryCache.TryGetValue, no listener | 18.5 ns | 18.4 ns | -0.4% | 0 B | within noise (-1.7%, +0.9%) |
+| InstrumentedMemoryCache.TryGetValue, no trace listener | 19.5 ns | 19.0 ns | -2.5% | 0 B | within noise (-1.1%, -3.9%) |
+| Raw MemoryCache.TryGetValue | 17.0 ns | 17.0 ns | -0.1% | 0 B | within noise (-0.1%, +0.0%) |
+
+#### Redis and Hybrid, 3.2.x vs v3.1.1
+
+| Method | v3.1.1 | 3.2.x | Δ | Allocated (v3.1.1 → 3.2.x) | Verdict |
+|---|---:|---:|---:|---:|---|
+| Hybrid L1 hit | 414.1 ns | 415.1 ns | +0.2% | 624 B | within noise (-1.1%, +1.5%) |
+| Hybrid L1 hit, 2 tags | 718.9 ns | 717.8 ns | -0.1% | 1,232 B | within noise (-1.3%, +1.1%) |
+| Hybrid L1 hit, trace listener attached, no parent span | 1,468.8 ns | 994.3 ns | -32.3% | 3,096 B | within noise (-48.7%, +0.2%) |
+| Hybrid L1 hit, trace listener attached, under parent span | 1,021.1 ns | 1,009.5 ns | -1.1% | 3,152 B | within noise (-2.6%, +0.4%) |
+| Hybrid full miss + factory | 130.57 µs | 115.57 µs | -11.5% | 15,155 B → 11,656 B | within noise (-6.5%, -16.7%) |
+| Redis mode hit | 301.84 µs | 287.54 µs | -4.7% | 12,496 B → 12,308 B | within noise (-1.2%, -8.4%) |
+| Redis mode hit, 2 tags | 494.77 µs | 481.89 µs | -2.6% | 19,504 B → 19,104 B | within noise (-1.6%, -3.6%) |
+| Redis mode miss | 110.27 µs | 103.98 µs | -5.7% | 3,094 B → 2,998 B | within noise (-2.5%, -8.7%) |
+
+#### Serialization, 3.2.x vs v3.1.1
+
+| Method | Param | v3.1.1 | 3.2.x | Δ | Allocated (v3.1.1 → 3.2.x) | Verdict |
+|---|---|---:|---:|---:|---:|---|
+| JSON + Brotli deserialize | PayloadSize=256 | 3,203.4 ns | 3,111.2 ns | -2.9% | 83,776 B | **faster** in both passes (-4.6%, -1.1%) |
+| JSON + Brotli deserialize | PayloadSize=65536 | 96.29 µs | 93.26 µs | -3.1% | 344,907 B | within noise (-6.0%, -0.2%) |
+| JSON + Brotli serialize | PayloadSize=256 | 2,427.1 ns | 2,490.1 ns | +2.6% | 992 B | within noise (-0.4%, +5.6%) |
+| JSON + Brotli serialize | PayloadSize=65536 | 15.48 µs | 15.33 µs | -0.9% | 98,920 B | within noise (-1.9%, +0.1%) |
+| JSON deserialize | PayloadSize=256 | 274.4 ns | 273.6 ns | -0.3% | 1,096 B | within noise (-0.7%, +0.1%) |
+| JSON deserialize | PayloadSize=65536 | 16.65 µs | 16.64 µs | -0.1% | 196,946 B | within noise (-0.8%, +0.7%) |
+| JSON serialize | PayloadSize=256 | 167.6 ns | 166.2 ns | -0.9% | 728 B | **faster** in both passes (-1.1%, -0.6%) |
+| JSON serialize | PayloadSize=65536 | 8,989.0 ns | 8,962.3 ns | -0.3% | 131,288 B | within noise (-1.6%, +1.1%) |
+| MessagePack deserialize | PayloadSize=256 | 188.6 ns | 196.2 ns | +4.1% | 960 B | **slower** in both passes (+5.0%, +3.2%) |
+| MessagePack deserialize | PayloadSize=65536 | 14.69 µs | 14.59 µs | -0.7% | 196,810 B | within noise (-1.0%, -0.3%) |
+| MessagePack serialize | PayloadSize=256 | 157.4 ns | 156.1 ns | -0.9% | 704 B | within noise (-0.8%, -1.0%) |
+| MessagePack serialize | PayloadSize=65536 | 6,994.5 ns | 7,047.9 ns | +0.8% | 131,264 B | within noise (+0.6%, +0.9%) |
+
+#### Telemetry overhead, 3.2.x vs v3.1.1
+
+| Method | v3.1.1 | 3.2.x | Δ | Allocated (v3.1.1 → 3.2.x) | Verdict |
+|---|---:|---:|---:|---:|---|
+| Hit, metrics enabled, no trace listener | 153.4 ns | 151.6 ns | -1.2% | 192 B | within noise (-1.5%, -0.8%) |
+| Hit, telemetry disabled | 132.9 ns | 137.6 ns | +3.5% | 192 B | **slower** in both passes (+3.4%, +3.7%) |
+| Hit, trace listener attached, no parent span | 451.9 ns | 449.0 ns | -0.6% | 1,464 B | within noise (-1.2%, -0.1%) |
+| Hit, trace listener attached, under parent span | 463.6 ns | 464.2 ns | +0.1% | 1,520 B | within noise (-0.9%, +1.2%) |
+| Miss, metrics enabled, no trace listener | 104.1 ns | 105.1 ns | +1.0% | 192 B | within noise (+1.4%, +0.5%) |
+| Miss, telemetry disabled | 108.3 ns | 97.6 ns | -9.9% | 200 B | within noise (+3.5%, -20.8%) |
+| Miss, trace listener attached, no parent span | 439.5 ns | 443.8 ns | +1.0% | 1,456 B | within noise (+0.9%, +1.1%) |
+| Miss, trace listener attached, under parent span | 454.3 ns | 462.6 ns | +1.8% | 1,512 B | within noise (+3.5%, +0.2%) |
 
 ---
 

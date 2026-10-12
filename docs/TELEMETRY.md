@@ -425,8 +425,8 @@ Cancellation is not reported as an internal error: a cancelled caller produces
 By default, every operation span carries a non-reversible key fingerprint
 (`cache.key.fingerprint`, produced by `ICacheGuard.Fingerprint`) instead of the caller's key. Setting
 `Security.AllowRawKeysInTelemetry` (default `false`) switches every operation span to
-`cache.key` — the literal key the application passed to the cache, prefix included — for that cache
-instance:
+`cache.key` — the literal key the application passed to the cache, without the application/cache-name
+prefix (the physical key is never recorded) — for that cache instance:
 
 ```csharp
 services.AddCaching(cache => cache
@@ -460,15 +460,14 @@ redaction, which has its own, separate `Security.AllowRawKeysInLogs` flag).
 { "Logging": { "LogLevel": { "Caching.NET": "Warning", "Caching.NET.Redis": "Information" } } }
 ```
 
-That is the production setting; see
-[Choosing a level for the `Caching.NET` category](#choosing-a-level-for-the-cachingnet-category-in-production)
-for why the root category is not `Information`.
+That is the tightest production setting; `Information` on the root category is also safe. See
+[Choosing a level for the `Caching.NET` category](#choosing-a-level-for-the-cachingnet-category-in-production).
 
 | Level | Used for |
 |---|---|
 | Trace | Detailed development diagnostics (engine) |
-| Debug | Cache flow, internal decisions, synthetic timeouts |
-| Information | Startup summary, connection restored, first TLS handshake, **one engine line per cache operation** |
+| Debug | Cache flow, internal decisions, synthetic timeouts, and the engine's per-operation lines (rewritten here by the default `Observability.EngineOperationLogLevel`) |
+| Information | Startup summary, connection restored, first TLS handshake. Engine per-operation lines only when `Observability.EngineOperationLogLevel` is set to `Information` |
 | Warning | Stale value served, Redis degradation, corrupt payload, oversized payload, limit breach |
 | Error | Failed cache operations, TLS rejection |
 | Critical | Redis connection could not be opened at all |

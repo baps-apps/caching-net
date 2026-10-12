@@ -102,8 +102,16 @@ increment, a send, a charge) does not belong in a cache factory in any mode.
 entry per tag — `Clear` uses two reserved tags — and every read compares its own entry's timestamp
 against the marker. A marker is therefore an ordinary cache entry, with its own lifetime and its own
 layer placement, configured by `FusionCacheOptions.TagsDefaultEntryOptions` rather than by
-`DefaultEntryOptions`. The engine's defaults for it are deliberately long-lived: **ten days, memory
-layer included.**
+`DefaultEntryOptions`. The engine's defaults for it are deliberately long-lived. Up to FusionCache
+2.6.0 that was a flat **ten days, memory layer included** — the lifetime the defects below were
+measured against. As of 2.9.0 a marker is logically fresh for 1 hour (1 day in the distributed
+layer) and kept for **ten days through fail-safe**, which the engine honours when it reads a marker
+back: an entry written before an invalidation and first read after the marker's logical expiry is
+still treated as invalidated, and a marker's Redis `TTL` measures ten days. The engine reads markers
+through its own `GetOrSet<long>`, whose factory returns the stale timestamp, so a read that finds a
+marker logically expired also rewrites it with the marker defaults — ten more days from that read.
+Unit-pinned against the engine's own defaults by
+`CacheEngineMappingTests.HybridMode_BoundsTheInProcessTagMarkerByTheLocalExpiration`.
 
 Applying the mode only to `DefaultEntryOptions` therefore left invalidation outside the mode, and that
 was not a tuning detail — it silently broke `RemoveByTag` and `Clear`:
@@ -125,8 +133,8 @@ was not a tuning detail — it silently broke `RemoveByTag` and `Clear`:
 | `Redis` | `SetSkipMemoryCache(true)` — a marker is as authoritative as an entry, at the cost of extra Redis round trips per read (see README, "Redis mode") |
 | `Hybrid` | `MemoryCacheDuration = Entry.LocalExpiration ?? DefaultExpiration` — may live in L1, may not outlive the bound every other local copy obeys |
 
-The marker's *logical* and *distributed* lifetimes keep the engine's long defaults on purpose: that is
-what makes an invalidation durable in Redis, so an instance that was offline when it happened still
+The marker's *logical*, *distributed* and *fail-safe* lifetimes keep the engine's long defaults on
+purpose: that is what makes an invalidation durable in Redis, so an instance that was offline when it happened still
 observes it on startup. Only the marker's placement in, and lifetime within, the in-process layer is
 brought under the mode. Pinned by `CacheEngineMappingTests`, and end-to-end from a *warm* reader by
 `RedisModeTests.TagInvalidation_IsSeenByAnInstanceThatAlreadyReadTheKey`,
@@ -142,7 +150,8 @@ to be **additive by construction** rather than a caller-visible `FusionCacheEntr
 property on it is nullable and starts `null`; `null` means "use the configured value". `FusionCacheService`
 resolves a caller's `CacheEntryOverrides` by taking a fresh copy of the cache's own default entry
 options (`inner.CreateEntryOptions()` — mode skip flags and all already applied) and mutating onto it
-only the properties the caller actually set — see `CacheEntryOverridesMapper.Resolve`. The key and tag
+only the properties the caller actually set — see `CacheEntryOverridesMapper.Resolve` (and, for the
+two verbs that write a marker rather than an entry, `ResolveMarker` below). The key and tag
 guards do not ride on entry options at all: `FusionCacheService` runs them itself before the engine is
 called, so no per-call options path can skip them. There is no way to
 construct a `CacheEntryOverrides` that starts from a blank slate: the type has no equivalent of
@@ -153,6 +162,25 @@ from `CacheEntryOverrides`: exposing them would let an application-level call re
 boundary the same way a raw `FusionCacheEntryOptions` used to. `Health.CachingHealthCheck` reaches
 them instead through `FusionCacheService`'s internal `ProbeSetAsync`/`ProbeTryGetAsync`, which operate
 below the public contract on purpose (see docs/HEALTH-CHECKS.md).
+
+**Overrides on `RemoveByTag` and `Clear` start from the marker, not the entry.** Those two verbs
+write a marker, and the engine uses whatever options it is handed for it. Up to 3.1.1 they went
+through `Resolve` like every other verb, so any `CacheEntryOverrides` — even an empty one — built
+the marker from `CreateEntryOptions()`: it lived as long as an ordinary entry (2 h in Redis under the
+defaults, instead of 10 days), and once it expired an invalidated entry nobody had read since was
+served again. The renewal described above only narrowed that to tags nobody read in the window
+between the marker's logical and physical expiry. Since 3.2.0 they go through
+`CacheEntryOverridesMapper.ResolveMarker`, which starts from a copy of the cache's mode-mapped
+`TagsDefaultEntryOptions` (handed to `FusionCacheService` by `CacheEngineFactory`) and applies only
+the overrides that change *how* the marker is written — the two background flags,
+`SkipBackplaneNotification` and the distributed timeouts. Lifetime, fail-safe and memory-layer
+overrides are ignored on those verbs: the marker's lifetime is what keeps the invalidation effective,
+and the caller has no entry of its own being written. The first call on a cache that passes one logs
+warning 3041 naming the ignored properties — once per cache, so a shared overrides object does not log
+on every invalidation; `MarkerOverrides_EveryPropertyIsAppliedOrReportedIgnored` fails for a new
+`CacheEntryOverrides` property that is neither applied nor reported. Pinned by `CacheEntryOverridesMapperTests`, by
+`InMemoryCacheTests.RemoveByTag_WithOverrides_StaysInvalidatedPastAnEntryLifetime`, and against a
+real Redis `TTL` by `RedisModeEntryOptionsTests.InvalidationOverrides_KeepTheMarkersTenDayLifetime`.
 
 ### 3.2 Backplane work cannot join the trace that caused it
 
@@ -350,8 +378,11 @@ guard the way a caller-constructed `FusionCacheEntryOptions` used to.
 - **A new knob** → add it to the matching `CachingOptions` group, map it in
   `CacheEngineFactory`, add a matching field to `CacheEntryOverrides` and
   `CacheEntryOverridesMapper` when it is per-call, validate it in `CachingOptionsValidator`, add a
-  builder method in the matching group of `CachingBuilder`, and add a mapping assertion to
-  `CacheEngineMappingTests`.
+  builder method in the matching group of `CachingBuilder`, add a mapping assertion to
+  `CacheEngineMappingTests`, and document it in [FEATURES.md](FEATURES.md) (quick-reference row and
+  section: default, trade-offs, when to use). A knob that configures Caching.NET's own behaviour
+  rather than the engine's, such as `Observability.LayerTracing`, has no engine mapping and is tested
+  where it is read instead.
 - **A new operation** → first check whether the eight `ICacheService` verbs already cover it. Only add
   to `CacheExtensions` if it does something the contract does not (batching, a different default,
   a guard). Never add a pass-through rename, and never add a ninth verb to `ICacheService` itself.
@@ -392,3 +423,45 @@ against real processes rather than two service providers sharing one CLR.
 
 Integration and chaos tests poll for observable outcomes instead of sleeping for a fixed duration,
 except where a TTL is the thing under test.
+
+## 11. Engine facts the feature guide relies on
+
+[FEATURES](FEATURES.md) describes behaviour, not the engine. The engine-specific details behind it
+live here, in one place, so an engine upgrade has one page to re-verify. Measured on FusionCache
+2.9.0; re-measure on every engine bump.
+
+**Tag and `Clear` markers.** `RemoveByTagAsync("category:tools")` writes one marker,
+`{prefix}:__fc:t:category:tools`, holding the invalidation timestamp; it touches no tagged entry.
+`Clear()` and `Clear(allowFailSafe: false)` use the reserved tags `__fc:t:*` (expire all) and
+`__fc:t:!` (remove all). In Redis mode, and in Hybrid without a backplane, every read re-checks both
+clear markers, so even an untagged hit reads two markers — two Redis round trips in Redis mode.
+InMemory, and Hybrid with a backplane, keep the two clear timestamps in process and skip that read.
+Marker lifetimes and renewal: §3.1. With a backplane, a second Hybrid pod stopped serving an
+invalidated entry 8 ms after `RemoveByTagAsync` returned (loopback Redis).
+
+**Fail-safe physical TTL.** The physical lifetime is the longer of the entry's duration and
+`FailSafeMaxDuration`, not their sum. Measured with `TTL` on live Redis keys under the 2 h default:
+1 min → 2 h, 10 min → 2 h, 3 h → 3 h; fail-safe off, 10 min → 10 min.
+
+**Stampede protection in Redis mode.** The engine's per-key lock re-checks the memory cache after
+acquiring it. Redis mode bypasses the memory cache, so the re-check always misses and a cold key runs
+its factory twice per instance; InMemory and Hybrid run it once.
+
+**Auto-clone.** The engine clones by round-tripping through its serializer and throws
+`InvalidOperationException: A serializer is needed when using EnableAutoClone.` without one. Redis
+and Hybrid get the serializer from `SetupDistributedCache`; InMemory has no distributed layer, so
+`CacheEngineFactory` calls `SetupSerializer` with the bare `Serialization.Format` serializer — no
+payload limit or layer metrics, which describe Redis payloads. Pinned by
+`InMemoryCacheTests.AutoCloneOverride_HandsEachCallerItsOwnCopy`.
+
+**Code map.**
+
+| Concern | Where |
+|---|---|
+| Jitter window | `Internal/JitterPolicy`, `CacheEntryOverridesMapper.ApplyJitter` |
+| Tag validation | `CacheGuard.ValidateTags`, called from `Internal/FusionCacheService` (`Validate` on writes, inline on `RemoveByTagAsync`) |
+| Marker placement per mode | `CacheEngineFactory.MapTagsEntryOptions` (§3.1) |
+| Marker overrides | `CacheEntryOverridesMapper.ResolveMarker`, `IgnoredMarkerOverrides` (warning 3041) |
+| Marker key → tag on the receive span | `BackplaneKeyDecoder` |
+| Engine marker reads kept out of factory metrics | `CacheEventBridge.IsEngineInternalTagKey` |
+| Hybrid backplane default for configuration | `ServiceCollectionExtensions.ApplyHybridBackplaneDefault` |

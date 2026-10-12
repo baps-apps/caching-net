@@ -118,6 +118,67 @@ public class InMemoryCacheTests
         Assert.True((await cache.TryGetAsync<string>("Product:3")).HasValue);
     }
 
+    /// <summary>
+    /// The invalidation is a marker entry, and passing overrides used to build that marker from the
+    /// <i>entry</i> defaults: it lived as long as an ordinary entry, and once it was gone an entry it
+    /// had invalidated — with a longer lifetime of its own, and not read since — was served again.
+    /// The TTLs are the thing under test, so this one waits rather than polls.
+    /// </summary>
+    [Fact]
+    public async Task RemoveByTag_WithOverrides_StaysInvalidatedPastAnEntryLifetime()
+    {
+        using var host = TestHost.BuildInMemory(c => c
+            .WithDefaultExpiration(TimeSpan.FromMilliseconds(200))
+            .WithFailSafe(maxDuration: TimeSpan.FromMilliseconds(500))
+            .WithJitter(TimeSpan.Zero));
+        var cache = host.Cache();
+        var longLived = new CacheEntryOverrides
+        {
+            LocalExpiration = TimeSpan.FromSeconds(30),
+            FailSafeMaxDuration = TimeSpan.FromSeconds(30)
+        };
+
+        await cache.SetAsync("Product:1", "a", longLived, tags: ["category:tools"]);
+        await cache.RemoveByTagAsync("category:tools", new CacheEntryOverrides());
+
+        // Past an ordinary entry's whole physical lifetime (500 ms), with no read in between.
+        await Task.Delay(TimeSpan.FromMilliseconds(900));
+
+        Assert.False((await cache.TryGetAsync<string>("Product:1")).HasValue);
+    }
+
+    /// <summary>
+    /// Auto-clone copies a value by round-tripping it through a serializer. InMemory mode has no
+    /// distributed layer to bring one, so up to 3.1.1 the engine threw <c>InvalidOperationException</c>
+    /// on every write that asked for a clone; the cache now configures its serializer for cloning alone.
+    /// </summary>
+    [Fact]
+    public async Task AutoCloneOverride_HandsEachCallerItsOwnCopy()
+    {
+        using var host = TestHost.BuildInMemory();
+        var cache = host.Cache();
+        var clone = new CacheEntryOverrides { EnableAutoClone = true };
+
+        await cache.SetAsync("Products", new List<string> { "a" }, clone);
+        var first = await cache.GetOrDefaultAsync<List<string>>("Products", options: clone);
+        first!.Add("mutated");
+        var second = await cache.GetOrDefaultAsync<List<string>>("Products", options: clone);
+
+        Assert.Equal(["a"], second);
+    }
+
+    [Fact]
+    public async Task AutoCloneConfigured_HandsEachCallerItsOwnCopy()
+    {
+        using var host = TestHost.BuildInMemory(c => c.Options.Entry.EnableAutoClone = true);
+        var cache = host.Cache();
+
+        await cache.SetAsync("Products", new List<string> { "a" });
+        (await cache.GetOrDefaultAsync<List<string>>("Products"))!.Add("mutated");
+
+        Assert.Equal(["a"], await cache.GetOrDefaultAsync<List<string>>("Products"));
+    }
+
     [Fact]
     public async Task Clear_EvictsEverything()
     {

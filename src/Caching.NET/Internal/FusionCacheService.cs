@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Caching.NET.Options;
 using Caching.NET.Telemetry;
+using Microsoft.Extensions.Logging;
 using ZiggyCreatures.Caching.Fusion;
 
 namespace Caching.NET.Internal;
@@ -22,14 +23,24 @@ internal sealed class FusionCacheService : ICacheService
     private readonly CacheGuard _guard;
     private readonly CacheTelemetryContext _telemetry;
     private readonly JitterPolicy _jitter;
+    private readonly FusionCacheEntryOptions _markerDefaults;
+    private readonly ILogger _logger;
+    private int _markerOverridesWarned;
 
     public FusionCacheService(
-        IFusionCache inner, CacheGuard guard, CacheTelemetryContext telemetry, JitterPolicy jitter)
+        IFusionCache inner,
+        CacheGuard guard,
+        CacheTelemetryContext telemetry,
+        JitterPolicy jitter,
+        FusionCacheEntryOptions markerDefaults,
+        ILogger logger)
     {
         _inner = inner;
         _guard = guard;
         _telemetry = telemetry;
         _jitter = jitter;
+        _markerDefaults = markerDefaults;
+        _logger = logger;
     }
 
     /// <summary>The engine cache, for disposal ordering in <see cref="CacheInstance"/>.</summary>
@@ -287,7 +298,7 @@ internal sealed class FusionCacheService : ICacheService
         using var activity = _telemetry.StartOperation("cache.remove_by_tag", tag);
         try
         {
-            await _inner.RemoveByTagAsync(tag, Resolve(options), token).ConfigureAwait(false);
+            await _inner.RemoveByTagAsync(tag, ResolveMarker(options, "RemoveByTag"), token).ConfigureAwait(false);
             activity?.SetTag(CacheTelemetryAttributes.Result, CacheResults.Removed);
             _telemetry.RecordInvalidation("remove_by_tag");
             _telemetry.RecordOperation("remove_by_tag", CacheResults.Removed);
@@ -305,7 +316,7 @@ internal sealed class FusionCacheService : ICacheService
         using var activity = _telemetry.StartActivity("cache.clear");
         try
         {
-            await _inner.ClearAsync(allowFailSafe, Resolve(options), token).ConfigureAwait(false);
+            await _inner.ClearAsync(allowFailSafe, ResolveMarker(options, "Clear"), token).ConfigureAwait(false);
             activity?.SetTag(CacheTelemetryAttributes.Result, CacheResults.Removed);
             _telemetry.RecordInvalidation("clear");
             _telemetry.RecordOperation("clear", CacheResults.Removed);
@@ -533,7 +544,7 @@ internal sealed class FusionCacheService : ICacheService
         using var activity = _telemetry.StartOperation("cache.remove_by_tag", tag);
         try
         {
-            _inner.RemoveByTag(tag, Resolve(options), token);
+            _inner.RemoveByTag(tag, ResolveMarker(options, "RemoveByTag"), token);
             activity?.SetTag(CacheTelemetryAttributes.Result, CacheResults.Removed);
             _telemetry.RecordInvalidation("remove_by_tag");
             _telemetry.RecordOperation("remove_by_tag", CacheResults.Removed);
@@ -550,7 +561,7 @@ internal sealed class FusionCacheService : ICacheService
         using var activity = _telemetry.StartActivity("cache.clear");
         try
         {
-            _inner.Clear(allowFailSafe, Resolve(options), token);
+            _inner.Clear(allowFailSafe, ResolveMarker(options, "Clear"), token);
             activity?.SetTag(CacheTelemetryAttributes.Result, CacheResults.Removed);
             _telemetry.RecordInvalidation("clear");
             _telemetry.RecordOperation("clear", CacheResults.Removed);
@@ -619,6 +630,25 @@ internal sealed class FusionCacheService : ICacheService
 
     private FusionCacheEntryOptions? Resolve(CacheEntryOverrides? options)
         => CacheEntryOverridesMapper.Resolve(options, _inner, _jitter);
+
+    /// <summary>
+    /// <c>RemoveByTag</c> and <c>Clear</c> write a marker entry, not the caller's entry, so their
+    /// overrides start from the marker defaults — see <see cref="CacheEntryOverridesMapper.ResolveMarker"/>.
+    /// The first call on this cache that passes an override the marker ignores logs which ones.
+    /// </summary>
+    private FusionCacheEntryOptions? ResolveMarker(CacheEntryOverrides? options, string operation)
+    {
+        if (options is not null && Volatile.Read(ref _markerOverridesWarned) == 0)
+        {
+            var ignored = CacheEntryOverridesMapper.IgnoredMarkerOverrides(options);
+            if (ignored.Length > 0 && Interlocked.Exchange(ref _markerOverridesWarned, 1) == 0)
+            {
+                CacheLogMessages.MarkerOverridesIgnored(_logger, operation, CacheName, ignored);
+            }
+        }
+
+        return CacheEntryOverridesMapper.ResolveMarker(options, _markerDefaults);
+    }
 
     /// <summary>
     /// The layer a cache <i>hit</i> is attributed to, or <c>null</c> when it cannot be known. The

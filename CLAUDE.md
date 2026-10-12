@@ -31,9 +31,13 @@ the composition is hand-rolled rather than using the engine's DI helpers.
   - `Caching.NET.Tests.Chaos` — **requires Docker**; outage, restart and fail-safe behaviour
   - `Caching.NET.Tests.Pod` — not a test project: a console "pod" the integration suite launches as a
     separate OS process to test backplane behaviour across real processes
-- `docs/` — ARCHITECTURE, SECURITY, TELEMETRY, OPERATIONS, HEALTH-CHECKS, BENCHMARKS,
+- `docs/` — FEATURES (per-feature reference: defaults, trade-offs, when to use), ARCHITECTURE,
+  SECURITY, TELEMETRY, OPERATIONS, HEALTH-CHECKS, BENCHMARKS,
   MIGRATION-V2-TO-V3. `MIGRATION-V1-TO-V2.md` and `V2.0.0-RELEASE-IMPACT.md` are **historical**: they
   document the v2 surface and carry a banner saying so — do not rewrite them into v3 shape.
+  One home per fact: FEATURES holds current behavior and defaults only (no "up to 3.x" history — that
+  is the CHANGELOG's), engine-version measurements and code pointers go in ARCHITECTURE §11, and
+  README/OPERATIONS link to FEATURES rather than restating a default.
 
 ## Build & Test Commands
 
@@ -85,7 +89,10 @@ CACHINGNET_BENCH_REDIS="127.0.0.1:63790,abortConnect=false" dotnet run -c Releas
 Per cache the registration claims the name in `CacheRegistrationTracker` (duplicate names throw at
 registration), sets up named options with `ValidateOnStart`, and registers a keyed `CacheInstance`
 plus keyed `ICacheService` / `ICacheGuard` projections. There is no `IFusionCache` registration
-anywhere in the container. The default cache also gets non-keyed aliases resolved **through
+anywhere in the container. A cache whose configuration section selects Hybrid without setting
+`Backplane:Enabled` gets `Backplane.Enabled = true` (`ApplyHybridBackplaneDefault`), applied in the
+same `PostConfigure` as the fluent overrides but *before* them, so code always has the last word; it
+is undone only if code moves the cache out of Hybrid without touching the backplane. The default cache also gets non-keyed aliases resolved **through
 `CacheInstance`**, never through the keyed `ICacheService` — see docs/ARCHITECTURE.md §2 for the
 resolution cycle that motivates this.
 
@@ -104,8 +111,13 @@ Mode mapping:
 | `Hybrid` | neither | `MemoryCacheDuration = Entry.LocalExpiration ?? DefaultExpiration` |
 
 `MapTagsEntryOptions` is not optional detail: the engine implements `RemoveByTag`/`Clear` as marker
-entries with their own ten-day, memory-layer-included defaults, so a mode applied only to
+entries with their own long-lived defaults (FusionCache 2.9.0: 1 h logical, 1 day in L2, kept ten
+days through fail-safe), so a mode applied only to
 `DefaultEntryOptions` silently loses invalidation across instances. See docs/ARCHITECTURE.md §3.1.
+For the same reason `RemoveByTag*`/`Clear*` resolve per-call overrides through
+`CacheEntryOverridesMapper.ResolveMarker` — onto a copy of those mapped marker defaults, operational
+overrides only — never through `Resolve`, which starts from the *entry* defaults and gave markers an
+entry's lifetime up to 3.1.1.
 
 ### Public surface
 
@@ -146,12 +158,14 @@ entries with their own ten-day, memory-layer-included defaults, so a mode applie
 
 - **A knob** → `CachingOptions` group + `CacheEngineFactory` mapping + `CacheEntryOverrides` field (if
   it is per-call) + `CachingOptionsValidator` rule + `CachingBuilder` method + a
-  `CacheEngineMappingTests` assertion. A knob that configures *Caching.NET's own* behaviour rather
+  `CacheEngineMappingTests` assertion + its entry in [docs/FEATURES.md](docs/FEATURES.md) (quick-reference
+  row and section: default, trade-offs, when to use). A knob that configures *Caching.NET's own* behaviour rather
   than the engine's — `Observability.LayerTracing` is the example — has no `CacheEngineFactory`
   mapping and therefore no `CacheEngineMappingTests` assertion; it is read from
   `CacheTelemetryContext` (or whichever type owns it) and tested there instead. Everything else in
   the list still applies, the validator rule included: an `enum` knob needs an `Enum.IsDefined` check,
-  because configuration binding rejects an unknown *name* but nothing stops a cast from code.
+  because configuration binding rejects an unknown *name* but binds any number (`"Mode": "7"`), and
+  nothing stops a cast from code.
 - **A metric** → instrument in `CacheTelemetry`, recorder in `CacheTelemetryContext`, and a producer
   chosen from the one-producer-per-signal split: `Internal/FusionCacheService` for anything on the
   caller's synchronous path (hits, misses, operations, foreground invalidations), `CacheEventBridge`

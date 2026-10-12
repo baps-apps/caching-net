@@ -98,6 +98,12 @@ internal static partial class CacheLogMessages
     public static partial void TagRejected(ILogger logger, string cacheName, string reason);
 
     [LoggerMessage(
+        EventId = 3041,
+        Level = LogLevel.Warning,
+        Message = "{Operation} on cache {CacheName} ignored the per-call overrides {IgnoredOverrides}. An invalidation is stored as a marker entry whose lifetime keeps it effective, so only AllowBackgroundDistributedOperations, AllowBackgroundBackplaneOperations, SkipBackplaneNotification, DistributedSoftTimeout and DistributedHardTimeout apply to it. Logged once per cache; pass a separate overrides object to RemoveByTag and Clear.")]
+    public static partial void MarkerOverridesIgnored(ILogger logger, string operation, string cacheName, string ignoredOverrides);
+
+    [LoggerMessage(
         EventId = 3050,
         Level = LogLevel.Warning,
         Message = "Cache {CacheName} has Resilience.AllowBackgroundDistributedOperations disabled, so the distributed write runs on the caller's path. A serialization failure — including an entry over Serialization.MaximumPayloadBytes ({MaximumPayloadBytes} bytes) — will surface to the caller as an exception even though Resilience.ThrowOnSerializationErrors is false. Re-enable background distributed operations, or handle the exception at the call site.")]

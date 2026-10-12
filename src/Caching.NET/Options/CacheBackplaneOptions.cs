@@ -11,8 +11,10 @@ public sealed class CacheBackplaneOptions
     /// Enable the backplane. Requires a Redis connection. Only meaningful for
     /// <see cref="CacheMode.Hybrid"/>: <see cref="CacheMode.Redis"/> has no L1 entries to
     /// invalidate and <see cref="CacheMode.InMemory"/> has no shared channel.
-    /// Default <c>false</c>; <c>AddCaching</c> turns it on automatically for Hybrid mode
-    /// unless it is explicitly set.
+    /// Default <c>false</c>, but a Hybrid cache gets <c>true</c> from <c>CachingBuilder.UseHybrid(...)</c>,
+    /// and from <c>AddCaching(IConfiguration)</c> when its section does not set
+    /// <c>Backplane:Enabled</c>. Set it to <c>false</c> to opt out; a Hybrid cache without it logs a
+    /// startup warning.
     /// </summary>
     public bool Enabled { get; set; }
 

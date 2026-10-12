@@ -208,9 +208,10 @@ public class HybridModeTests
     /// </summary>
     /// <remarks>
     /// Tag and <c>Clear</c> invalidation are implemented as marker entries that reads compare
-    /// themselves against, and a marker is an ordinary cache entry with its own — very long, 10 days
-    /// by default — lifetime. Without the local expiration being applied to markers as well, a pod
-    /// that had read the key once kept a stale "no marker" copy for those 10 days, so
+    /// themselves against, and a marker is an ordinary cache entry with its own, very long default
+    /// lifetime (a flat 10 days up to FusionCache 2.6.0; 1 hour fresh and 10 days through fail-safe as
+    /// of 2.9.0). Without the local expiration being applied to markers as well, a pod that had read
+    /// the key once kept a stale "no marker" copy for that whole logical lifetime, so
     /// <c>WithoutABackplane_LocalCopiesAreBoundedByTheLocalExpiration</c> was true for an overwrite
     /// and false for a <c>RemoveByTag</c> — the documented bound covered the cheaper half of the
     /// contract only.

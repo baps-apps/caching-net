@@ -37,6 +37,12 @@ public sealed class CachingBuilder
 
     internal bool HealthCheckSplit { get; private set; }
 
+    /// <summary>
+    /// Whether <see cref="UseHybrid"/> or <see cref="WithBackplane"/> set the backplane, so moving a
+    /// configured Hybrid cache to another mode in code keeps a backplane the code asked for.
+    /// </summary>
+    internal bool BackplaneConfigured { get; private set; }
+
     /// <summary>The options being configured. Use for settings without a dedicated builder method.</summary>
     public CachingOptions Options => _options;
 
@@ -60,17 +66,20 @@ public sealed class CachingBuilder
     }
 
     /// <summary>
-    /// Uses L1 memory plus L2 Redis. Enables the backplane unless it has already been set
-    /// explicitly, so multi-pod deployments get cross-instance invalidation by default.
+    /// Uses L1 memory plus L2 Redis, and sets <see cref="CacheBackplaneOptions.Enabled"/> to
+    /// <paramref name="enableBackplane"/> — <c>true</c> by default, so multi-pod deployments get
+    /// cross-instance invalidation. This overwrites any earlier backplane setting, including one bound
+    /// from configuration; call <see cref="WithBackplane(bool, string?)"/> afterwards to change it.
     /// </summary>
     /// <param name="connectionString">StackExchange.Redis connection string.</param>
-    /// <param name="enableBackplane">Overrides the backplane default.</param>
+    /// <param name="enableBackplane">Whether the backplane runs. Default <c>true</c>.</param>
     public CachingBuilder UseHybrid(string connectionString, bool enableBackplane = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         _options.Mode = CacheMode.Hybrid;
         _options.Redis.Configuration = connectionString;
         _options.Backplane.Enabled = enableBackplane;
+        BackplaneConfigured = true;
         return this;
     }
 
@@ -111,10 +120,27 @@ public sealed class CachingBuilder
     /// Production preset: fail-safe on, soft timeouts on the factory and the distributed layer,
     /// eager refresh late in the entry's life, and errors degraded rather than surfaced.
     /// </summary>
+    /// <remarks>
+    /// <see cref="CacheResilienceOptions.FailSafeMaxDuration"/> is raised to 2 hours — or to
+    /// <see cref="CachingOptions.DefaultExpiration"/> plus 2 hours when the expiration is already 2
+    /// hours or longer — and never lowered. A flat 2 hours shortened a longer window set earlier and,
+    /// after a longer expiration, failed startup validation; raising it only to the expiration would
+    /// pass validation with no fallback window at all, since an entry is kept for the longer of the
+    /// two, not their sum. An expiration set <i>after</i> this call is not seen here; startup
+    /// validation reports it.
+    /// </remarks>
     public CachingBuilder UseProductionDefaults()
     {
         _options.Resilience.FailSafeEnabled = true;
-        _options.Resilience.FailSafeMaxDuration = TimeSpan.FromHours(2);
+        var fallbackWindow = TimeSpan.FromHours(2);
+        var failSafeFloor = _options.DefaultExpiration < fallbackWindow
+            ? fallbackWindow
+            : _options.DefaultExpiration + fallbackWindow;
+        if (_options.Resilience.FailSafeMaxDuration < failSafeFloor)
+        {
+            _options.Resilience.FailSafeMaxDuration = failSafeFloor;
+        }
+
         _options.Resilience.FactorySoftTimeout = TimeSpan.FromSeconds(1);
         _options.Resilience.FactoryHardTimeout = TimeSpan.FromSeconds(10);
         _options.Resilience.DistributedSoftTimeout = TimeSpan.FromMilliseconds(500);
@@ -262,7 +288,10 @@ public sealed class CachingBuilder
 
     /// <summary>Configures how long an expired entry stays usable as a fallback.</summary>
     /// <param name="enabled">Whether fail-safe is on.</param>
-    /// <param name="maxDuration">How long past expiration the entry remains usable.</param>
+    /// <param name="maxDuration">
+    /// How long, counted from the write, the entry is kept as a fallback. The physical lifetime is the
+    /// longer of this and the entry's own duration.
+    /// </param>
     /// <param name="throttleDuration">How long before the factory is retried after serving stale data.</param>
     public CachingBuilder WithFailSafe(bool enabled = true, TimeSpan? maxDuration = null, TimeSpan? throttleDuration = null)
     {
@@ -354,6 +383,7 @@ public sealed class CachingBuilder
     public CachingBuilder WithBackplane(bool enabled = true, string? channelPrefix = null)
     {
         _options.Backplane.Enabled = enabled;
+        BackplaneConfigured = true;
         if (channelPrefix is not null)
         {
             _options.Backplane.ChannelPrefix = channelPrefix;

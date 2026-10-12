@@ -103,6 +103,14 @@ internal static class CacheEngineFactory
                         engineOptions.InternalStrings.ClearExpireTag)));
             }
         }
+        else
+        {
+            // Auto-clone copies a value by round-tripping it through the serializer, and without a
+            // distributed layer the engine has none: every write asking for a clone threw
+            // InvalidOperationException. Nothing else uses it here, so it is the bare wire
+            // serializer — no payload limit or layer metrics, which describe Redis payloads.
+            cache.SetupSerializer(CreateWireSerializer(options.Serialization));
+        }
 
         var eventBridge = CacheEventBridge.Attach(cache, telemetry);
 
@@ -114,7 +122,8 @@ internal static class CacheEngineFactory
         WarnIfSerializationFailuresReachTheCaller(logger, options);
         WarnIfHybridHasNoBackplane(logger, options);
 
-        var service = new FusionCacheService(cache, guard, telemetry, JitterPolicyFor(options));
+        var service = new FusionCacheService(
+            cache, guard, telemetry, JitterPolicyFor(options), engineOptions.TagsDefaultEntryOptions, logger);
 
         return new CacheInstance(cacheName, service, guard, telemetry, eventBridge, cache, distributedCache, memoryCache, redisConnection);
     }
@@ -237,8 +246,12 @@ internal static class CacheEngineFactory
     /// <c>RemoveByTag</c> and <c>Clear</c> are not implemented as a sweep over keys — the engine writes
     /// a marker entry per tag (<c>Clear</c> uses a reserved tag) and every read compares its own entry
     /// against the marker. A marker is therefore an ordinary cache entry, with its own lifetime and its
-    /// own layer placement, and the engine's defaults for it are deliberately long-lived: 10 days,
-    /// memory layer included.
+    /// own layer placement, and the engine's defaults for it are deliberately long-lived. As of
+    /// FusionCache 2.9.0 a marker is logically fresh for 1 hour (1 day in the distributed layer) and
+    /// kept for 10 days through fail-safe, which the engine still honours when reading it back, so
+    /// an invalidation stays effective for at least 10 days — a read that finds the marker logically
+    /// expired rewrites it with these defaults. (Releases up to 2.6.0 used a flat 10-day duration,
+    /// memory layer included — the lifetime the defects below were measured against.)
     /// </para>
     /// <para>
     /// Applying the mode only to <see cref="FusionCacheOptions.DefaultEntryOptions"/> left those markers
@@ -262,9 +275,9 @@ internal static class CacheEngineFactory
     /// </description></item>
     /// </list>
     /// <para>
-    /// The marker's <i>logical</i> and distributed lifetimes are left at the engine's long defaults on
-    /// purpose: that is what makes an invalidation durable in Redis, so an instance which was offline
-    /// when it happened still observes it. Only the marker's placement in, and lifetime within, the
+    /// The marker's <i>logical</i>, distributed and fail-safe lifetimes are left at the engine's long
+    /// defaults on purpose: that is what makes an invalidation durable in Redis, so an instance which
+    /// was offline when it happened still observes it. Only the marker's placement in, and lifetime within, the
     /// in-process layer is brought under the mode.
     /// </para>
     /// </remarks>
@@ -398,9 +411,9 @@ internal static class CacheEngineFactory
     /// deliberately accepts a bounded stale window in exchange for no pub/sub traffic — so it is not
     /// rejected. It is warned about because the failure mode is silent: every instance keeps serving
     /// its own L1 copy of a value another instance has already changed, and nothing in a
-    /// single-instance test or a single-pod staging environment shows it. <c>UseHybrid(...)</c>
-    /// enables the backplane by default; a cache bound from configuration does not, which is the
-    /// path this catches.
+    /// single-instance test or a single-pod staging environment shows it. <c>UseHybrid(...)</c> and
+    /// a Hybrid section without <c>Backplane:Enabled</c> both enable the backplane, so this catches a
+    /// backplane turned off explicitly, or Hybrid set on <see cref="CachingOptions"/> directly in code.
     /// </remarks>
     private static void WarnIfHybridHasNoBackplane(ILogger logger, CachingOptions options)
     {

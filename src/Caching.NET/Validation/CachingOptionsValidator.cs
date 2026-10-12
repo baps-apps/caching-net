@@ -35,6 +35,7 @@ public sealed partial class CachingOptionsValidator : IValidateOptions<CachingOp
         var failures = new List<string>();
         var label = string.IsNullOrEmpty(name) ? CachingDefaults.DefaultCacheName : name;
 
+        ValidateMode(options, failures);
         ValidateNames(options, label, failures);
         ValidateExpirations(options, failures);
         ValidateResilience(options, failures);
@@ -65,9 +66,9 @@ public sealed partial class CachingOptionsValidator : IValidateOptions<CachingOp
     {
         var observability = options.Observability;
 
-        // Configuration binding rejects an unknown enum name by itself, but an undefined value can
-        // still arrive by cast from code. Picking a behaviour for it would silently decide how much
-        // tracing an application emits.
+        // Configuration binding rejects an unknown enum name by itself, but it accepts any number —
+        // "LayerTracing": "7" binds to an undefined value — and a cast from code can produce one too.
+        // Picking a behaviour for it would silently decide how much tracing an application emits.
         if (!Enum.IsDefined(observability.LayerTracing))
         {
             failures.Add(
@@ -104,6 +105,21 @@ public sealed partial class CachingOptionsValidator : IValidateOptions<CachingOp
                 + $"including that one. Set Observability.{propertyName} to Warning (or another level that is not "
                 + "Information), or set Observability.EngineOperationLogLevel to Information to keep the engine's "
                 + "native verbosity.");
+        }
+    }
+
+    /// <summary>
+    /// Same reasoning as <see cref="CacheObservabilityOptions.LayerTracing"/>: configuration binding
+    /// rejects an unknown name but binds any number (<c>"Mode": "7"</c>), and a cast from code can
+    /// produce one too — the engine factory would then pick a layer layout nobody chose.
+    /// </summary>
+    private static void ValidateMode(CachingOptions options, List<string> failures)
+    {
+        if (!Enum.IsDefined(options.Mode))
+        {
+            failures.Add(
+                $"Mode is {(int)options.Mode}, which is not a defined {nameof(CacheMode)} value. Set it to "
+                + $"{nameof(CacheMode.InMemory)}, {nameof(CacheMode.Redis)} or {nameof(CacheMode.Hybrid)}.");
         }
     }
 
@@ -207,6 +223,16 @@ public sealed partial class CachingOptionsValidator : IValidateOptions<CachingOp
             }
         }
 
+        // An undefined priority would be mapped to Normal without a word — see
+        // CacheEntryOverridesMapper.MapPriority — so an eviction policy the operator set would not apply.
+        if (!Enum.IsDefined(entry.Priority))
+        {
+            failures.Add(
+                $"Entry.Priority is {(int)entry.Priority}, which is not a defined {nameof(CacheEntryPriority)} value. "
+                + $"Set it to {nameof(CacheEntryPriority.Low)}, {nameof(CacheEntryPriority.Normal)}, "
+                + $"{nameof(CacheEntryPriority.High)} or {nameof(CacheEntryPriority.NeverRemove)}.");
+        }
+
         if (entry.MemorySizeLimit is { } limit)
         {
             if (limit <= 0)
@@ -234,7 +260,7 @@ public sealed partial class CachingOptionsValidator : IValidateOptions<CachingOp
 
         if (resilience.FailSafeEnabled && resilience.FailSafeMaxDuration < options.DefaultExpiration)
         {
-            failures.Add($"Resilience.FailSafeMaxDuration ({resilience.FailSafeMaxDuration}) is shorter than DefaultExpiration ({options.DefaultExpiration}), so an entry would stop being usable as a fail-safe fallback before it even expires.");
+            failures.Add($"Resilience.FailSafeMaxDuration ({resilience.FailSafeMaxDuration}) is shorter than DefaultExpiration ({options.DefaultExpiration}), so an entry would stop being usable as a fail-safe fallback before it even expires. Raise Resilience.FailSafeMaxDuration above DefaultExpiration — WithFailSafe(maxDuration: …); the difference is the fallback window — or turn fail-safe off. With UseProductionDefaults(), set DefaultExpiration before calling it.");
         }
 
         if (resilience.FailSafeEnabled && resilience.FailSafeThrottleDuration <= TimeSpan.Zero)
@@ -336,8 +362,9 @@ public sealed partial class CachingOptionsValidator : IValidateOptions<CachingOp
             failures.Add($"Redis.InstancePrefix '{redis.InstancePrefix}' must not contain whitespace.");
         }
 
-        // Same reasoning as Observability.LayerTracing: an undefined value can only arrive by cast,
-        // and picking a placement for it would silently decide every physical key the cache writes.
+        // Same reasoning as Observability.LayerTracing: an undefined value arrives as a number in
+        // configuration or a cast from code, and picking a placement for it would silently decide
+        // every physical key the cache writes.
         if (!Enum.IsDefined(redis.KeyVersionPlacement))
         {
             failures.Add(
@@ -417,6 +444,24 @@ public sealed partial class CachingOptionsValidator : IValidateOptions<CachingOp
     private static void ValidateSecurity(CachingOptions options, List<string> failures)
     {
         var security = options.Security;
+
+        // CacheGuard treats any value that is neither Ignore nor Throw as Warn, so an undefined policy
+        // meant to enforce a limit would only ever log the breach and let the call through.
+        (CacheGuardPolicy Policy, string Name)[] policies =
+        [
+            (security.KeyLengthPolicy, nameof(security.KeyLengthPolicy)),
+            (security.TagPolicy, nameof(security.TagPolicy))
+        ];
+
+        foreach (var (policy, propertyName) in policies)
+        {
+            if (!Enum.IsDefined(policy))
+            {
+                failures.Add(
+                    $"Security.{propertyName} is {(int)policy}, which is not a defined {nameof(CacheGuardPolicy)} value. "
+                    + $"Set it to {nameof(CacheGuardPolicy.Ignore)}, {nameof(CacheGuardPolicy.Warn)} or {nameof(CacheGuardPolicy.Throw)}.");
+            }
+        }
 
         if (security.MaximumKeyLength <= 0)
         {

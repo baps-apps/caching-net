@@ -217,7 +217,7 @@ internal sealed class CacheEventBridge : IDisposable
     /// application cache entry. FusionCache maintains tag state (per-tag clear markers, and the
     /// process-wide "clear all"/"expire all" markers) through its own internal
     /// <c>GetOrSetAsync&lt;long&gt;</c> calls, keyed under this prefix — real factory executions, just
-    /// the engine's, not the application's. The four factory handlers below must not count them:
+    /// the engine's, not the application's. The four factory handlers above must not count them:
     /// measured on a cache that never runs an application factory (only <c>SetAsync</c> +
     /// <c>GetOrDefaultAsync</c>), <c>caching.net.factory.executions{background=false}</c> read 2
     /// before this filter — a false positive for an operator alerting on "any factory execution means
@@ -226,9 +226,10 @@ internal sealed class CacheEventBridge : IDisposable
     /// tag prefix, so the raw key observed here is <c>{prefix}__fc:t:!</c>, not <c>__fc:t:!</c> —
     /// confirmed by logging the raw key on this exact scenario before settling on <c>Contains</c>.
     /// References <c>FusionCacheInternalStrings.DefaultTagCacheKeyPrefix</c> (the engine's own
-    /// constant, `"__fc:t:"` as of FusionCache 2.6.0) rather than a private literal:
-    /// <see cref="CacheEngineFactory"/> never touches <c>InternalStrings</c>, so this is always the
-    /// live value the engine itself uses, not a copy that can drift out of sync with it.
+    /// constant, `"__fc:t:"` as of FusionCache 2.9.0) rather than a private literal:
+    /// <see cref="CacheEngineFactory"/> reads <c>InternalStrings</c> (for the backplane key decoder)
+    /// but never changes them, so this is always the live value the engine itself uses, not a copy
+    /// that can drift out of sync with it.
     /// </summary>
     private static bool IsEngineInternalTagKey(string key)
         => key.Contains(FusionCacheInternalStrings.DefaultTagCacheKeyPrefix, StringComparison.Ordinal);

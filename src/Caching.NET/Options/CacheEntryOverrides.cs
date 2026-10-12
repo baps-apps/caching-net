@@ -67,7 +67,11 @@ public sealed class CacheEntryOverrides
     /// <summary>Whether an expired value may be served when the factory fails or times out.</summary>
     public bool? FailSafe { get; set; }
 
-    /// <summary>How long past expiration a value stays eligible for fail-safe.</summary>
+    /// <summary>
+    /// How long, counted from the write, a value is kept as a fail-safe fallback. The physical lifetime
+    /// is the longer of this and the entry's own duration, so an entry that outlives it has no fallback
+    /// window.
+    /// </summary>
     public TimeSpan? FailSafeMaxDuration { get; set; }
 
     /// <summary>Minimum interval between two factory retries while fail-safe is serving.</summary>
@@ -91,7 +95,10 @@ public sealed class CacheEntryOverrides
     /// <summary>Whether backplane publishes may complete after the caller has been released.</summary>
     public bool? AllowBackgroundBackplaneOperations { get; set; }
 
-    /// <summary>Whether values handed back from the memory layer are deep-cloned.</summary>
+    /// <summary>
+    /// Whether values handed back from the memory layer are deep-cloned, using the cache's
+    /// serialization format. No effect in <see cref="CacheMode.Redis"/>, which keeps nothing in memory.
+    /// </summary>
     public bool? EnableAutoClone { get; set; }
 
     /// <summary>Eviction priority in the in-process memory layer.</summary>

@@ -6,6 +6,10 @@ Shared .NET caching for BAPS applications. One package, one registration call, t
 **v3.0.0 is a major redesign.** See [Migration from v2](#24-migration-from-v2) and
 [docs/MIGRATION-V2-TO-V3.md](docs/MIGRATION-V2-TO-V3.md).
 
+Every feature — fail-safe, jitter, eager refresh, timeouts, backplane, tags and the rest — is
+explained one by one, with defaults, trade-offs and when to use it, in
+**[docs/FEATURES.md](docs/FEATURES.md)**.
+
 ---
 
 ## Contents
@@ -37,7 +41,7 @@ Caching.NET v3 gives applications a full-featured cache without asking them to a
 - **One configuration section.** `CacheOptions`, strongly typed and validated at startup.
 - **A complete cache API.** Not a four-method wrapper: get-or-set with factory context, fail-safe,
   soft and hard timeouts, eager refresh, tags, remove-by-tag, clear, per-entry options, background
-  operations, auto-recovery, events, and cancellation are all available.
+  operations, auto-recovery and cancellation are all available.
 - **Branded observability.** Everything Caching.NET emits is named `Caching.NET`: logging
   categories, meter, activity source, metric names.
 
@@ -230,8 +234,14 @@ Caching.NET adds, in its own namespaces:
 ## 4. Installation
 
 ```bash
-dotnet add package Caching.NET --version 3.1.0
+dotnet add package Caching.NET --version 3.2.0
 ```
+
+> **Upgrading a `Redis` or `Hybrid` cache from 3.0.x/3.1.x? Read this first.** 3.2.0 changes every
+> physical Redis key (the `v2:` segment is gone), so the upgrade starts cold, and **during a rolling
+> deploy old and new pods can serve stale values** until each entry's distributed expiration. Deploy
+> with a recreate strategy, or set `CacheOptions:Redis:KeyVersionPlacement` to `Prefix` to keep the
+> 3.1.1 layout and avoid both. See the [CHANGELOG](CHANGELOG.md#upgrading).
 
 That is the only package an application installs. Redis client, serializers, backplane and memory
 cache arrive transitively.
@@ -334,11 +344,10 @@ changes every key — see [docs/OPERATIONS.md](docs/OPERATIONS.md) before rollin
 }
 ```
 
-`UseHybrid(...)` in the fluent builder enables the backplane by default. **A cache bound from
-configuration does not** — `Backplane.Enabled` defaults to `false`, so the block above sets it
-explicitly. Keep it on for multi-pod deployments: without it, a pod keeps serving its own L1 copy
-until `Entry.LocalExpiration` elapses. Hybrid without a backplane is allowed (a single replica has
-nothing to invalidate) but logs a startup warning naming the stale window you are accepting.
+A Hybrid cache gets the backplane by default (the block above sets it only to be explicit); keep it
+on for multi-pod deployments, or each pod serves its own L1 copy until `Entry.LocalExpiration`
+elapses. `"Enabled": false` is allowed for a single replica and logs a startup warning. Details:
+[docs/FEATURES.md §18](docs/FEATURES.md#18-backplane).
 
 `Entry.LocalExpiration` must not exceed `Entry.DistributedExpiration` in Hybrid mode; startup
 validation rejects it. A longer local lifetime means the in-process copy outlives the authoritative
@@ -405,14 +414,17 @@ registration time with the offending name in the message.
 the host at boot. Every failure is reported at once, scoped to the cache name, and names the fix.
 Covered: empty/invalid `ApplicationPrefix` and `CacheName`, `':'` in a prefix, Redis or Hybrid
 without Redis settings, Redis settings in `InMemory` mode, backplane without Redis, backplane in
-Redis mode, zero/negative expirations, soft timeout > hard timeout, fail-safe max duration below the
-expiration, invalid jitter, invalid eager-refresh threshold, memory size limit without an entry
-size or with a non-positive one, non-positive payload/key/tag limits, key limit shorter than the
-prefix, decompression ceiling below the payload limit, negative Redis database, non-positive Redis
-timeouts and retry count, permissive TLS without TLS, a client or server certificate callback
-without TLS, whitespace in `Redis.InstancePrefix` or `Backplane.ChannelPrefix`, a `CacheName` that
-does not match the registered name, and an `Observability.*LogLevel` set to `Information` while the
-engine-operation rewrite is active.
+Redis mode, undefined enum values (`"Mode": "7"`), zero/negative expirations, a Hybrid local lifetime longer than the distributed one, soft
+timeout > hard timeout, fail-safe max duration below the expiration or a non-positive fail-safe
+throttle, invalid jitter, invalid eager-refresh threshold, memory size limit without an entry size or
+with a non-positive one, non-positive auto-recovery limits, non-positive payload/key/tag limits, key
+limit shorter than the prefix, a negative compression threshold or a decompression ceiling below the
+payload limit, negative Redis database, non-positive Redis timeouts and retry count, permissive TLS
+without TLS, a client or server certificate callback without TLS, whitespace in `Redis.InstancePrefix`
+or `Backplane.ChannelPrefix`, an undefined `Mode`, `Entry.Priority`, `Security.KeyLengthPolicy`,
+`Security.TagPolicy`, `Serialization.Format`, `Redis.KeyVersionPlacement` or
+`Observability.LayerTracing` value, a `CacheName` that does not match the registered name, and an
+`Observability.*LogLevel` set to `Information` while the engine-operation rewrite is active.
 
 One rule is worth knowing before it fires: a **URI-form Redis connection string**
 (`redis://user:password@host:6379`) is rejected at startup. StackExchange.Redis does not parse that
@@ -589,6 +601,11 @@ error. On by default.
 combination that would make an entry unusable as a fallback before it even expires.
 `FailSafeThrottleDuration` stops a failing dependency from being retried once per request.
 
+`FailSafeMaxDuration` is counted from the write, and an entry is kept for the **longer** of its own
+lifetime and that value — so under the defaults every entry shorter than two hours occupies Redis for
+two hours. See [docs/FEATURES.md §8](docs/FEATURES.md#8-fail-safe) for the storage cost and when to
+turn fail-safe off.
+
 ## 14. Timeouts
 
 | Setting | Default | Effect |
@@ -599,7 +616,9 @@ combination that would make an entry unusable as a fallback before it even expir
 | `Resilience.DistributedHardTimeout` | 2s | Absolute ceiling on one Redis operation |
 | `Resilience.AllowTimedOutFactoryBackgroundCompletion` | `true` | Store the late factory result when it finally arrives |
 
-`UseProductionDefaults()` sets a 1s soft / 10s hard factory timeout and 500ms/2s for Redis.
+`UseProductionDefaults()` sets a 1s soft / 10s hard factory timeout and 500ms/2s for Redis, and
+raises `FailSafeMaxDuration` to cover `DefaultExpiration` plus a fallback window — so set
+`DefaultExpiration` before calling it ([docs/FEATURES.md §29](docs/FEATURES.md#29-presets)).
 
 ## 15. Tagging
 
@@ -615,10 +634,11 @@ makes them both sensitive and high-cardinality.
 ## 16. Invalidation
 
 ```csharp
-await cache.RemoveAsync(key);                        // one entry
+await cache.RemoveAsync(key);                        // one entry, every layer
 await cache.RemoveByTagAsync("category:42");         // a tag group
-await cache.ExpireAsync(key);                        // expire logically, keep the fail-safe copy
-await cache.ClearAsync();                            // this cache, this application prefix only
+await cache.ExpireAsync(key);                        // expire logically; keeps the L1 fail-safe copy, deletes the Redis copy
+await cache.ClearAsync();                            // this cache, this application prefix only; expired, not removed
+await cache.ClearAsync(allowFailSafe: false);        // same scope, nothing kept as a fail-safe fallback
 
 // Several tag groups: RemoveByTagAsync takes one tag, so loop.
 foreach (var tag in new[] { "category:42", "tenant:7" })
@@ -629,7 +649,9 @@ foreach (var tag in new[] { "category:42", "tenant:7" })
 
 In Hybrid mode with the backplane on, every one of these propagates to other pods. `ClearAsync`
 never issues `FLUSHDB` — it is scoped to the application's own prefix, so it is safe on a shared
-Redis database.
+Redis database. Which verb leaves a fail-safe fallback behind, and which `CacheEntryOverrides` apply
+to `RemoveByTagAsync` and `ClearAsync` (operational ones only — never the invalidation's lifetime),
+is covered in [docs/FEATURES.md §16–17](docs/FEATURES.md#16-remove-expire-removebytag-clear).
 
 ## 17. OpenTelemetry tracing
 
@@ -724,9 +746,9 @@ identically at every setting — see [docs/TELEMETRY.md](docs/TELEMETRY.md) §3.
 
 ## 19. Structured logging
 
-Categories: `Caching.NET`, `Caching.NET.Redis`, `Caching.NET.Backplane`, `Caching.NET.Security`,
-`Caching.NET.Configuration`. Engine output is re-categorised under `Caching.NET` through a logger
-adapter, so log filters never mention the engine.
+Categories: `Caching.NET`, `Caching.NET.Redis`, `Caching.NET.Backplane`. `Caching.NET.Security` and
+`Caching.NET.Configuration` are reserved and currently emit nothing. Engine output is re-categorised
+under `Caching.NET` through a logger adapter, so log filters never mention the engine.
 
 ```json
 "Logging": { "LogLevel": { "Caching.NET": "Warning", "Caching.NET.Redis": "Information" } }
@@ -771,17 +793,17 @@ one governs log lines, the other governs spans, and either can be set without th
 
 | Condition | Behaviour | Telemetry |
 |---|---|---|
-| Redis unreachable at startup | Host starts. L1 and factories work. Connection retried in the background. | `caching.net.errors{layer=redis}`, Critical log on hard connect failure |
+| Redis unreachable at startup | Host starts. L1 and factories work. Connection retried in the background. | `caching.net.errors{cache.layer=redis}`, Critical log on hard connect failure |
 | Redis unavailable at runtime | Hybrid degrades to L1 + factory; Redis mode falls through to the factory. No exception unless `ThrowOnDistributedCacheErrors`. | error counter, Warning log |
 | Redis timeout | Soft timeout → stale value if available; hard timeout → treated as a miss | `caching.net.errors`, Debug log (synthetic timeout) |
 | Redis restart | Shared multiplexer reconnects. Queued writes/notifications replay via auto-recovery. | `Redis connection restored` (Information) |
-| Network partition | Circuit breaker opens for `DistributedCircuitBreakerDuration`, suppressing retry and log storms | `CircuitBreakerOpen` error counter |
+| Network partition | Circuit breaker opens for `DistributedCircuitBreakerDuration`, suppressing retry and log storms | `caching.net.redis.errors{cache.error.type=CircuitBreakerOpen}` |
 | Auth or TLS failure | Connection rejected, error logged with the policy error only (never the certificate chain contents or credentials) | `caching.net.redis.tls.validations` |
-| Corrupt Redis payload | Rejected before deserialization, treated as a miss, overwritten by the next factory result | `caching.net.errors{error.type=CorruptPayloadException}`, Warning log |
+| Corrupt Redis payload | Rejected before deserialization, treated as a miss, overwritten by the next factory result | `caching.net.errors{cache.error.type=CorruptPayloadException}`, Warning log |
 | Oversized value, background distributed writes on (default) | Not written to Redis; the caller still receives its value | `caching.net.guard.violations`, Warning log |
 | Oversized value, background distributed writes **off** | **Throws `InvalidOperationException` to the caller**, even with `ThrowOnSerializationErrors: false` — the foreground write does not honour it. Warned about at startup; see [OPERATIONS.md](docs/OPERATIONS.md#foreground-writes-surface-serialization-failures) | `caching.net.guard.violations`, Warning log |
 | Backplane unavailable | Cache operations continue; notifications queue for auto-recovery | `caching.net.backplane.errors` |
-| Factory exception | Stale value if fail-safe has one, otherwise the original exception is rethrown | `caching.net.factory.executions{result=error}` |
+| Factory exception | Stale value if fail-safe has one, otherwise the original exception is rethrown | `caching.net.factory.executions{cache.result=error}` |
 | Caller cancellation | `OperationCanceledException`, nothing cached, **not** counted as an internal error | — |
 
 Nothing is silently swallowed: every degraded path increments a counter and writes a log entry.
@@ -881,7 +903,12 @@ public class OrderService(ICacheService cache)
         cache.GetOrSetAsync(
             $"Order:{id}",
             async t => await Load(id, t),
-            new CacheEntryOverrides { LocalExpiration = TimeSpan.FromMinutes(5) },
+            // v2's single TTL is two lifetimes in v3; set both to keep one lifetime in every mode.
+            new CacheEntryOverrides
+            {
+                LocalExpiration = TimeSpan.FromMinutes(5),
+                DistributedExpiration = TimeSpan.FromMinutes(5)
+            },
             token: ct);
 }
 ```
@@ -952,7 +979,7 @@ key and tag guards are now enforced on every call, not only calls using the conf
 | `Caching.NET refused to cache a … byte payload` | Value over `Serialization.MaximumPayloadBytes` | Cache a smaller projection, or raise the limit |
 | Everything is a miss in Redis mode | Working as designed — Redis mode never serves from L1 | Use `Hybrid` if you want L1 |
 | `Entry.LocalExpiration (…) is longer than Entry.DistributedExpiration` | L1 would outlive the authoritative L2 entry | Lower `Entry.LocalExpiration`, or raise `Entry.DistributedExpiration` |
-| Startup warning `is in Hybrid mode with the backplane disabled` | `Backplane.Enabled` defaults to `false` when bound from configuration | Set it to `true` for any deployment with more than one replica |
+| Startup warning `is in Hybrid mode with the backplane disabled` | `Backplane.Enabled` set to `false` (or Hybrid set on `CachingOptions` directly in code) | Set it to `true` for any deployment with more than one replica |
 | One pod serves stale data | Backplane off | Enable it, or lower `Entry.LocalExpiration` |
 | Cold cache after deploying v3 | Key layout and wire format changed | Expected once; entries repopulate on demand |
 | Cold cache after upgrading to 3.2.0, and stale reads during the rollout | Physical keys dropped the `v2:` segment (`Redis.KeyVersionPlacement` defaults to `None`); old and new replicas use different keys until the rollout finishes | Expected once. Use a recreate deployment, or set `KeyVersionPlacement: Prefix` to keep the old layout — see [docs/OPERATIONS.md](docs/OPERATIONS.md) |
@@ -966,7 +993,7 @@ key and tag guards are now enforced on every call, not only calls using the conf
 | Feature | InMemory | Redis | Hybrid | Notes |
 |---|---|---|---|---|
 | Get / Set / Get-or-set / Remove | ✅ | ✅ | ✅ | |
-| Expire (logical) | ✅ | ✅ | ✅ | Keeps the fail-safe copy |
+| Expire (logical) | ✅ | ✅ | ✅ | Keeps the L1 fail-safe copy; the Redis copy is always deleted, so in Redis mode it acts like Remove |
 | Clear | ✅ | ✅ | ✅ | Scoped to the application prefix; never `FLUSHDB` |
 | Default expiration | ✅ | ✅ | ✅ | |
 | Distributed expiration | ➖ | ✅ | ✅ | `Entry.DistributedExpiration`; no L2 in InMemory |
@@ -1076,7 +1103,7 @@ tests/Caching.NET.Tests.Pod         console cache instance the integration suite
                                     separate OS process for cross-process backplane tests
 benchmark/Caching.NET.Benchmark     BenchmarkDotNet suites
 aot/Caching.NET.AotSmoke            native-AOT smoke test
-docs/                               architecture, security, telemetry, operations, migration
+docs/                               features, architecture, security, telemetry, operations, migration
 docs/audits/                        dated release-gate reviews with measured evidence
 ```
 

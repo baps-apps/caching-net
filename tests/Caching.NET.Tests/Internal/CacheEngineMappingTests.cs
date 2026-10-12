@@ -113,8 +113,15 @@ public class CacheEngineMappingTests
         var expected = options.Entry.LocalExpiration ?? options.DefaultExpiration;
         Assert.Equal(expected, markers.MemoryCacheDuration);
 
-        // Ten days by default — left alone on purpose, so the invalidation itself is durable.
-        Assert.True(markers.Duration >= TimeSpan.FromDays(1));
+        // Logical, distributed and fail-safe lifetimes are left at the engine's defaults on purpose, so
+        // the invalidation itself is durable. As of FusionCache 2.9.0 that is 1 h logical, 1 day in
+        // Redis, kept 10 days through fail-safe — the engine reads a marker back through fail-safe,
+        // so the fail-safe window, not Duration, is what keeps an invalidation effective.
+        var engineDefaults = new FusionCacheOptions().TagsDefaultEntryOptions;
+        Assert.Equal(engineDefaults.Duration, markers.Duration);
+        Assert.Equal(engineDefaults.DistributedCacheDuration, markers.DistributedCacheDuration);
+        Assert.True(markers.IsFailSafeEnabled);
+        Assert.True(markers.FailSafeMaxDuration >= TimeSpan.FromDays(1));
         Assert.False(markers.SkipMemoryCacheRead);
     }
 

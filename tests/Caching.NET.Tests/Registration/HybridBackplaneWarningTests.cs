@@ -13,9 +13,9 @@ namespace Caching.NET.Tests.Registration;
 /// The topology is allowed — a single-replica deployment has nothing to invalidate — so it is not a
 /// validation failure. It is warned about because the failure mode only appears once a second
 /// replica exists: each instance keeps serving its own L1 copy of a value another instance has
-/// already changed. <c>UseHybrid(...)</c> turns the backplane on by default, so the path that
-/// reaches production unnoticed is a cache bound from <c>appsettings.json</c>, where
-/// <c>Backplane.Enabled</c> defaults to <c>false</c>.
+/// already changed. <c>UseHybrid(...)</c> and a Hybrid cache bound from configuration both turn the
+/// backplane on unless it is set, so the warning fires only for a backplane turned off explicitly —
+/// or a Hybrid mode set on <c>CachingOptions</c> directly in code, which has no default to apply.
 /// </remarks>
 public class HybridBackplaneWarningTests
 {
@@ -35,26 +35,30 @@ public class HybridBackplaneWarningTests
     }
 
     [Fact]
-    public void HybridBoundFromConfiguration_WarnsBecauseTheBackplaneDefaultsOff()
+    public void HybridBoundFromConfiguration_GetsTheBackplaneAndDoesNotWarn()
     {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["CacheOptions:Mode"] = "Hybrid",
-                ["CacheOptions:ApplicationPrefix"] = "bp-config",
-                ["CacheOptions:Redis:Configuration"] = Redis
-            })
-            .Build();
+        var entries = BuildFromConfiguration(new Dictionary<string, string?>
+        {
+            ["CacheOptions:Mode"] = "Hybrid",
+            ["CacheOptions:ApplicationPrefix"] = "bp-config",
+            ["CacheOptions:Redis:Configuration"] = Redis
+        });
 
-        var recorder = new RecordingProvider();
-        var services = new ServiceCollection();
-        services.AddLogging(b => b.SetMinimumLevel(LogLevel.Trace).AddProvider(recorder));
-        services.AddCaching(configuration);
+        Assert.DoesNotContain(entries, e => e.EventId == WarningEventId);
+    }
 
-        using var provider = services.BuildServiceProvider();
-        _ = provider.GetRequiredService<ICacheService>();
+    [Fact]
+    public void HybridBoundFromConfiguration_WithTheBackplaneTurnedOff_Warns()
+    {
+        var entries = BuildFromConfiguration(new Dictionary<string, string?>
+        {
+            ["CacheOptions:Mode"] = "Hybrid",
+            ["CacheOptions:ApplicationPrefix"] = "bp-config-off",
+            ["CacheOptions:Redis:Configuration"] = Redis,
+            ["CacheOptions:Backplane:Enabled"] = "false"
+        });
 
-        Assert.Contains(recorder.Entries, e => e.EventId == WarningEventId);
+        Assert.Contains(entries, e => e.EventId == WarningEventId);
     }
 
     [Fact]
@@ -106,6 +110,21 @@ public class HybridBackplaneWarningTests
 
         // The local lifetime, not the default one, is what bounds the stale window.
         Assert.Contains("00:00:30", warning.Message, StringComparison.Ordinal);
+    }
+
+    private static IReadOnlyList<(LogLevel Level, int EventId, string Message)> BuildFromConfiguration(
+        Dictionary<string, string?> values)
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
+        var recorder = new RecordingProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(b => b.SetMinimumLevel(LogLevel.Trace).AddProvider(recorder));
+        services.AddCaching(configuration);
+
+        using var provider = services.BuildServiceProvider();
+        _ = provider.GetRequiredService<ICacheService>();
+
+        return recorder.Entries;
     }
 
     private static IReadOnlyList<(LogLevel Level, int EventId, string Message)> Build(Action<CachingBuilder> configure)

@@ -94,6 +94,8 @@ public sealed class CacheEntryOptions
     /// <summary>
     /// When <c>true</c>, values handed back from the memory layer are deep-cloned so callers cannot
     /// mutate the cached instance. Costs an extra serialization round-trip per hit. Default <c>false</c>.
+    /// Cloning uses the <see cref="CachingOptions.Serialization"/> format, so cloned types must be
+    /// serializable in it. <see cref="CacheMode.Redis"/> keeps nothing in memory, so there it has no effect.
     /// </summary>
     public bool EnableAutoClone { get; set; }
 }

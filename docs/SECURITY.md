@@ -180,10 +180,11 @@ fingerprint a value that is itself a secret.
 ### Key redaction in engine log lines
 
 Caching.NET's own log messages never receive a raw key. The cache engine's do: it writes the
-physical key into a structured `CacheKey` property on its per-operation lines, at `Information` —
-the default level of an ASP.NET Core application, and a level any service turns on while
-reproducing a cache problem. Because engine output is re-categorised under `Caching.NET`, an
-application cannot filter those lines out by naming the engine either.
+physical key into a structured `CacheKey` property on its per-operation lines. Caching.NET rewrites
+those lines to `Observability.EngineOperationLogLevel` — `Debug` by default — but `Debug` is exactly
+the level a service turns on while reproducing a cache problem, and setting the rewrite to
+`Information` restores the engine's native level. Because engine output is re-categorised under
+`Caching.NET`, an application cannot filter those lines out by naming the engine either.
 
 The logger adapter Caching.NET hands the engine therefore replaces that property with the
 `ICacheGuard.Fingerprint` digest before the line reaches any provider, unless
@@ -239,7 +240,7 @@ stands in for the key — `cache.clear` is the one operation with no key at all;
 in [TELEMETRY.md §3](TELEMETRY.md#3-tracing)) carries a key attribute by default:
 `cache.key.fingerprint`, the non-reversible digest from `ICacheGuard.Fingerprint`, never the literal
 key. `Security.AllowRawKeysInTelemetry` (default `false`) switches that cache instance's spans to
-`cache.key` — the literal key, prefix included — instead:
+`cache.key` — the literal key the caller passed, without the application/cache-name prefix — instead:
 
 ```csharp
 services.AddCaching(cache => cache

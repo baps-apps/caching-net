@@ -208,6 +208,7 @@ public class CachingOptionsValidatorTests
         options.DefaultExpiration = TimeSpan.FromHours(3);
         options.Resilience.FailSafeMaxDuration = TimeSpan.FromMinutes(1);
         AssertFails(options, "shorter than DefaultExpiration");
+        AssertFails(options, "Raise Resilience.FailSafeMaxDuration");
     }
 
     [Fact]
@@ -535,6 +536,96 @@ public class CachingOptionsValidatorTests
     {
         var options = Valid();
         options.Redis.KeyVersionPlacement = placement;
+
+        Assert.True(Validate(options).Succeeded);
+    }
+
+    /// <summary>
+    /// Same reasoning again: an undefined mode would have the engine factory pick a layer layout the
+    /// operator never chose.
+    /// </summary>
+    [Fact]
+    public void UndefinedModeValue_Fails()
+    {
+        var options = Valid();
+        options.Mode = (CacheMode)99;
+
+        AssertFails(options, "not a defined CacheMode value");
+    }
+
+    [Fact]
+    public void UndefinedEntryPriorityValue_Fails()
+    {
+        var options = Valid();
+        options.Entry.Priority = (CacheEntryPriority)99;
+
+        AssertFails(options, "Entry.Priority");
+    }
+
+    [Theory]
+    [InlineData(CacheEntryPriority.Low)]
+    [InlineData(CacheEntryPriority.Normal)]
+    [InlineData(CacheEntryPriority.High)]
+    [InlineData(CacheEntryPriority.NeverRemove)]
+    public void DefinedEntryPriorityValue_Passes(CacheEntryPriority priority)
+    {
+        var options = Valid();
+        options.Entry.Priority = priority;
+
+        Assert.True(Validate(options).Succeeded);
+    }
+
+    [Fact]
+    public void UndefinedKeyLengthPolicyValue_Fails()
+    {
+        var options = Valid();
+        options.Security.KeyLengthPolicy = (CacheGuardPolicy)99;
+
+        AssertFails(options, "Security.KeyLengthPolicy");
+    }
+
+    [Fact]
+    public void UndefinedTagPolicyValue_Fails()
+    {
+        var options = Valid();
+        options.Security.TagPolicy = (CacheGuardPolicy)99;
+
+        AssertFails(options, "Security.TagPolicy");
+    }
+
+    [Theory]
+    [InlineData(CacheGuardPolicy.Ignore)]
+    [InlineData(CacheGuardPolicy.Warn)]
+    [InlineData(CacheGuardPolicy.Throw)]
+    public void DefinedGuardPolicyValues_Pass(CacheGuardPolicy policy)
+    {
+        var options = Valid();
+        options.Security.KeyLengthPolicy = policy;
+        options.Security.TagPolicy = policy;
+
+        Assert.True(Validate(options).Succeeded);
+    }
+
+    /// <summary>
+    /// InMemory mode configures a serializer for cloning, so auto-clone is valid in every mode.
+    /// </summary>
+    [Fact]
+    public void AutoCloneInInMemoryMode_Passes()
+    {
+        var options = Valid();
+        options.Entry.EnableAutoClone = true;
+
+        Assert.True(Validate(options).Succeeded);
+    }
+
+    [Fact]
+    public void AutoCloneInHybridMode_Passes()
+    {
+        var options = Valid();
+        options.Mode = CacheMode.Hybrid;
+        options.Redis.Configuration = "localhost:6379";
+        options.Backplane.Enabled = true;
+        options.Entry.EnableAutoClone = true;
 
         Assert.True(Validate(options).Succeeded);
     }

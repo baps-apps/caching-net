@@ -101,7 +101,10 @@ public interface ICacheService
     /// <param name="token">Cancellation token.</param>
     ValueTask RemoveAsync(string key, CacheEntryOverrides? options = null, CancellationToken token = default);
 
-    /// <summary>Marks an entry expired, keeping it eligible for fail-safe.</summary>
+    /// <summary>
+    /// Marks an entry expired. The in-process copy is kept as a fail-safe fallback; the distributed
+    /// (Redis) copy is always deleted, so in Redis mode this behaves like <see cref="RemoveAsync"/>.
+    /// </summary>
     /// <param name="key">The cache key.</param>
     /// <param name="options">Per-call overrides.</param>
     /// <param name="token">Cancellation token.</param>
@@ -109,14 +112,25 @@ public interface ICacheService
 
     /// <summary>Invalidates every entry carrying <paramref name="tag"/>.</summary>
     /// <param name="tag">The tag to invalidate.</param>
-    /// <param name="options">Per-call overrides.</param>
+    /// <param name="options">
+    /// Per-call overrides. Only the ones that change how the invalidation is written apply:
+    /// <see cref="CacheEntryOverrides.AllowBackgroundDistributedOperations"/>,
+    /// <see cref="CacheEntryOverrides.AllowBackgroundBackplaneOperations"/>,
+    /// <see cref="CacheEntryOverrides.SkipBackplaneNotification"/> and the distributed timeouts.
+    /// Lifetime, fail-safe and memory-layer overrides are ignored: the invalidation is stored as a
+    /// marker entry whose long lifetime is what keeps it effective. The first call on a cache that
+    /// passes one logs a warning naming them.
+    /// </param>
     /// <param name="token">Cancellation token.</param>
     /// <exception cref="ArgumentException"><paramref name="tag"/> is null, empty or whitespace.</exception>
     ValueTask RemoveByTagAsync(string tag, CacheEntryOverrides? options = null, CancellationToken token = default);
 
     /// <summary>Invalidates every entry in this cache.</summary>
     /// <param name="allowFailSafe">Whether cleared entries stay eligible for fail-safe.</param>
-    /// <param name="options">Per-call overrides.</param>
+    /// <param name="options">
+    /// Per-call overrides, applied as on <see cref="RemoveByTagAsync"/>: operational settings only,
+    /// never the clear marker's lifetime.
+    /// </param>
     /// <param name="token">Cancellation token.</param>
     ValueTask ClearAsync(bool allowFailSafe = true, CacheEntryOverrides? options = null, CancellationToken token = default);
 
@@ -205,14 +219,14 @@ public interface ICacheService
 
     /// <summary>Synchronous <see cref="RemoveByTagAsync"/>.</summary>
     /// <param name="tag">The tag to invalidate.</param>
-    /// <param name="options">Per-call overrides.</param>
+    /// <param name="options">Per-call overrides; operational settings only — see <see cref="RemoveByTagAsync"/>.</param>
     /// <param name="token">Cancellation token.</param>
     /// <exception cref="ArgumentException"><paramref name="tag"/> is null, empty or whitespace.</exception>
     void RemoveByTag(string tag, CacheEntryOverrides? options = null, CancellationToken token = default);
 
     /// <summary>Synchronous <see cref="ClearAsync"/>.</summary>
     /// <param name="allowFailSafe">Whether cleared entries stay eligible for fail-safe.</param>
-    /// <param name="options">Per-call overrides.</param>
+    /// <param name="options">Per-call overrides; operational settings only — see <see cref="RemoveByTagAsync"/>.</param>
     /// <param name="token">Cancellation token.</param>
     void Clear(bool allowFailSafe = true, CacheEntryOverrides? options = null, CancellationToken token = default);
 }

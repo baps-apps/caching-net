@@ -4,11 +4,18 @@ All notable changes to Caching.NET are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
-## 3.2.0 — 2026-10-05
+## 3.2.0 — 2026-10-10
 
-**Redis keys now start with your application prefix, not `v2:`.** No code change and no API removal,
-but in `Redis` and `Hybrid` mode **every physical key changes**, so the upgrade deploys as a cold
-cache. Read "Upgrading" before rolling it out. `InMemory` caches are unaffected.
+**Redis keys now start with your application prefix, not `v2:`.** No API removal, but in `Redis` and
+`Hybrid` mode **every physical key changes**: the upgrade deploys as a cold cache, and **a rolling
+deploy serves stale values** while old and new pods run side by side. Use a recreate deployment, or
+set `KeyVersionPlacement: Prefix` — see "Upgrading" before rolling it out. `InMemory` caches are
+unaffected.
+
+A `Hybrid` cache bound from configuration now gets the backplane unless `Backplane.Enabled` is set.
+This release also stops `RemoveByTag` and `Clear` from losing an invalidation when they are passed
+`CacheEntryOverrides`, makes auto-clone work in `InMemory` mode, and startup validation now rejects a
+few configurations that could never have worked — see "Changed", "Fixed" and "Startup validation".
 
 ### What you will notice
 
@@ -45,6 +52,10 @@ services.AddCaching(config, cache => cache.WithKeyVersionPlacement(CacheKeyVersi
   serve a stale value until the entry's distributed expiration. Use a recreate deployment for this
   release, or set `KeyVersionPlacement: Prefix` to keep the 3.1.1 layout and skip all of this.
 - **Rewrite key scans and eviction policies** from `v2:orders-api:*` to `orders-api:*`.
+- **Hybrid sections without `Backplane.Enabled` start publishing to Redis pub/sub.** Set it to
+  `false` explicitly to keep a single-replica cache off the backplane.
+- **Startup validation is stricter.** A configuration rejected by one of the new rules below was
+  already broken; it now fails at boot instead of on the first call.
 
 Full runbook: [docs/OPERATIONS.md](docs/OPERATIONS.md) → "Cold cache after a deploy".
 
@@ -53,14 +64,79 @@ Full runbook: [docs/OPERATIONS.md](docs/OPERATIONS.md) → "Cold cache after a d
 - **`Redis.KeyVersionPlacement`** (`None` | `Prefix` | `Suffix`) and
   `CachingBuilder.WithKeyVersionPlacement(...)` — where the engine's wire-format version appears in a
   physical Redis key. An undefined value fails startup validation.
+- **[docs/FEATURES.md](docs/FEATURES.md)** — every feature one by one: default, how it works,
+  configuration, trade-offs, when to use it and what to watch.
 
 ### Changed
 
+- **A `Hybrid` cache bound from configuration now gets the backplane** unless its section sets
+  `Backplane.Enabled` — the default `UseHybrid(...)` has always applied, and the one the docs
+  already promised for `AddCaching`. Up to 3.1.1 such a cache ran without one, so every replica
+  served its own stale in-process copy until `Entry.LocalExpiration`, with only startup warning
+  3051 to say so. Expect Redis pub/sub traffic, and set `"Backplane": { "Enabled": false }` to keep
+  the old behavior on a single replica. The default is applied before fluent overrides, so
+  anything set in code — `WithBackplane(false)`, or `Options.Backplane.Enabled = false` — wins, and
+  code that moves the cache out of Hybrid does not inherit it. Hybrid selected in code rather than
+  in the section (`AddCachingOptions`, `Options.Mode`) gets no default; use `UseHybrid(...)`.
+- **`RemoveByTag*` and `Clear*` log the overrides they ignore** — warning 3041, once per cache,
+  naming the properties. See "Fixed" for why those overrides no longer apply.
 - **`KeyVersionPlacement` defaults to `None`.** The trade-off: the version segment isolated entries
   across an engine upgrade that changes the stored format. With `None`, such an upgrade reads
   old-format entries under the same keys until they expire, so take it with a flush or a TTL wait.
   `Suffix` (`orders-api:prod:Order:1:v2`) keeps that isolation and still lets `orders-api:*` scans
   find every key. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §4.
+
+### Fixed
+
+- **Overrides on `RemoveByTag*` and `Clear*` shortened the invalidation** (present since 3.0.0).
+  Both verbs store the invalidation as a marker entry whose 10-day lifetime is what keeps it
+  effective. Any override object — even an empty `new CacheEntryOverrides()` — built that marker
+  from the ordinary *entry* defaults instead, so it lived 2 hours in Redis under the defaults. Once
+  it expired, an invalidated entry nobody had read since was served again. Those two verbs now
+  start from the marker defaults and apply only the operational overrides —
+  `AllowBackgroundDistributedOperations`, `AllowBackgroundBackplaneOperations`,
+  `SkipBackplaneNotification`, `DistributedSoftTimeout`, `DistributedHardTimeout`. Lifetime,
+  fail-safe and memory-layer overrides are ignored there. Calls that passed `null` were never
+  affected.
+- **Auto-clone works in `InMemory` mode** (broken since 3.0.0). Cloning round-trips a value through
+  a serializer, and only the Redis and Hybrid modes configured one, so every write that asked for a
+  clone — `Entry.EnableAutoClone: true` or a per-call `EnableAutoClone = true` — threw
+  `InvalidOperationException`. `InMemory` caches now configure the `Serialization.Format` serializer
+  for cloning alone, so cloned types must be serializable in that format.
+- **`UseProductionDefaults()` no longer forces `FailSafeMaxDuration` to 2 h.** It raises it to 2 h — or
+  `DefaultExpiration` + 2 h when the expiration is already 2 h or longer — and never lowers it. The
+  flat 2 h shortened a longer fail-safe window configured before the preset, and failed startup after
+  a `DefaultExpiration` over 2 h. That validation message now names the fix.
+- **Fail-safe storage cost was documented wrong.** An entry's physical lifetime is the **longer** of
+  its own duration and `Resilience.FailSafeMaxDuration`, not their sum: under the defaults a 1-minute
+  entry occupies Redis for 2 hours, not 2 hours and 1 minute, and an entry that lives longer than
+  `FailSafeMaxDuration` has no fallback window at all.
+- **`Expire` always deletes the Redis copy.** Only the in-process copy is kept as a fail-safe fallback,
+  so in `Redis` mode `ExpireAsync` behaves like `RemoveAsync`. The docs said it kept "the fail-safe
+  copy".
+- **Telemetry names in the OPERATIONS and README failure tables** now use the real attribute names
+  (`cache.layer`, `cache.error.type`, `cache.result`); `cache.key` is documented as the caller's key
+  without the application prefix; `Caching.NET.Security` and `Caching.NET.Configuration` are
+  documented as reserved categories that emit nothing.
+
+### Startup validation
+
+New rules. Each rejects a configuration that could not have worked as intended:
+
+- **An undefined `Mode`, `Entry.Priority`, `Security.KeyLengthPolicy` or `Security.TagPolicy`** —
+  reachable with a number in configuration (`"Mode": "7"` binds) or a cast from code. An undefined
+  priority was silently treated as `Normal`, and an undefined guard policy as `Warn`.
+
+### Dependencies
+
+- **Cache engine 2.6.0 → 2.9.0** (FusionCache and its backplane and serializer packages). One
+  visible effect: the engine's tag and `Clear` markers are no longer a flat 10-day entry. They are
+  fresh for 1 hour (1 day in Redis) and kept for 10 days through fail-safe, renewed whenever a read
+  finds one logically expired. Invalidation durability is unchanged — a marker's Redis `TTL` still
+  measures 10 days — and Caching.NET's per-mode marker placement still applies. See
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.1.
+- StackExchange.Redis 3.1.13 → 3.3.1; MessagePack 3.1.8 → 3.1.11 (pinned above a vulnerable
+  transitive version); `Microsoft.Extensions.*` 10.0.11 → 10.0.12.
 
 ## 3.1.1 — 2026-08-16
 

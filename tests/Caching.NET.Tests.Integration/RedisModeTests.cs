@@ -82,6 +82,33 @@ public class RedisModeTests
         Assert.False((await host.Cache.TryGetAsync<int>("Order:2")).HasValue);
     }
 
+    /// <summary>
+    /// <c>Expire</c> keeps only the in-process copy as a fail-safe fallback; the Redis copy is
+    /// deleted. Redis mode keeps no in-process copy, so nothing survives to fall back on — the
+    /// documented "in Redis mode, Expire behaves like Remove".
+    /// </summary>
+    [Fact]
+    public async Task Expire_DeletesTheRedisCopy_SoNoFallbackSurvives()
+    {
+        using var host = Host("redis-expire");
+        await host.Cache.SetAsync("Order:3", 3);
+
+        var connection = await ConnectionMultiplexer.ConnectAsync(_redis.ConnectionString);
+        await using (connection.ConfigureAwait(false))
+        {
+            Assert.Single(await FindKeysAsync(connection, "*redis-expire:Order:3*"));
+
+            await host.Cache.ExpireAsync("Order:3");
+
+            Assert.Empty(await FindKeysAsync(connection, "*redis-expire:Order:3*"));
+        }
+
+        // Fail-safe is on, so a surviving copy would be served here instead of the factory's error.
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await host.Cache.GetOrSetAsync<int>(
+                "Order:3", _ => Task.FromException<int>(new InvalidOperationException("origin down"))));
+    }
+
     [Fact]
     public async Task ConcurrentGetOrSet_StillCoalescesWithoutAMemoryLayer()
     {
@@ -132,7 +159,8 @@ public class RedisModeTests
     /// Tag invalidation is implemented by the engine as a marker entry that every read compares
     /// itself against. Those markers are ordinary cache entries, so unless Redis mode's
     /// skip-the-memory-layer rule is applied to them too, the first read caches "no marker exists"
-    /// in-process — for the marker's own 10-day default lifetime — and every later read on that
+    /// in-process — for the marker's own logical lifetime, 10 days up to FusionCache 2.6.0 and 1 hour
+    /// as of 2.9.0 — and every later read on that
     /// instance answers from that stale copy. Redis mode registers no backplane (the validator
     /// rejects one), so nothing would ever evict it: <c>RemoveByTag</c> would be silently
     /// unobservable on any instance that had served the key once, which is every instance under real

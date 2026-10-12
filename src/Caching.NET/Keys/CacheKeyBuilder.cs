@@ -3,9 +3,9 @@ using System.Text;
 namespace Caching.NET.Keys;
 
 /// <summary>
-/// Builds canonical, validated cache keys. Every segment is checked for whitespace and for the
-/// reserved <c>':'</c> separator so that a caller-supplied identifier cannot forge an extra key
-/// segment and collide with, or read, another entity's entry.
+/// Builds canonical, validated cache keys. Every segment is checked for whitespace, control
+/// characters and the reserved <c>':'</c> separator so that a caller-supplied identifier cannot forge
+/// an extra key segment and collide with, or read, another entity's entry.
 /// </summary>
 public sealed class CacheKeyBuilder
 {
@@ -31,7 +31,7 @@ public sealed class CacheKeyBuilder
     public CacheKeyBuilder WithTenant(string tenantId) => WithSegment(tenantId);
 
     /// <summary>Appends an arbitrary segment.</summary>
-    /// <param name="segment">The segment text. Must be non-empty and free of whitespace and <c>':'</c>.</param>
+    /// <param name="segment">The segment text. Must be non-empty and free of whitespace, control characters and <c>':'</c>.</param>
     public CacheKeyBuilder WithSegment(string segment)
     {
         ArgumentException.ThrowIfNullOrEmpty(segment);
@@ -43,7 +43,8 @@ public sealed class CacheKeyBuilder
     /// Builds the final key.
     /// </summary>
     /// <exception cref="ArgumentException">
-    /// A segment contains whitespace or <c>':'</c>, or the key exceeds <see cref="MaximumLength"/>.
+    /// A segment contains whitespace, a control character or <c>':'</c>, or the key exceeds
+    /// <see cref="MaximumLength"/>.
     /// </exception>
     public string Build()
     {

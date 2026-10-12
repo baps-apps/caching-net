@@ -62,7 +62,7 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         var section = ResolveSection(configuration);
-        AddCache(services, CachingDefaults.DefaultCacheName, isDefault: true, Binder(section), configure);
+        AddCache(services, CachingDefaults.DefaultCacheName, isDefault: true, Binder(section), configure, section);
         AddNamedCachesFromConfiguration(services, section);
         return services;
     }
@@ -85,7 +85,7 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
 
-        AddCache(services, CachingDefaults.DefaultCacheName, isDefault: true, bind: null, configure);
+        AddCache(services, CachingDefaults.DefaultCacheName, isDefault: true, bind: null, configure, section: null);
         return services;
     }
 
@@ -138,7 +138,7 @@ public static class ServiceCollectionExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(cacheName);
         ArgumentNullException.ThrowIfNull(configure);
 
-        AddCache(services, cacheName, isDefault: false, bind: null, configure);
+        AddCache(services, cacheName, isDefault: false, bind: null, configure, section: null);
         return services;
     }
 
@@ -161,7 +161,7 @@ public static class ServiceCollectionExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(cacheName);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        AddCache(services, cacheName, isDefault: false, Binder(configuration), configure);
+        AddCache(services, cacheName, isDefault: false, Binder(configuration), configure, configuration);
         return services;
     }
 
@@ -264,7 +264,8 @@ public static class ServiceCollectionExtensions
         string cacheName,
         bool isDefault,
         Action<OptionsBuilder<CachingOptions>>? bind,
-        Action<CachingBuilder>? configure)
+        Action<CachingBuilder>? configure,
+        IConfiguration? section)
     {
         CacheRegistrationTracker.ForServices(services).Claim(cacheName, isDefault);
 
@@ -284,15 +285,28 @@ public static class ServiceCollectionExtensions
         // service materialises. See the health-check block at the end of this method.
         var healthChecks = new CachingHealthCheckIntent();
 
-        if (configure is not null)
+        if (configure is not null || section is not null)
         {
             // PostConfigure runs after Bind, so fluent settings win over configuration.
             optionsBuilder.PostConfigure(options =>
             {
-                var builder = new CachingBuilder(options);
-                configure(builder);
-                options.CacheName = cacheName;
-                healthChecks.Capture(builder);
+                var backplaneDefaulted = section is not null && ApplyHybridBackplaneDefault(options, section);
+
+                if (configure is not null)
+                {
+                    var builder = new CachingBuilder(options);
+                    configure(builder);
+                    options.CacheName = cacheName;
+                    healthChecks.Capture(builder);
+
+                    // The default belongs to the configured Hybrid mode. Code that moved the cache to
+                    // another mode without touching the backplane must not inherit it: validation
+                    // rejects a backplane outside Hybrid mode.
+                    if (backplaneDefaulted && options.Mode != CacheMode.Hybrid && !builder.BackplaneConfigured)
+                    {
+                        options.Backplane.Enabled = false;
+                    }
+                }
             });
         }
 
@@ -399,6 +413,33 @@ public static class ServiceCollectionExtensions
     private static Action<OptionsBuilder<CachingOptions>> Binder(IConfiguration section)
         => optionsBuilder => optionsBuilder.Bind(section);
 
+    private static readonly string BackplaneEnabledKey =
+        ConfigurationPath.Combine(nameof(CachingOptions.Backplane), nameof(CacheBackplaneOptions.Enabled));
+
+    /// <summary>
+    /// Turns the backplane on for a cache whose configuration section selects Hybrid mode without
+    /// setting <c>Backplane:Enabled</c> — the same default <c>UseHybrid(...)</c> applies. Returns
+    /// whether it did.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="CacheBackplaneOptions.Enabled"/> is a plain <c>bool</c>, so "not set" cannot be told
+    /// from <c>false</c> on the options object; the configuration section is the only place that
+    /// knows. Without this, every multi-replica Hybrid deployment configured from appsettings served
+    /// stale in-process copies until someone noticed the startup warning. It runs after binding and
+    /// before the fluent overrides, so code has the last word — whether through
+    /// <c>WithBackplane</c> or by setting the property directly.
+    /// </remarks>
+    private static bool ApplyHybridBackplaneDefault(CachingOptions options, IConfiguration section)
+    {
+        if (options.Mode != CacheMode.Hybrid || section.GetSection(BackplaneEnabledKey).Exists())
+        {
+            return false;
+        }
+
+        options.Backplane.Enabled = true;
+        return true;
+    }
+
     [RequiresDynamicCode(ConfigurationBindingWarning)]
     [RequiresUnreferencedCode(ConfigurationBindingWarning)]
     private static void AddNamedCachesFromConfiguration(IServiceCollection services, IConfiguration section)
@@ -411,7 +452,7 @@ public static class ServiceCollectionExtensions
 
         foreach (var child in namedCaches.GetChildren())
         {
-            AddCache(services, child.Key, isDefault: false, Binder(child), configure: null);
+            AddCache(services, child.Key, isDefault: false, Binder(child), configure: null, child);
         }
     }
 

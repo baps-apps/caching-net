@@ -139,11 +139,162 @@ public class ConfigurationBindingTests
         Assert.Equal(distributed, options.UsesDistributedLayer);
     }
 
-    private static CachingOptions Resolve(IConfiguration configuration, string cacheName)
+    /// <summary>
+    /// The binder rejects an unknown enum <i>name</i>, but accepts any number without checking that
+    /// it is defined: <c>"Mode": "7"</c> binds to <c>(CacheMode)7</c>. The validator is what stops it.
+    /// </summary>
+    [Fact]
+    public void UndefinedNumericEnumValue_BindsAndIsRejectedByValidation()
+    {
+        var configuration = Configuration(new Dictionary<string, string?>
+        {
+            ["CacheOptions:Mode"] = "7",
+            ["CacheOptions:ApplicationPrefix"] = "orders-api"
+        });
+
+        var failure = Assert.Throws<OptionsValidationException>(() => Resolve(configuration, "default"));
+
+        Assert.Contains("not a defined CacheMode value", failure.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A Hybrid cache keeps an in-process copy on every replica, and only the backplane evicts the
+    /// other replicas' copies. <c>UseHybrid(...)</c> has always turned it on; a Hybrid cache bound from
+    /// configuration now gets it too unless <c>Backplane:Enabled</c> is set.
+    /// </summary>
+    [Fact]
+    public void HybridWithoutABackplaneSetting_GetsTheBackplane()
+    {
+        var options = Resolve(HybridConfiguration(), "default");
+
+        Assert.True(options.Backplane.Enabled);
+    }
+
+    [Fact]
+    public void HybridWithTheBackplaneSetToFalse_KeepsItOff()
+    {
+        var options = Resolve(HybridConfiguration(("CacheOptions:Backplane:Enabled", "false")), "default");
+
+        Assert.False(options.Backplane.Enabled);
+    }
+
+    [Fact]
+    public void NamedHybridCacheWithoutABackplaneSetting_GetsTheBackplane()
+    {
+        var configuration = Configuration(new Dictionary<string, string?>
+        {
+            ["CacheOptions:ApplicationPrefix"] = "orders-api",
+            ["CacheOptions:NamedCaches:shared:ApplicationPrefix"] = "orders-api",
+            ["CacheOptions:NamedCaches:shared:Mode"] = "Hybrid",
+            ["CacheOptions:NamedCaches:shared:Redis:Configuration"] = "localhost:6379"
+        });
+
+        Assert.False(Resolve(configuration, "default").Backplane.Enabled);
+        Assert.True(Resolve(configuration, "shared").Backplane.Enabled);
+    }
+
+    [Fact]
+    public void RedisModeWithoutABackplaneSetting_KeepsItOff()
+    {
+        var configuration = Configuration(new Dictionary<string, string?>
+        {
+            ["CacheOptions:Mode"] = "Redis",
+            ["CacheOptions:ApplicationPrefix"] = "orders-api",
+            ["CacheOptions:Redis:Configuration"] = "localhost:6379"
+        });
+
+        Assert.False(Resolve(configuration, "default").Backplane.Enabled);
+    }
+
+    /// <summary>
+    /// The default follows the <i>final</i> mode. A test host that overrides a Hybrid appsettings
+    /// block with <c>UseInMemory()</c> must not be handed a backplane, which validation rejects
+    /// outside Hybrid mode.
+    /// </summary>
+    [Fact]
+    public void HybridOverriddenToInMemoryInCode_DoesNotGetTheBackplane()
+    {
+        var options = Resolve(HybridConfiguration(), "default", cache =>
+        {
+            cache.UseInMemory();
+            cache.Options.Redis.Configuration = null;
+        });
+
+        Assert.False(options.Backplane.Enabled);
+    }
+
+    [Fact]
+    public void BackplaneTurnedOffInCode_StaysOff()
+    {
+        var options = Resolve(HybridConfiguration(), "default", cache => cache.WithBackplane(false));
+
+        Assert.False(options.Backplane.Enabled);
+    }
+
+    /// <summary>
+    /// The default is applied before the fluent overrides, so code that sets the property directly —
+    /// not only through <c>WithBackplane</c> — has the last word.
+    /// </summary>
+    [Fact]
+    public void BackplaneSetToFalseOnTheOptionsInCode_StaysOff()
+    {
+        var options = Resolve(
+            HybridConfiguration(), "default", cache => cache.Options.Backplane.Enabled = false);
+
+        Assert.False(options.Backplane.Enabled);
+    }
+
+    /// <summary>
+    /// Code that switches a non-Hybrid section to Hybrid by setting the mode directly gets no default,
+    /// the same as any Hybrid set on the options in code; <c>UseHybrid(...)</c> is the way to get one.
+    /// </summary>
+    [Fact]
+    public void ModeSwitchedToHybridOnTheOptionsInCode_GetsNoDefault()
+    {
+        var configuration = Configuration(new Dictionary<string, string?>
+        {
+            ["CacheOptions:Mode"] = "Redis",
+            ["CacheOptions:ApplicationPrefix"] = "orders-api",
+            ["CacheOptions:Redis:Configuration"] = "localhost:6379"
+        });
+
+        var options = Resolve(configuration, "default", cache => cache.Options.Mode = CacheMode.Hybrid);
+
+        Assert.False(options.Backplane.Enabled);
+    }
+
+    private static IConfiguration HybridConfiguration(params (string Key, string Value)[] extra)
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["CacheOptions:Mode"] = "Hybrid",
+            ["CacheOptions:ApplicationPrefix"] = "orders-api",
+            ["CacheOptions:Redis:Configuration"] = "localhost:6379"
+        };
+
+        foreach (var (key, value) in extra)
+        {
+            values[key] = value;
+        }
+
+        return Configuration(values);
+    }
+
+    private static CachingOptions Resolve(
+        IConfiguration configuration, string cacheName, Action<CachingBuilder>? configure = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCaching(configuration);
+
+        if (configure is null)
+        {
+            services.AddCaching(configuration);
+        }
+        else
+        {
+            services.AddCaching(configuration, configure);
+        }
+
         using var provider = services.BuildServiceProvider();
         return provider.GetRequiredService<IOptionsMonitor<CachingOptions>>().Get(cacheName);
     }
